@@ -63,3 +63,38 @@ libc = "0.2"
 [profile.release]
 lto = "thin"
 strip = true
+
+# ── Linux packaging (docs/16) ────────────────────────────────────────────────
+# bohay is a single static (musl) binary with no shared-library dependencies, so
+# a .deb/.rpm just drops the binary in /usr/bin and declares nothing hard. The
+# external tools it *optionally* shells out to (git tab, ssh remote, clipboard)
+# are Recommends/Suggests, never hard deps: bohay degrades gracefully without
+# them, and a minimal server should not be forced to pull git + gh.
+# Built + attached to each release by `.github/workflows/release.yml`.
+
+[package.metadata.deb]
+section = "utils"
+priority = "optional"
+# Static binary → no shared-lib Depends. Only soft suggestions.
+depends = ""
+recommends = "git, openssh-client, xclip"
+suggests = "gh, wl-clipboard"
+extended-description = """
+A terminal workspace manager for AI coding agents: persistent panes, tabs, and \
+workspaces that survive detach, a live sidebar of agent states, zero-config \
+agent session resume, a built-in git tab, worktrees, remote attach over plain \
+SSH, and an extension system. Ships as a single static binary."""
+assets = [["target/release/bohay", "usr/bin/", "755"]]
+
+[package.metadata.generate-rpm]
+# `--target` rewrites this to target/<triple>/release/bohay automatically.
+assets = [{ source = "target/release/bohay", dest = "/usr/bin/bohay", mode = "755" }]
+
+[package.metadata.generate-rpm.recommends]
+git = "*"
+openssh-clients = "*"
+xclip = "*"
+
+[package.metadata.generate-rpm.suggests]
+gh = "*"
+wl-clipboard = "*"

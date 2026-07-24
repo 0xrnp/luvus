@@ -69,6 +69,57 @@ jobs:
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
 
+  # Build native Linux packages (.deb + .rpm) for both arches and attach them to
+  # the Release. bohay is a static musl binary, so each package just drops the
+  # binary in /usr/bin and declares no hard dependencies (see the Recommends in
+  # Cargo.toml [package.metadata.deb]/[.generate-rpm]). `cross` cross-compiles
+  # aarch64 on the x86_64 runner; cargo-deb/cargo-generate-rpm read the built
+  # binary (`--no-build`) and repoint asset paths at target/<triple>/release via
+  # `--target`.
+  linux-packages:
+    name: pkg ${{ matrix.target }}
+    needs: create-release
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            arch: amd64
+          - target: aarch64-unknown-linux-musl
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Rust target
+        run: rustup target add ${{ matrix.target }}
+      - name: Install cross + cargo-deb (prebuilt)
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross,cargo-deb
+      # cargo-generate-rpm isn't in install-action's catalog, so build it
+      # (small crate, ~1 min).
+      - name: Install cargo-generate-rpm
+        run: cargo install cargo-generate-rpm --locked
+      - name: Build static binary
+        run: cross build --release --target ${{ matrix.target }}
+      - name: Version from tag
+        id: v
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Build .deb
+        # --no-build: package the binary cross already built. --no-strip: the
+        # release profile already strips, and there is no aarch64 `strip` here.
+        run: |
+          cargo deb --no-build --no-strip --target ${{ matrix.target }} \
+            --output "bohay_${{ steps.v.outputs.version }}_${{ matrix.arch }}.deb"
+      - name: Build .rpm
+        run: |
+          cargo generate-rpm --target ${{ matrix.target }} \
+            --output "bohay-${{ steps.v.outputs.version }}-${{ matrix.target }}.rpm"
+      - name: Attach packages to the Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "$GITHUB_REF_NAME" bohay_*.deb bohay-*.rpm --repo "$GITHUB_REPOSITORY" --clobber
+
   # Build the macOS notch companion app (separate repo RizRiyz/bohay-notch),
   # ad-hoc sign it (no paid Apple Developer account, so no Developer ID cert and
   # no notarization), attach the DMG to THIS bohay release, and bump the
