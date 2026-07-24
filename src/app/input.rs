@@ -573,6 +573,12 @@ impl App {
             self.close_pane(self.layout().focus);
             return;
         }
+        // Its ⤢ button toggles zoom — the touch equivalent of `Ctrl+Space z`, so
+        // a split can be expanded to fullscreen on a phone (docs/18).
+        if self.pane_zoom_rect.is_some_and(hit) {
+            self.zoomed = !self.zoomed;
+            return;
+        }
         // Clicking a pane's title strip opens the running-command overlay — the
         // full argv from the OS, since an agent's on-screen `Bash(… …)` is
         // elided before it ever reaches us.

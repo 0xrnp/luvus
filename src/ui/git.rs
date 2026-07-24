@@ -37,6 +37,7 @@ pub(super) fn render(
     f: &mut RenderTarget,
     area: Rect,
     g: &mut GitView,
+    compact: bool,
     cat: &Catalog,
     t: &Theme,
 ) -> Vec<(Section, Rect)> {
@@ -46,15 +47,20 @@ pub(super) fn render(
     let tab_rects = draw_header(f, Rect::new(area.x, area.y, area.width, 1), g, cat, t);
     hline(f, area.x, area.y + 1, area.width, t);
 
-    let footer_y = area.bottom().saturating_sub(1);
-    hline(f, area.x, footer_y.saturating_sub(1), area.width, t);
-    draw_footer(f, Rect::new(area.x, footer_y, area.width, 1), g, cat, t);
+    // On a phone (docs/18) the keyboard-hint footer and its separator are dropped
+    // and their two rows go to the list; on desktop it renders exactly as before.
+    let footer_h: u16 = if compact { 0 } else { 2 };
+    if !compact {
+        let footer_y = area.bottom().saturating_sub(1);
+        hline(f, area.x, footer_y.saturating_sub(1), area.width, t);
+        draw_footer(f, Rect::new(area.x, footer_y, area.width, 1), g, cat, t);
+    }
 
     let body = Rect::new(
         area.x + 1,
         area.y + 2,
         area.width.saturating_sub(2),
-        footer_y.saturating_sub(area.y + 3),
+        area.height.saturating_sub(2 + footer_h),
     );
     // Record the list body so a mouse click can map to a commit row (docs/17).
     g.list_area = body;

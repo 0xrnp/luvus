@@ -66,6 +66,7 @@ pub(super) fn render(
     live: &[Option<RowLive>],
     scroll: usize,
     cursor: usize,
+    compact: bool,
     cat: &Catalog,
     t: &Theme,
 ) -> usize {
@@ -101,33 +102,37 @@ pub(super) fn render(
     );
     hline(f, area.x, area.y + 1, area.width, t);
 
-    // Footer hints + separator.
-    let footer_y = area.bottom().saturating_sub(1);
-    hline(f, area.x, footer_y.saturating_sub(1), area.width, t);
-    f.render_widget(
-        Paragraph::new(super::hint_line(
-            &[
-                ("a", cat.act_new),
-                ("s", cat.board_start),
-                ("d", cat.task_done),
-                ("m", cat.act_merge),
-                ("⏎", cat.pane),
-                ("o", cat.board_details),
-                ("x", cat.board_release),
-                ("D", cat.act_delete),
-                ("q", cat.act_close),
-            ],
-            t,
-        )),
-        Rect::new(area.x, footer_y, area.width, 1),
-    );
+    // Footer hints + separator — dropped on a phone (docs/18), where the two
+    // reclaimed rows go to the task list. Desktop renders it exactly as before.
+    let footer_h: u16 = if compact { 0 } else { 2 };
+    if !compact {
+        let footer_y = area.bottom().saturating_sub(1);
+        hline(f, area.x, footer_y.saturating_sub(1), area.width, t);
+        f.render_widget(
+            Paragraph::new(super::hint_line(
+                &[
+                    ("a", cat.act_new),
+                    ("s", cat.board_start),
+                    ("d", cat.task_done),
+                    ("m", cat.act_merge),
+                    ("⏎", cat.pane),
+                    ("o", cat.board_details),
+                    ("x", cat.board_release),
+                    ("D", cat.act_delete),
+                    ("q", cat.act_close),
+                ],
+                t,
+            )),
+            Rect::new(area.x, footer_y, area.width, 1),
+        );
+    }
 
-    // Body between header+separator and footer+separator.
+    // Body between the header+separator and the footer (when present).
     let body = Rect::new(
         area.x + 1,
         area.y + 2,
         area.width.saturating_sub(2),
-        footer_y.saturating_sub(area.y + 3),
+        area.height.saturating_sub(2 + footer_h),
     );
     if body.height == 0 {
         return 0;

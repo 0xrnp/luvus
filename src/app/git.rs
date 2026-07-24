@@ -1020,6 +1020,42 @@ mod tests {
         );
     }
 
+    /// On a phone the git tab drops its keyboard-hint footer and gives those two
+    /// rows to the list (docs/18); the desktop layout is unchanged.
+    #[test]
+    fn compact_git_tab_hides_the_footer_and_reclaims_its_rows() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let _env = crate::persist::test_env("compact-git-footer");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        app.workspaces[0].tabs.push(Tab {
+            layout: TileLayout::new(PaneId::alloc()),
+            git: Some(Box::new(GitView::new(std::path::PathBuf::from("/tmp")))),
+            orch: false,
+            name: None,
+        });
+        app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
+
+        // Same height, wide vs phone-narrow: only the footer differs.
+        let mut wide = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        wide.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert!(!app.compact);
+        let wide_body = app.active_git_mut().unwrap().list_area.height;
+
+        let mut narrow = Terminal::new(TestBackend::new(40, 40)).unwrap();
+        narrow.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert!(app.compact);
+        let compact_body = app.active_git_mut().unwrap().list_area.height;
+
+        // Two rows reclaimed here (the footer + its separator), plus the compact
+        // layout already gave the whole tab one more row (the hidden status bar).
+        assert_eq!(
+            compact_body,
+            wide_body + 3,
+            "the git list grows by the footer's rows plus the reclaimed status row"
+        );
+    }
+
     /// Enter on an issue opens its detail in-tab (like PRs/commits), and `esc`
     /// returns to the list (docs/17).
     #[test]

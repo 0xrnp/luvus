@@ -216,6 +216,58 @@ mod tests {
         assert!(!app.switcher, "activating closes the overlay");
     }
 
+    /// The compact threshold is configurable (docs/18): raising it makes a wider
+    /// terminal go compact, and `0` disables compact mode entirely.
+    #[test]
+    fn compact_width_is_configurable() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let _env = crate::persist::test_env("compact-width-config");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+
+        // A 70-col terminal is not compact at the default (50)…
+        let mut term = Terminal::new(TestBackend::new(70, 24)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert!(!app.compact, "70 cols is above the default threshold");
+
+        // …but is once the threshold is raised past it.
+        app.config.layout.compact_width = 90;
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert!(app.compact, "70 cols is below a 90-col threshold");
+
+        // `0` disables compact mode, even on a phone-narrow terminal.
+        app.config.layout.compact_width = 0;
+        let mut narrow = Terminal::new(TestBackend::new(30, 60)).unwrap();
+        narrow.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert!(!app.compact, "compact_width 0 never goes compact");
+    }
+
+    /// Compact mode drops the bottom status bar to reclaim its row for content
+    /// (docs/18): the pane area is exactly one row taller than in the wide layout
+    /// at the same terminal height.
+    #[test]
+    fn compact_reclaims_the_status_row() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let _env = crate::persist::test_env("compact-status-row");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+
+        // Same terminal height, different widths — only the status row differs.
+        let mut wide = Terminal::new(TestBackend::new(100, 40)).unwrap();
+        wide.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert!(!app.compact);
+        let wide_pane_h = app.last_pane_area.height;
+
+        let mut narrow = Terminal::new(TestBackend::new(40, 40)).unwrap();
+        narrow.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert!(app.compact);
+        assert_eq!(
+            app.last_pane_area.height,
+            wide_pane_h + 1,
+            "the reclaimed status row goes to the pane content"
+        );
+    }
+
     /// The compact-header summary keeps the most-urgent states and drops the
     /// least-urgent (idle) first when the width can't hold them all (docs/18).
     #[test]

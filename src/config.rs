@@ -75,6 +75,16 @@ pub struct LayoutConfig {
     /// Persisted so the choice sticks across restarts.
     #[serde(default = "yes")]
     pub files_show_hidden: bool,
+    /// Terminal width (columns) below which the touch/compact layout kicks in
+    /// (docs/18): one zoomed pane, sidebars hidden, the `≡` switcher. Configurable
+    /// because phone terminals in landscape often sit right around the default;
+    /// `0` disables compact mode entirely (the full UI always renders).
+    #[serde(default = "default_compact_width")]
+    pub compact_width: u16,
+}
+
+fn default_compact_width() -> u16 {
+    crate::app::COMPACT_WIDTH
 }
 
 /// Left + right sidebar layout (docs/29). Serialized under `sidebars`.
@@ -197,6 +207,7 @@ impl Default for LayoutConfig {
             file_open: default_file_open(),
             scrollback: default_scrollback(),
             files_show_hidden: true,
+            compact_width: default_compact_width(),
         }
     }
 }

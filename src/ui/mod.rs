@@ -110,7 +110,15 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
         return;
     }
 
-    let [main, status] = Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).areas(area);
+    // Compact (touch) mode on a narrow phone screen (docs/18): no sidebars, one
+    // full-screen pane, a `≡` switcher for navigation. A vertical split doesn't
+    // change the width, so decide it from `area.width` here — early enough that
+    // it can also drop the bottom status bar (a dense, keyboard-oriented row that
+    // just eats space on a phone) and give that row back to the content.
+    app.compact = area.width < app.config.layout.compact_width;
+    let status_h = if app.compact { 0 } else { 1 };
+    let [main, status] =
+        Layout::vertical([Constraint::Min(0), Constraint::Length(status_h)]).areas(area);
 
     // Two sidebars flank the content (docs/29). Each is shown only if visible,
     // non-empty, and it (with the other) leaves the panes at least 24 columns —
@@ -125,9 +133,6 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
             0
         }
     };
-    // Compact (touch) mode on a narrow phone screen (docs/18): no sidebars, one
-    // full-screen pane, a `≡` switcher for navigation. Recomputed each frame.
-    app.compact = main.width < crate::app::COMPACT_WIDTH;
     let lw = if app.compact || !app.sidebars.left.shown() {
         0
     } else {
@@ -201,12 +206,21 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
     let (tab_rects, tab_close_rects, tab_prev, tab_next) = tabbar::draw_tabbar(f, tabbar, app, &t);
     // Behind the panes, use the (dark) pane background.
     f.render_widget(Block::new().style(Style::new().bg(t.mantle)), pane_area);
-    // The focused pane's ✕ close button, for mouse hit-testing.
-    app.pane_close_rect = if bordered {
+    // The focused pane's ✕ close and ⤢ zoom buttons, for mouse hit-testing.
+    let focused_rect = bordered
+        .then(|| rects.iter().find(|(id, _)| *id == focus).map(|(_, r)| *r))
+        .flatten();
+    app.pane_close_rect = focused_rect.and_then(|r| pane_close_rect(r, bordered));
+    // Zoom button: the split-title ⤢ when bordered, else the lone-header ⤡ that
+    // restores a *zoomed* single pane (so a phone can un-zoom).
+    app.pane_zoom_rect = if bordered {
+        focused_rect.and_then(|r| pane_zoom_rect(r, bordered))
+    } else if app.zoomed {
         rects
             .iter()
             .find(|(id, _)| *id == focus)
-            .and_then(|(_, r)| pane_close_rect(*r, bordered))
+            .map(|(_, r)| lone_zoom_rect(*r))
+            .filter(|r| r.width >= 3)
     } else {
         None
     };
@@ -214,6 +228,9 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
     // instead of terminals.
     let mut git_section_rects = Vec::new();
     let mut title_rects: Vec<(PaneId, Rect)> = Vec::new();
+    // Captured before the `active_git_mut` borrow below; the dashboards drop
+    // their keyboard-hint footer on a phone (docs/18) and give it to the list.
+    let compact = app.compact;
     let cursor = if app.active_is_orch() {
         app.orch_area = pane_area;
         // Each task's live worker state (detection) rides along on its row.
@@ -238,12 +255,13 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
             &live,
             app.orch_scroll,
             app.orch_cursor,
+            compact,
             cat,
             &t,
         );
         None
     } else if let Some(g) = app.active_git_mut() {
-        git_section_rects = git::render(f, pane_area, g, cat, &t);
+        git_section_rects = git::render(f, pane_area, g, compact, cat, &t);
         None
     } else {
         let cursor = panes::draw_panes(f, &rects, bordered, app, &t);
@@ -551,6 +569,24 @@ fn pane_close_rect(area: Rect, bordered: bool) -> Option<Rect> {
         return None;
     }
     Some(Rect::new(area.x + area.width - 4, area.y, 3, 1))
+}
+
+/// The focused pane's ⤢ zoom button, sitting three cells left of the ✕. Shown
+/// only when the pane is wide enough to hold both without eating the title. Must
+/// stay in lockstep with the button layout in [`panes::draw_pane_titles`].
+fn pane_zoom_rect(area: Rect, bordered: bool) -> Option<Rect> {
+    if !bordered || area.width < 12 {
+        return None;
+    }
+    Some(Rect::new(area.x + area.width - 7, area.y, 3, 1))
+}
+
+/// The ⤡ restore button in a *lone* pane's header (a zoomed split, docs/18),
+/// right-aligned inside the padded header row. Must match the render in
+/// [`panes::draw_one_pane`].
+pub(super) fn lone_zoom_rect(area: Rect) -> Rect {
+    let pad = lone_pad(area.width);
+    Rect::new(area.x + area.width.saturating_sub(pad + 3), area.y, 3, 1)
 }
 
 fn pane_state(app: &App, id: PaneId) -> State {

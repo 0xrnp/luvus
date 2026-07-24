@@ -6,6 +6,12 @@ use super::*;
 // ── status ──────────────────────────────────────────────────────────────────
 
 pub(super) fn draw_status(f: &mut RenderTarget, area: Rect, app: &App, t: &Theme) {
+    // Compact/touch mode collapses this row to nothing (docs/18) to reclaim it
+    // for content — the status readout is keyboard-oriented and redundant on a
+    // phone (the tab bar shows tabs, the switcher shows panes/nodes).
+    if area.height == 0 {
+        return;
+    }
     f.render_widget(Block::new().style(Style::new().bg(t.crust)), area);
     let cat = app.catalog;
 

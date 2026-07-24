@@ -22,8 +22,8 @@ pub(super) fn draw_pane_titles(
             let focused = *id == focus;
             let bg = t.mantle;
             let inner_w = rect.width - 2;
-            let close_w: u16 = if focused { 3 } else { 0 };
-            let title_w = inner_w.saturating_sub(close_w);
+            let btn_w = title_buttons_w(focused, rect.width);
+            let title_w = inner_w.saturating_sub(btn_w);
             let name = v
                 .path
                 .file_name()
@@ -46,15 +46,7 @@ pub(super) fn draw_pane_titles(
                 title_rect,
             );
             title_rects.push((*id, title_rect));
-            if focused {
-                f.render_widget(
-                    Paragraph::new(Span::styled(
-                        " × ",
-                        Style::new().fg(t.subtext1).bg(bg).bold(),
-                    )),
-                    Rect::new(rect.x + 1 + title_w, rect.y, close_w, 1),
-                );
-            }
+            draw_title_buttons(f, *rect, focused, app.zoomed, title_w, bg, t);
             continue;
         }
         let Some(pane) = app.panes.get(id) else {
@@ -68,8 +60,8 @@ pub(super) fn draw_pane_titles(
         // the thin `▔` line visible on either side of the label.
         let bg = t.mantle;
         let inner_w = rect.width - 2; // inside the two corner cells
-        let close_w: u16 = if focused { 3 } else { 0 };
-        let title_w = inner_w.saturating_sub(close_w);
+        let btn_w = title_buttons_w(focused, rect.width);
+        let title_w = inner_w.saturating_sub(btn_w);
         let path = short_path(&pane.cwd, title_w.saturating_sub(4));
         let text_w = (3 + path.chars().count() as u16).min(title_w);
         let title = Line::from(vec![
@@ -83,17 +75,58 @@ pub(super) fn draw_pane_titles(
         f.render_widget(Paragraph::new(title), title_rect);
         // Clicking the title opens the running-command overlay.
         title_rects.push((*id, title_rect));
-        if focused {
-            f.render_widget(
-                Paragraph::new(Span::styled(
-                    " × ",
-                    Style::new().fg(t.subtext1).bg(bg).bold(),
-                )),
-                Rect::new(rect.x + 1 + title_w, rect.y, close_w, 1),
-            );
-        }
+        draw_title_buttons(f, *rect, focused, app.zoomed, title_w, bg, t);
     }
     title_rects
+}
+
+/// Cells reserved on the right of a focused pane's title for its buttons: the ✕,
+/// plus the ⤢ zoom toggle when the pane is wide enough for both. Must match
+/// `pane_close_rect`/`pane_zoom_rect` in `ui/mod.rs`, or a tap lands off the
+/// glyph.
+fn title_buttons_w(focused: bool, width: u16) -> u16 {
+    if !focused {
+        0
+    } else if width >= 12 {
+        6
+    } else {
+        3
+    }
+}
+
+/// Draw the focused pane's title buttons at the right edge: ⤢/⤡ (zoom/restore)
+/// then ✕, each a 3-cell hit target aligned with the rects `ui/mod.rs` records.
+fn draw_title_buttons(
+    f: &mut RenderTarget,
+    rect: Rect,
+    focused: bool,
+    zoomed: bool,
+    title_w: u16,
+    bg: Color,
+    t: &Theme,
+) {
+    if !focused {
+        return;
+    }
+    let style = Style::new().fg(t.subtext1).bg(bg).bold();
+    let bx = rect.x + 1 + title_w;
+    let close = |f: &mut RenderTarget, x: u16| {
+        f.render_widget(
+            Paragraph::new(Span::styled(" × ", style)),
+            Rect::new(x, rect.y, 3, 1),
+        );
+    };
+    if rect.width >= 12 {
+        // ⤢ expands a split to fullscreen; ⤡ restores it (touch-reachable zoom).
+        let zoom = if zoomed { " ⤡ " } else { " ⤢ " };
+        f.render_widget(
+            Paragraph::new(Span::styled(zoom, style)),
+            Rect::new(bx, rect.y, 3, 1),
+        );
+        close(f, bx + 3);
+    } else {
+        close(f, bx);
+    }
 }
 
 // ── panes ─────────────────────────────────────────────────────────────────
@@ -146,6 +179,12 @@ fn draw_one_pane(
         let hbg = if focused { t.surface1 } else { t.surface0 };
         let path_fg = if focused { t.accent } else { t.overlay1 };
         f.render_widget(Block::new().style(Style::new().bg(hbg)), header);
+        // When this lone pane is a *zoomed* split (not just the only pane), show a
+        // ⤡ restore button so a phone can un-zoom without a keyboard (docs/18).
+        let show_restore = app.zoomed && header.width >= 8;
+        let path_budget = header
+            .width
+            .saturating_sub(if show_restore { 8 } else { 5 });
         let title = Line::from(vec![
             Span::styled("▎", Style::new().fg(t.accent).bg(hbg)),
             Span::styled(
@@ -153,11 +192,21 @@ fn draw_one_pane(
                 Style::new().fg(st.color(t)).bg(hbg),
             ),
             Span::styled(
-                short_path(&pane.cwd, header.width.saturating_sub(5)),
+                short_path(&pane.cwd, path_budget),
                 Style::new().fg(path_fg).bg(hbg),
             ),
         ]);
         f.render_widget(Paragraph::new(title), header);
+        if show_restore {
+            let r = super::lone_zoom_rect(area);
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    " ⤡ ",
+                    Style::new().fg(t.subtext1).bg(hbg).bold(),
+                )),
+                r,
+            );
+        }
     }
 
     // Content background = the dark pane background.

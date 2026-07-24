@@ -951,6 +951,11 @@ pub struct App {
     pub tab_next_rect: Option<Rect>,
     /// The focused pane's ✕ close button, for mouse hit-testing.
     pub pane_close_rect: Option<Rect>,
+    /// The focused pane's ⤢ zoom/restore button (docs/18): a touch-reachable
+    /// equivalent of `Ctrl+Space z`, so a split can be expanded to fullscreen on
+    /// a phone where there is no keyboard. Only shown when the pane is wide
+    /// enough to hold it beside the ✕.
+    pub pane_zoom_rect: Option<Rect>,
     /// The left sidebar's collapse/reopen toggle button, for mouse hit-testing.
     pub sidebar_toggle_rect: Option<Rect>,
     /// The right sidebar's collapse/reopen toggle button (docs/29).
@@ -1149,6 +1154,7 @@ impl App {
             tab_prev_rect: None,
             tab_next_rect: None,
             pane_close_rect: None,
+            pane_zoom_rect: None,
             sidebar_toggle_rect: None,
             right_sidebar_toggle_rect: None,
             settings_icon_rect: None,
@@ -1496,6 +1502,7 @@ impl App {
             tab_prev_rect: None,
             tab_next_rect: None,
             pane_close_rect: None,
+            pane_zoom_rect: None,
             sidebar_toggle_rect: None,
             right_sidebar_toggle_rect: None,
             settings_icon_rect: None,
@@ -4059,6 +4066,46 @@ mod tests {
         )));
         assert!(app.mouse_grab.is_none());
         assert!(app.selection.is_some(), "no tracking → selection as before");
+    }
+
+    /// Tapping a split pane's ⤢ button zooms it to fullscreen, and tapping again
+    /// restores the split — the touch-reachable equivalent of `Ctrl+Space z`
+    /// (docs/18), so a phone with no keyboard can still expand a pane.
+    #[test]
+    fn tapping_the_zoom_button_toggles_fullscreen() {
+        let _env = crate::persist::test_env("pane-zoom-tap");
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::Terminal;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        app.run_cmd(crate::app::keys::Cmd::SplitRight); // two side-by-side panes
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert_eq!(app.layout().len(), 2);
+        assert!(!app.zoomed);
+
+        // The focused pane shows a zoom button (the split panes are wide enough).
+        let z = app.pane_zoom_rect.expect("focused pane has a ⤢ button");
+        let tap = |app: &mut App, r: Rect| {
+            app.handle_event(crate::event::AppEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: r.x + 1,
+                row: r.y,
+                modifiers: KeyModifiers::NONE,
+            }));
+        };
+        tap(&mut app, z);
+        assert!(app.zoomed, "tapping ⤢ zoomed the pane");
+
+        // Zoomed: only one pane renders, and its button now restores the split.
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let z2 = app
+            .pane_zoom_rect
+            .expect("the zoomed pane keeps its button");
+        tap(&mut app, z2);
+        assert!(!app.zoomed, "tapping again restored the split");
     }
 
     /// The divider grab band must not reach into a pane's content.
