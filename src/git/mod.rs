@@ -21,7 +21,8 @@ pub use github::GhState;
 pub use model::Checks;
 pub use model::WorktreeMembership;
 use model::{
-    BranchInfo, Commit, CommitShow, Issue, IssueDetail, PrDetail, PullRequest, RepoInfo, RepoStatus,
+    BranchInfo, Commit, CommitShow, Contributor, Issue, IssueDetail, PrDetail, PullRequest,
+    RepoInfo, RepoStatus,
 };
 
 /// Which section of the git tab is shown.
@@ -200,6 +201,57 @@ pub struct GitView {
     /// The list body rect from the last render, so a click maps to the row under
     /// it. Transient (GitView is rebuilt on restore, never serialized).
     pub list_area: Rect,
+    /// Status view: show every contributor instead of the meaningful-only default.
+    /// Collapsed hides authors below [`CONTRIB_MIN_COMMITS`] (drive-by commits
+    /// bury the real contributors on a big repo); expanding reveals **everyone**,
+    /// so nobody is permanently hidden.
+    pub contributors_expanded: bool,
+    /// Status view: reveal contributor email addresses (hidden by default — the
+    /// list is about who contributes, not how to mail them).
+    pub show_emails: bool,
+    /// Screen rect of the contributors "show more / show less" row from the last
+    /// render, so a click can toggle it. `None` when it isn't on screen.
+    pub contributors_more_rect: Option<Rect>,
+}
+
+/// Contributors below this many commits are hidden in the **collapsed** Status
+/// view, so a big repo's list shows the people who actually shape the project
+/// instead of a wall of one-off authors. Expanding shows everyone regardless.
+pub const CONTRIB_MIN_COMMITS: u32 = 10;
+
+/// Rows the collapsed contributor list shows before it offers "show more".
+pub const CONTRIB_COLLAPSED_ROWS: usize = 20;
+
+/// The contributors the Status view should draw, plus how many stay hidden.
+///
+/// *Collapsed* keeps authors with at least [`CONTRIB_MIN_COMMITS`] commits, up to
+/// [`CONTRIB_COLLAPSED_ROWS`] rows — on a large repo that replaces a wall of
+/// one-commit authors with the people who actually shape the project, and the
+/// cap no longer cuts off real contributors. *Expanded* returns everyone,
+/// uncapped (the view scrolls), so nobody is permanently hidden.
+///
+/// If **nobody** clears the commit floor (a young repo where everyone has a
+/// handful) the floor is dropped instead of drawing an empty section.
+///
+/// Returns a sub-slice, never a new `Vec`: this runs on the render hot path.
+/// Relies on `git shortlog -s -n` ordering (descending by commits), so the
+/// qualifying authors are always a prefix.
+pub fn visible_contributors(all: &[Contributor], expanded: bool) -> (&[Contributor], usize) {
+    if expanded {
+        return (all, 0);
+    }
+    let qualifying = all
+        .iter()
+        .take_while(|c| c.commits >= CONTRIB_MIN_COMMITS)
+        .count();
+    // Nobody meets the bar → show the top of the list rather than nothing.
+    let pool = if qualifying == 0 {
+        all.len()
+    } else {
+        qualifying
+    };
+    let shown = pool.min(CONTRIB_COLLAPSED_ROWS);
+    (&all[..shown], all.len() - shown)
 }
 
 impl GitView {
@@ -236,6 +288,9 @@ impl GitView {
             open_issue: None,
             issue_detail: Load::Idle,
             list_area: Rect::new(0, 0, 0, 0),
+            contributors_expanded: false,
+            show_emails: false,
+            contributors_more_rect: None,
         }
     }
 
@@ -333,4 +388,68 @@ pub fn filtered_issues<'a>(v: &'a [Issue], filter: &'a str) -> impl Iterator<Ite
             || i.author.to_lowercase().contains(&f)
             || i.labels.iter().any(|l| l.to_lowercase().contains(&f))
     })
+}
+
+#[cfg(test)]
+mod contributor_tests {
+    use super::*;
+
+    fn c(name: &str, commits: u32) -> Contributor {
+        Contributor {
+            name: name.into(),
+            email: format!("{name}@x.com"),
+            commits,
+        }
+    }
+
+    /// Collapsed hides drive-by authors so a big repo's list shows the people who
+    /// actually shape it; expanding reveals everyone, so nobody is permanently
+    /// hidden (the two halves of the contributor-privacy/visibility feature).
+    #[test]
+    fn collapsed_hides_small_contributors_and_expanding_reveals_all() {
+        // Descending by commits, as `git shortlog -s -n` emits.
+        let all: Vec<Contributor> = vec![
+            c("ada", 500),
+            c("bob", 40),
+            c("cy", 10),
+            c("dee", 9),
+            c("eve", 1),
+        ];
+
+        let (shown, hidden) = visible_contributors(&all, false);
+        assert_eq!(
+            shown.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            ["ada", "bob", "cy"],
+            "10+ commits kept; 9 and 1 hidden"
+        );
+        assert_eq!(hidden, 2, "the two under-10 authors are counted as hidden");
+
+        let (shown, hidden) = visible_contributors(&all, true);
+        assert_eq!(
+            shown.len(),
+            5,
+            "expanding shows everyone, including under 10"
+        );
+        assert_eq!(hidden, 0);
+    }
+
+    /// A young repo where nobody has 10 commits must not render an empty
+    /// Contributors section — the floor is dropped rather than hiding all.
+    #[test]
+    fn collapsed_never_empties_a_young_repo() {
+        let all = vec![c("ada", 9), c("bob", 3), c("cy", 1)];
+        let (shown, hidden) = visible_contributors(&all, false);
+        assert_eq!(shown.len(), 3, "all shown when nobody clears the bar");
+        assert_eq!(hidden, 0);
+    }
+
+    /// Collapsed caps its rows even when many authors clear the bar; the rest
+    /// stay reachable through "show more".
+    #[test]
+    fn collapsed_caps_rows_and_reports_the_remainder() {
+        let all: Vec<Contributor> = (0..50).map(|i| c(&format!("a{i}"), 100 - i)).collect();
+        let (shown, hidden) = visible_contributors(&all, false);
+        assert_eq!(shown.len(), CONTRIB_COLLAPSED_ROWS);
+        assert_eq!(hidden, 50 - CONTRIB_COLLAPSED_ROWS);
+    }
 }

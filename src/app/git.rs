@@ -523,6 +523,28 @@ impl App {
         }
     }
 
+    /// `x`: show/hide contributor emails in the Status view. Hidden by default —
+    /// the list answers "who builds this", not "how do I mail them", and the
+    /// reclaimed width goes to the name column.
+    pub fn git_toggle_emails(&mut self) {
+        if let Some(g) = self.active_git_mut() {
+            if g.section == Section::Status {
+                g.show_emails = !g.show_emails;
+            }
+        }
+    }
+
+    /// Expand/collapse the Status view's contributor list (`E`, or a click on its
+    /// "show more" row). Collapsed hides authors under `CONTRIB_MIN_COMMITS`;
+    /// expanded shows everyone, so nobody is permanently hidden.
+    pub fn git_toggle_contributors(&mut self) {
+        if let Some(g) = self.active_git_mut() {
+            if g.section == Section::Status {
+                g.contributors_expanded = !g.contributors_expanded;
+            }
+        }
+    }
+
     /// `m`: toggle PR/issue scope (this repo ↔ my work) and re-fetch (GIT-5).
     fn git_toggle_scope(&mut self) {
         if let Some(g) = self.active_git_mut() {
@@ -601,6 +623,10 @@ impl App {
             KeyCode::Char('o') => self.git_open_web(),
             KeyCode::Char('d') => self.git_diff(),
             KeyCode::Char('m') => self.git_toggle_scope(),
+            // Status view: `x` reveals contributor emails (hidden by default),
+            // `E` expands the contributor list to every author.
+            KeyCode::Char('x') => self.git_toggle_emails(),
+            KeyCode::Char('E') => self.git_toggle_contributors(),
             // `s` cycles the open/closed/all filter (PRs + Issues).
             KeyCode::Char('s') => self.git_toggle_state(),
             KeyCode::Char('c') => self.git_run_in_pane("gh pr create".to_string()),
@@ -1224,6 +1250,121 @@ mod tests {
         assert_eq!(app.active_git().unwrap().section, Section::Flow);
         app.git_click_section(Section::Prs);
         assert_eq!(app.active_git().unwrap().section, Section::Prs);
+    }
+
+    /// End-to-end through the real render + input path: contributor emails are
+    /// hidden by default (privacy) and `x` reveals them; the collapsed list hides
+    /// authors under 10 commits behind a clickable "show more" row that reveals
+    /// everyone.
+    #[test]
+    fn contributor_list_hides_emails_and_expands_on_click() {
+        use crate::git::model::{Contributor, RepoInfo, RepoStatus};
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut view = GitView::new(std::path::PathBuf::from("/tmp"));
+        view.status = Load::Loaded(RepoStatus::default());
+        view.info = Load::Loaded(RepoInfo {
+            remote_url: None,
+            slug: None,
+            host: None,
+            total_commits: 600,
+            age: None,
+            contributors: vec![
+                Contributor {
+                    name: "ada".into(),
+                    email: "ada@inbox.test".into(),
+                    commits: 500,
+                },
+                // Under the 10-commit floor: hidden until the list is expanded.
+                Contributor {
+                    name: "driveby".into(),
+                    email: "driveby@inbox.test".into(),
+                    commits: 2,
+                },
+            ],
+        });
+        view.section = Section::Status;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(170, 24, tx).unwrap();
+        let placeholder = PaneId::alloc();
+        app.workspaces[0].tabs.push(Tab {
+            layout: TileLayout::new(placeholder),
+            git: Some(Box::new(view)),
+            orch: false,
+            name: None,
+        });
+        app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
+
+        let mut term = Terminal::new(TestBackend::new(170, 24)).unwrap();
+        let screen = |app: &mut App, term: &mut Terminal<TestBackend>| -> String {
+            term.draw(|f| crate::ui::render(f, app)).unwrap();
+            let buf = term.backend().buffer();
+            (0..buf.area.height)
+                .map(|r| {
+                    (0..buf.area.width)
+                        .map(|c| buf.cell((c, r)).map(|x| x.symbol()).unwrap_or(" "))
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+
+        // Default: the contributor is listed, their email is not, and the
+        // under-10 author is behind a "show more" affordance.
+        let s = screen(&mut app, &mut term);
+        assert!(s.contains("ada"), "the contributor is listed:\n{s}");
+        assert!(
+            !s.contains("inbox.test"),
+            "emails are hidden by default:\n{s}"
+        );
+        assert!(!s.contains("driveby"), "under-10 author hidden:\n{s}");
+        assert!(
+            s.contains("+1"),
+            "a show-more row offers the hidden author:\n{s}"
+        );
+
+        // Clicking that row expands the list to every author, including under-10.
+        let more = app
+            .active_git()
+            .unwrap()
+            .contributors_more_rect
+            .expect("the show-more row is on screen");
+        app.handle_event(crate::event::AppEvent::Mouse(
+            ratatui::crossterm::event::MouseEvent {
+                kind: ratatui::crossterm::event::MouseEventKind::Down(
+                    ratatui::crossterm::event::MouseButton::Left,
+                ),
+                column: more.x + 3,
+                row: more.y,
+                modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+            },
+        ));
+        let s = screen(&mut app, &mut term);
+        assert!(
+            s.contains("driveby"),
+            "expanding reveals the under-10 author:\n{s}"
+        );
+        assert!(
+            !s.contains("inbox.test"),
+            "expanding still does not leak emails:\n{s}"
+        );
+
+        // `x` reveals emails on demand — sent as a real key press, so the binding
+        // itself is covered (it is intentionally absent from the hint line).
+        app.handle_event(crate::event::AppEvent::Key(
+            ratatui::crossterm::event::KeyEvent::new(
+                ratatui::crossterm::event::KeyCode::Char('x'),
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            ),
+        ));
+        let s = screen(&mut app, &mut term);
+        assert!(s.contains("ada@inbox.test"), "`x` reveals emails:\n{s}");
+        // …and the hint line still does not advertise it.
+        assert!(
+            !s.contains("email"),
+            "the footer must not mention the email toggle:\n{s}"
+        );
     }
 
     #[test]

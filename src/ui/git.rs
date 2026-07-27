@@ -64,6 +64,9 @@ pub(super) fn render(
     );
     // Record the list body so a mouse click can map to a commit row (docs/17).
     g.list_area = body;
+    // Only the Status view re-sets this; clear it so a rect from a previous frame
+    // can't stay clickable after switching section or opening a detail view.
+    g.contributors_more_rect = None;
     // The PR detail panel (GIT-6) overlays the section body when open; it scrolls
     // as a block like Flow/Status.
     if g.open_pr.is_some() {
@@ -88,7 +91,11 @@ pub(super) fn render(
         Section::Prs => draw_prs(f, body, g, cat, t),
         Section::Issues => draw_issues(f, body, g, cat, t),
         Section::Branches => draw_branches(f, body, g, cat, t),
-        Section::Status => g.scroll = draw_status(f, body, g, cat, t),
+        Section::Status => {
+            let (scroll, more) = draw_status(f, body, g, cat, t);
+            g.scroll = scroll;
+            g.contributors_more_rect = more;
+        }
     }
     tab_rects
 }
@@ -866,9 +873,17 @@ fn draw_footer(f: &mut RenderTarget, area: Rect, g: &GitView, cat: &Catalog, t: 
             ("r", cat.act_refresh),
             ("q", cat.act_close),
         ],
-        Section::Flow | Section::Status => vec![
+        Section::Flow => vec![
             ("j/k", cat.act_scroll),
             ("click", cat.act_tab),
+            ("r", cat.act_refresh),
+            ("q", cat.act_close),
+        ],
+        // Status owns the contributor list, so it advertises the expand toggle.
+        // The `x` email toggle is deliberately left off this line.
+        Section::Status => vec![
+            ("j/k", cat.act_scroll),
+            ("E", cat.st_show_more),
             ("r", cat.act_refresh),
             ("q", cat.act_close),
         ],
@@ -952,20 +967,30 @@ fn draw_commits(f: &mut RenderTarget, area: Rect, g: &GitView, cat: &Catalog, t:
     draw_list(f, area, rows, g.cursor, cat, t);
 }
 
-fn draw_status(f: &mut RenderTarget, area: Rect, g: &GitView, cat: &Catalog, t: &Theme) -> usize {
+/// Returns the clamped scroll offset and, when it is on screen, the rect of the
+/// contributors "show more / show less" row so a click can toggle it.
+fn draw_status(
+    f: &mut RenderTarget,
+    area: Rect,
+    g: &GitView,
+    cat: &Catalog,
+    t: &Theme,
+) -> (usize, Option<Rect>) {
     let s = match &g.status {
         Load::Loading => {
             message(f, area, cat.git_loading_status, t.overlay0);
-            return 0;
+            return (0, None);
         }
         Load::Error(e) => {
             message(f, area, &format!("{}: {e}", cat.git_error), t.coral);
-            return 0;
+            return (0, None);
         }
         Load::Loaded(s) => s,
-        Load::Idle => return 0,
+        Load::Idle => return (0, None),
     };
     let mut rows: Vec<Line> = Vec::new();
+    // Index of the contributors "show more / show less" row, if it was drawn.
+    let mut more_row: Option<usize> = None;
     let header = |rows: &mut Vec<Line>, title: String| {
         rows.push(Line::from(Span::styled(
             title,
@@ -1021,22 +1046,43 @@ fn draw_status(f: &mut RenderTarget, area: Rect, g: &GitView, cat: &Catalog, t: 
                     .map(|c| c.commits)
                     .unwrap_or(1)
                     .max(1);
-                for c in info.contributors.iter().take(15) {
+                let (shown, hidden) =
+                    crate::git::visible_contributors(&info.contributors, g.contributors_expanded);
+                // Emails are hidden by default (privacy — the list is about who
+                // contributes, not how to mail them); `x` reveals them. With them
+                // hidden the name gets that width back, so long handles stay whole.
+                let name_w = if g.show_emails { 18 } else { 34 };
+                for c in shown {
                     let bar = (c.commits as usize * 12 / top as usize).max(1);
-                    rows.push(Line::from(vec![
-                        Span::styled(format!("   {}", pad(&c.name, 18)), Style::new().fg(t.text)),
+                    let mut spans = vec![
+                        Span::styled(
+                            format!("   {}", pad(&c.name, name_w)),
+                            Style::new().fg(t.text),
+                        ),
                         Span::styled(format!("{:>4}  ", c.commits), Style::new().fg(t.accent)),
                         Span::styled("█".repeat(bar), Style::new().fg(t.green)),
-                        Span::styled(
+                    ];
+                    if g.show_emails {
+                        spans.push(Span::styled(
                             format!("  {}", trunc(&c.email, 26)),
                             Style::new().fg(t.overlay0),
-                        ),
-                    ]));
+                        ));
+                    }
+                    rows.push(Line::from(spans));
                 }
-                if info.contributors.len() > 15 {
+                // The show more / show less row is clickable — remember which row
+                // it is so the render loop below can map it to a screen rect.
+                if hidden > 0 {
+                    more_row = Some(rows.len());
                     rows.push(Line::from(Span::styled(
-                        format!("   … +{} more", info.contributors.len() - 15),
-                        Style::new().fg(t.overlay0),
+                        format!("   ↓ +{hidden}  {}", cat.st_show_more),
+                        Style::new().fg(t.accent),
+                    )));
+                } else if g.contributors_expanded && info.contributors.len() > 1 {
+                    more_row = Some(rows.len());
+                    rows.push(Line::from(Span::styled(
+                        format!("   ↑  {}", cat.st_show_less),
+                        Style::new().fg(t.accent),
                     )));
                 }
                 rows.push(Line::from(""));
@@ -1100,7 +1146,12 @@ fn draw_status(f: &mut RenderTarget, area: Rect, g: &GitView, cat: &Catalog, t: 
     for (y, line) in (area.y..).zip(rows.into_iter().skip(scroll).take(avail)) {
         f.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
     }
-    scroll
+    // Map the toggle row to a screen rect, but only while it is actually visible
+    // in this frame's scroll window — a stale rect would fire from empty space.
+    let more_rect = more_row
+        .filter(|i| *i >= scroll && *i < scroll + avail)
+        .map(|i| Rect::new(area.x, area.y + (i - scroll) as u16, area.width, 1));
+    (scroll, more_rect)
 }
 
 fn file_line(code: char, path: &str, code_color: Color, t: &Theme) -> Line<'static> {

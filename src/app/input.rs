@@ -772,6 +772,16 @@ impl App {
                 self.git_click_section(s);
                 return;
             }
+            // The Status view's contributors "show more / show less" row toggles
+            // the list between the meaningful-only default and every author.
+            if self
+                .active_git()
+                .and_then(|g| g.contributors_more_rect)
+                .is_some_and(hit)
+            {
+                self.git_toggle_contributors();
+                return;
+            }
             // Clicking a list row opens its detail in-tab (docs/17) — commit `git
             // show`, PR panel, or issue detail. `esc` goes back to the list.
             if let Some(idx) = self.git_list_row_at(m.column, m.row) {
