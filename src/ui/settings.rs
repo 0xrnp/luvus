@@ -100,12 +100,21 @@ pub(super) fn draw_settings(
     let footer_y = inner.bottom().saturating_sub(1);
     hline(f, inner.x, footer_y.saturating_sub(1), inner.width, t);
     let c = app.catalog;
-    let hints: &[(&str, &str)] = if tab == SettingsTab::Keys {
+    // On the Keys tab the rebind/reset hints only apply while the cursor is on a
+    // rebindable command; a reference row (past the command list) just scrolls.
+    let on_command = cursor < crate::app::Cmd::ALL.len();
+    let hints: &[(&str, &str)] = if tab == SettingsTab::Keys && on_command {
         &[
             ("↑↓", c.act_move),
             ("⇥", c.act_section),
             ("⏎", c.act_rebind),
             ("⌫", c.act_reset),
+            ("esc", c.act_close),
+        ]
+    } else if tab == SettingsTab::Keys {
+        &[
+            ("↑↓", c.act_move),
+            ("⇥", c.act_section),
             ("esc", c.act_close),
         ]
     } else {
@@ -471,6 +480,16 @@ fn draw_content(
                         );
                         ctls.push((i, r));
                     }
+                    GeneralRow::CheckUpdates => ctls.push(ctl_row(
+                        f,
+                        area,
+                        y,
+                        i,
+                        cursor,
+                        cat.set_check_updates,
+                        toggle(app.config.check_updates, t),
+                        t,
+                    )),
                     GeneralRow::SoundDone => ctls.push(ctl_row(
                         f,
                         area,
@@ -535,65 +554,168 @@ fn draw_content(
             }
         }
         SettingsTab::Keys => {
-            // Clarify that these are the keys pressed *after* the prefix — the
-            // `Ctrl+Space` chord itself stays fixed (tmux-style).
-            f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled("   These run after the ", Style::new().fg(t.overlay0)),
-                    Span::styled("Ctrl+Space", Style::new().fg(t.accent).bold()),
-                    Span::styled(" prefix.", Style::new().fg(t.overlay0)),
-                ])),
-                Rect::new(area.x, area.y, area.width, 1),
-            );
-            let area = Rect::new(
-                area.x,
-                area.y + 1,
-                area.width,
-                area.height.saturating_sub(1),
-            );
+            // One scrollable list: a how-to intro, the rebindable prefix commands
+            // grouped by section, then read-only reference blocks (fixed keys plus
+            // the git tab / task board / picker / mouse shortcuts). The cursor steps
+            // through commands *and* reference rows — a shared `selectable index` —
+            // so pressing Down eventually reaches every block; notes and headings
+            // scroll along but aren't landed on.
             let capturing = app.settings.as_ref().is_some_and(|u| u.capturing);
             let all = crate::app::Cmd::ALL;
-            let avail = area.height.max(1) as usize;
-            let total = all.len();
-            let scroll = cursor
-                .saturating_sub(avail.saturating_sub(1))
-                .min(total.saturating_sub(avail));
-            for (vi, i) in (scroll..total).take(avail).enumerate() {
-                let cmd = all[i];
-                let row = Rect::new(area.x, area.y + vi as u16, area.width, 1);
-                let sel = i == cursor;
-                if sel {
-                    fill_bg(f, row, t.sel_bg);
+            let dim = |s: &'static str| Span::styled(s, Style::new().fg(t.overlay0));
+            let acc = |s: &'static str| Span::styled(s, Style::new().fg(t.accent).bold());
+
+            enum KV {
+                Note(Vec<Span<'static>>),
+                Heading(&'static str),
+                Blank,
+                // Selectable rows carry their cursor index (`sel`).
+                Command {
+                    sel: usize,
+                    cmd: crate::app::Cmd,
+                },
+                Reference {
+                    sel: usize,
+                    k: &'static str,
+                    d: &'static str,
+                },
+            }
+            // How to use the prefix (the intro block).
+            let mut vis: Vec<KV> = vec![
+                KV::Note(vec![
+                    dim("Press "),
+                    acc("Ctrl+Space"),
+                    dim(", then a key below. Hold or release Ctrl, both work."),
+                ]),
+                KV::Note(vec![
+                    dim("Move with arrows or "),
+                    acc("h j k l"),
+                    dim(".  "),
+                    acc("Ctrl+Space ?"),
+                    dim(" shows the cheat-sheet."),
+                ]),
+                KV::Note(vec![
+                    dim("Select a row, "),
+                    acc("⏎"),
+                    dim(" rebinds it, "),
+                    acc("⌫"),
+                    dim(" resets it, "),
+                    acc("esc"),
+                    dim(" cancels."),
+                ]),
+                KV::Blank,
+            ];
+            // The rebindable commands, grouped by section — selectable 0..ALL.len().
+            let mut section = "";
+            for (i, cmd) in all.iter().enumerate() {
+                let s = cmd.section();
+                if s != section {
+                    if !section.is_empty() {
+                        vis.push(KV::Blank);
+                    }
+                    vis.push(KV::Heading(s));
+                    section = s;
                 }
-                // The command label on the left…
-                f.render_widget(
-                    Paragraph::new(Line::from(vec![
-                        Span::styled(if sel { " ▸ " } else { "   " }, Style::new().fg(t.accent)),
-                        Span::styled(
-                            cmd.label(cat),
-                            Style::new().fg(if sel { t.text } else { t.subtext1 }),
-                        ),
-                    ])),
-                    row,
-                );
-                // …its bound key on the right (accent), or a prompt while capturing.
-                let key = app.key_for(cmd);
-                let (txt, color) = if sel && capturing {
-                    ("press a key…".to_string(), t.coral)
-                } else if key.is_empty() {
-                    ("—".to_string(), t.overlay0) // unbound
-                } else {
-                    (key, t.accent)
-                };
-                f.render_widget(
-                    Paragraph::new(Span::styled(
-                        format!("{txt}  "),
-                        Style::new().fg(color).bold(),
-                    ))
-                    .alignment(Alignment::Right),
-                    row,
-                );
-                ctls.push((i, row));
+                vis.push(KV::Command { sel: i, cmd: *cmd });
+            }
+            // The read-only reference blocks — selectable indices continue past the
+            // commands, so the cursor flows straight from the last command into them.
+            let mut sel = all.len();
+            for (heading, rows) in crate::app::KEY_REFERENCE {
+                vis.push(KV::Blank);
+                vis.push(KV::Heading(heading));
+                for (k, d) in *rows {
+                    vis.push(KV::Reference { sel, k, d });
+                    sel += 1;
+                }
+            }
+
+            let avail = area.height.max(1) as usize;
+            // Find the row the cursor is on (a command or a reference row) and scroll
+            // to keep it visible.
+            let cur_vis = vis
+                .iter()
+                .position(|v| {
+                    matches!(v, KV::Command { sel, .. } | KV::Reference { sel, .. } if *sel == cursor)
+                })
+                .unwrap_or(0);
+            let scroll = cur_vis
+                .saturating_sub(avail.saturating_sub(1))
+                .min(vis.len().saturating_sub(avail));
+            for (row_i, v) in vis.iter().enumerate().skip(scroll).take(avail) {
+                let row = Rect::new(area.x, area.y + (row_i - scroll) as u16, area.width, 1);
+                match v {
+                    KV::Blank => {}
+                    KV::Note(spans) => {
+                        let mut line = vec![Span::raw("   ")];
+                        line.extend(spans.iter().cloned());
+                        f.render_widget(Paragraph::new(Line::from(line)), row);
+                    }
+                    KV::Heading(h) => {
+                        f.render_widget(
+                            Paragraph::new(Span::styled(
+                                format!("  {h}"),
+                                Style::new().fg(t.subtext0).bold(),
+                            )),
+                            row,
+                        );
+                    }
+                    KV::Reference { sel, k, d } => {
+                        if *sel == cursor {
+                            fill_bg(f, row, t.sel_bg);
+                        }
+                        f.render_widget(
+                            Paragraph::new(Line::from(vec![
+                                Span::styled(
+                                    format!("   {k:<13} "),
+                                    Style::new().fg(t.accent).bold(),
+                                ),
+                                Span::styled(*d, Style::new().fg(t.overlay0)),
+                            ])),
+                            row,
+                        );
+                        ctls.push((*sel, row));
+                    }
+                    KV::Command { sel, cmd } => {
+                        let cmd = *cmd;
+                        let is_sel = *sel == cursor;
+                        if is_sel {
+                            fill_bg(f, row, t.sel_bg);
+                        }
+                        // The command label on the left…
+                        f.render_widget(
+                            Paragraph::new(Line::from(vec![
+                                Span::styled(
+                                    if is_sel { " ▸ " } else { "   " },
+                                    Style::new().fg(t.accent),
+                                ),
+                                Span::styled(
+                                    cmd.label(cat),
+                                    Style::new().fg(if is_sel { t.text } else { t.subtext1 }),
+                                ),
+                            ])),
+                            row,
+                        );
+                        // …its bound key on the right, or a prompt while capturing.
+                        let key = app.key_for(cmd);
+                        let (txt, color) = if is_sel && capturing {
+                            ("press a key…".to_string(), t.coral)
+                        } else if key.is_empty() {
+                            ("—".to_string(), t.overlay0) // unbound
+                        } else {
+                            (key, t.accent)
+                        };
+                        f.render_widget(
+                            Paragraph::new(Span::styled(
+                                format!("{txt}  "),
+                                Style::new().fg(color).bold(),
+                            ))
+                            .alignment(Alignment::Right),
+                            row,
+                        );
+                        ctls.push((*sel, row));
+                    }
+                }
             }
         }
         SettingsTab::Modules => {

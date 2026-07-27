@@ -151,10 +151,11 @@ pub(super) fn draw_sidebar(
         Side::Right => draw_right_chrome(f, area, app, t),
     }
 
-    // The dock stack fills the sidebar below the chrome. The body is inset by one
-    // column on the separator side so a dock never paints over the edge rule; the
-    // dock draw fns stay side-agnostic.
-    let body_top = area.y + 3;
+    // The dock stack fills the sidebar below the chrome (a single top row + one
+    // blank separator row). The body is inset by one column on the separator side
+    // so a dock never paints over the edge rule; the dock draw fns stay
+    // side-agnostic.
+    let body_top = area.y + 2;
     let (body_x, body_w) = match side {
         Side::Left => (area.x, area.width),
         Side::Right => (area.x + 1, area.width.saturating_sub(1)),
@@ -195,8 +196,10 @@ pub(super) fn draw_sidebar(
     (ws_rects, agent_rects, session_rects, new_ws_rect)
 }
 
-/// The left sidebar's chrome: the `bohay` wordmark + version, the Menu pill, and
-/// the `«` collapse chevron. Sets `settings_icon_rect` + `sidebar_toggle_rect`.
+/// The left sidebar's chrome, all on the **top row** (`area.y`, aligned with the
+/// tab bar): the `«` collapse chevron at the left edge, then the `bohay` wordmark
+/// and version, then the Menu pill at the right. Sets `settings_icon_rect` and
+/// `sidebar_toggle_rect` (and `version_rect`, the changelog click target).
 fn draw_left_chrome(f: &mut RenderTarget, area: Rect, app: &mut App, t: &Theme) {
     let cat = app.catalog;
     let hover = app.hover;
@@ -206,48 +209,59 @@ fn draw_left_chrome(f: &mut RenderTarget, area: Rect, app: &mut App, t: &Theme) 
     };
     let cx = area.x + 2;
     let cw = area.width.saturating_sub(3);
-    let line_at = |f: &mut RenderTarget, y: u16, line: Line| {
-        if y < area.bottom() {
-            f.buffer_mut().set_line(cx, y, &line, cw);
-        }
-    };
 
-    // Settings/Menu button — a labelled pill at the right of the brand row
-    // (inverts on hover) so it's an obvious, tappable control. Text beats a lone
-    // glyph for discoverability.
-    let menu_label = format!(" {} ", cat.menu);
-    let menu_w = crate::ui::display_width(&menu_label) as u16;
-    let menu = Rect::new(
-        area.right().saturating_sub(menu_w + 1),
-        area.y + 1,
-        menu_w,
-        1,
-    );
-    // The `«` collapse button mirrors the tab-bar's `»` reopen button: a 3-cell
-    // pill at the sidebar's left edge (always visible, inverts on hover), set a
-    // column clear of the "bohay" wordmark so it never crowds the text. Click it
-    // (or ⌃Space b) to hide the sidebar; the `»` brings it back.
-    let toggle = Rect::new(area.x, area.y + 1, 3.min(area.width), 1);
+    // The `«` collapse button sits at the left edge of the top row — the exact
+    // row + column the tab-bar's `»` reopen button uses when the sidebar is
+    // hidden, so toggling it never makes the control jump. Click it (or ⌃Space b)
+    // to hide the sidebar; the `»` brings it back.
+    let toggle = Rect::new(area.x, area.y, 3.min(area.width), 1);
     app.sidebar_toggle_rect = Some(toggle);
-    // Wordmark first (2 leading spaces clear the pill), then the pill drawn on top.
-    let mut brand = vec![Span::styled("  bohay", Style::new().fg(t.text).bold())];
-    if cx + 7 + 6 < menu.x {
-        // `concat!`+`env!` bakes the crate version in at compile time (no per-frame
-        // alloc), so the sidebar always matches the released version.
-        brand.push(Span::styled(
-            concat!("  v", env!("CARGO_PKG_VERSION")),
-            Style::new().fg(t.overlay0),
-        ));
-    }
-    line_at(f, area.y + 1, Line::from(brand));
     let chev_style = if over(toggle) {
         Style::new().fg(t.crust).bg(t.accent).bold()
     } else {
         Style::new().fg(t.accent).bg(t.surface0).bold()
     };
     f.render_widget(Paragraph::new(Span::styled(" « ", chev_style)), toggle);
-    let menu_hover = over(menu);
-    let (fg, bg) = if menu_hover {
+
+    // Settings/Menu button — a labelled pill at the right of the top row (inverts
+    // on hover) so it's an obvious, tappable control. Text beats a lone glyph for
+    // discoverability.
+    let menu_label = format!(" {} ", cat.menu);
+    let menu_w = crate::ui::display_width(&menu_label) as u16;
+    let menu = Rect::new(area.right().saturating_sub(menu_w + 1), area.y, menu_w, 1);
+
+    // The wordmark (two leading spaces clear the chevron pill), plus the version
+    // in a muted tone when it fits before the Menu pill. `concat!`+`env!` bakes
+    // the crate version in at compile time (no per-frame alloc), so the sidebar
+    // always matches the build. The version is a click target that opens the
+    // changelog modal; it brightens on hover to signal that. When the background
+    // update check finds a newer release, a `●` dot follows it.
+    let mut brand = vec![Span::styled("  bohay", Style::new().fg(t.text).bold())];
+    let ver = concat!("  v", env!("CARGO_PKG_VERSION"));
+    let ver_w = crate::ui::display_width(ver) as u16;
+    let dot = " ●";
+    let dot_w = if app.update_available.is_some() {
+        crate::ui::display_width(dot) as u16
+    } else {
+        0
+    };
+    app.version_rect = None;
+    if cx + 7 + ver_w <= menu.x {
+        // 7 = display width of "  bohay"; the version follows it on the same row.
+        let base = Rect::new(cx + 7, area.y, ver_w, 1);
+        let vfg = if over(base) { t.accent } else { t.overlay0 };
+        brand.push(Span::styled(ver, Style::new().fg(vfg)));
+        let mut click_w = ver_w;
+        if dot_w > 0 && cx + 7 + ver_w + dot_w <= menu.x {
+            brand.push(Span::styled(dot, Style::new().fg(t.accent).bold()));
+            click_w += dot_w;
+        }
+        app.version_rect = Some(Rect::new(cx + 7, area.y, click_w, 1));
+    }
+    f.buffer_mut().set_line(cx, area.y, &Line::from(brand), cw);
+
+    // Menu drawn after the wordmark so the pill always sits on top.
+    let (fg, bg) = if over(menu) {
         (t.crust, t.accent)
     } else {
         (t.accent, t.surface1)
@@ -266,12 +280,10 @@ fn draw_right_chrome(f: &mut RenderTarget, area: Rect, app: &mut App, t: &Theme)
     let over = |rc: Rect| {
         hover.is_some_and(|(c, r)| c >= rc.x && c < rc.right() && r >= rc.y && r < rc.bottom())
     };
-    let toggle = Rect::new(
-        area.right().saturating_sub(3),
-        area.y + 1,
-        3.min(area.width),
-        1,
-    );
+    // The `»` collapse sits on the top row (aligned with the tab bar) at the
+    // right edge — the row + column the tab-bar's `«` reopen uses when the right
+    // sidebar is hidden, so toggling never makes the control jump.
+    let toggle = Rect::new(area.right().saturating_sub(3), area.y, 3.min(area.width), 1);
     app.right_sidebar_toggle_rect = Some(toggle);
     let style = if over(toggle) {
         Style::new().fg(t.crust).bg(t.accent).bold()
@@ -281,12 +293,12 @@ fn draw_right_chrome(f: &mut RenderTarget, area: Rect, app: &mut App, t: &Theme)
     f.render_widget(Paragraph::new(Span::styled(" » ", style)), toggle);
 
     // If the left sidebar (which normally owns the Menu button) isn't shown,
-    // surface Menu here so Settings is never stranded (docs/29). Placed at the
-    // top-left, clear of the `»` collapse chevron on the right.
+    // surface Menu here so Settings is never stranded (docs/29). Placed on the
+    // top row at the left, clear of the `»` collapse chevron on the right.
     if !app.sidebars.left.shown() {
         let label = format!(" {} ", app.catalog.menu);
         let w = crate::ui::display_width(&label) as u16;
-        let menu = Rect::new(area.x + 2, area.y + 1, w.min(area.width), 1);
+        let menu = Rect::new(area.x + 2, area.y, w.min(area.width), 1);
         if menu.right() <= toggle.x {
             let (fg, bg) = if over(menu) {
                 (t.crust, t.accent)

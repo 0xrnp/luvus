@@ -4,6 +4,7 @@
 
 mod agent;
 mod app;
+mod changelog;
 mod cli;
 mod config;
 mod detect;
@@ -21,6 +22,7 @@ mod persist;
 mod platform;
 mod terminal;
 mod ui;
+mod update;
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
@@ -641,6 +643,11 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
     ipc::api::start_server(sock, api_tx, app.events.clone());
     app.run_module_startup_hooks(); // docs/13 §3.7 — same point as the server role
 
+    // Background "update available" check (off if the user disabled it).
+    if app.config.check_updates {
+        update::spawn_check(tx.clone());
+    }
+
     terminal.draw(|f| ui::render(f, &mut app))?;
     let mut last_draw = Instant::now();
     let mut last_save = Instant::now();
@@ -937,6 +944,56 @@ mod tests {
         assert!(text.contains("NORMAL"), "status mode missing");
     }
 
+    /// Clicking the sidebar version number opens the changelog modal, which shows
+    /// the embedded release notes; esc closes it.
+    #[test]
+    fn clicking_version_opens_the_changelog() {
+        use ratatui::crossterm::event::{
+            KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        let _env = crate::persist::test_env("changelog-click");
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let mut app = App::new(80, 24, tx).expect("spawn pane");
+        thread::sleep(Duration::from_millis(100));
+
+        let (w, h) = (110u16, 34u16);
+        let render = |app: &mut App| -> String {
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| ui::render(f, app)).unwrap();
+            term.backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect()
+        };
+
+        // The version number is a click target once the sidebar renders.
+        render(&mut app);
+        let vr = app.version_rect.expect("version number is clickable");
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: vr.x + 1,
+            row: vr.y,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert!(
+            app.changelog_open,
+            "clicking the version opened the changelog"
+        );
+
+        let text = render(&mut app);
+        assert!(text.contains("Changelog"), "modal title shows");
+        assert!(text.contains("Added"), "release-note content shows");
+
+        // esc closes it.
+        app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        )));
+        assert!(!app.changelog_open, "esc closed the changelog");
+    }
+
     /// The bottom-left status button shows/hides the sidebar; hiding it also
     /// clears the sidebar's stale click geometry so the old Menu spot can't fire.
     #[test]
@@ -965,13 +1022,16 @@ mod tests {
             }));
         };
 
-        // Starts visible: header shows, and the brand `«` chevron (top-left of
-        // the sidebar) is the collapse toggle.
+        // Starts visible: header shows, and the `«` chevron (top-left of the
+        // sidebar, on the tab-bar row) is the collapse toggle.
         let text = render(&mut app);
         assert!(text.contains("WORKSPACES"), "sidebar should start visible");
         assert!(text.contains('«'), "brand collapse chevron shows");
         let btn = app.sidebar_toggle_rect.expect("toggle placed");
-        assert_eq!(btn.y, 1, "toggle sits on the brand row");
+        assert_eq!(
+            btn.y, 0,
+            "toggle sits on the top row, aligned with the tab bar"
+        );
         assert!(btn.x < 4, "toggle near the top-left");
         assert!(app.settings_icon_rect.is_some(), "menu present while shown");
 
@@ -1404,6 +1464,105 @@ mod tests {
             buf[(x + 2, y)].symbol(),
             "A",
             "the text after the emoji is not shifted"
+        );
+    }
+
+    /// The Settings → Keys tab shows the how-to intro and the rebindable command
+    /// list at the top, and the cursor steps through the commands *and* the
+    /// read-only reference blocks, so holding Down eventually reveals every one
+    /// (the last is the Mouse block) on a short modal.
+    #[test]
+    fn keys_tab_shows_help_and_scrolls_to_the_reference() {
+        use ratatui::buffer::Buffer;
+        use ratatui::crossterm::event::{
+            KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind,
+        };
+        use ratatui::layout::Rect;
+        let _env = crate::persist::test_env("keys-tab");
+
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        // A short viewport so the tab must scroll to reveal the reference block.
+        let mut app = App::new(80, 22, tx).expect("spawn pane");
+
+        let screen = |app: &mut App| -> String {
+            let area = Rect::new(0, 0, 80, 22);
+            let mut buf = Buffer::empty(area);
+            {
+                let mut target = ui::RenderTarget::new(&mut buf, area);
+                ui::render_into(&mut target, app);
+            }
+            let mut s = String::new();
+            for y in 0..area.height {
+                for x in 0..area.width {
+                    s.push_str(buf[(x, y)].symbol());
+                }
+                s.push('\n');
+            }
+            s
+        };
+
+        app.open_settings();
+        // Switch to the Keys tab (General·Theme·Layout·Keys → the '4' digit).
+        app.handle_settings_key(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::NONE));
+
+        let top = screen(&mut app);
+        assert!(
+            top.contains("Ctrl+Space") && top.contains("cheat-sheet"),
+            "the how-to intro is visible at the top:\n{top}"
+        );
+        assert!(
+            !top.contains("not rebindable"),
+            "the always-on reference is below the fold before scrolling:\n{top}"
+        );
+
+        // Midway: the cursor reaches the first reference block (the fixed keys).
+        for _ in 0..crate::app::Cmd::ALL.len() {
+            app.handle_settings_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let mid = screen(&mut app);
+        assert!(
+            mid.contains("not rebindable") && mid.contains("focus panes"),
+            "the always-on reference is reachable by cursor:\n{mid}"
+        );
+
+        // All the way down: Down keeps stepping through every reference row until
+        // the last block (Mouse) is on screen — nothing is unreachable.
+        for _ in 0..app.settings_rows(crate::app::SettingsTab::Keys) {
+            app.handle_settings_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        }
+        let bottom = screen(&mut app);
+        assert!(
+            bottom.contains("Mouse") && bottom.contains("right-click"),
+            "the last reference block (Mouse) is reachable:\n{bottom}"
+        );
+        // Copy & paste is its own labeled section (just above Mouse), so a user
+        // looking for it finds it — scroll up a little from the bottom.
+        for _ in 0..8 {
+            app.handle_settings_key(KeyEvent::new(KeyCode::Up, KeyModifiers::NONE));
+        }
+        assert!(
+            screen(&mut app).contains("Copy & paste"),
+            "there is a Copy & paste reference block"
+        );
+
+        // The mouse wheel scrolls the list (moves the selection) without the arrows.
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 40,
+            row: 12,
+            modifiers: KeyModifiers::NONE,
+        }));
+        let after_up = app.settings.as_ref().map(|u| u.cursor).unwrap();
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 40,
+            row: 12,
+            modifiers: KeyModifiers::NONE,
+        }));
+        let after_down = app.settings.as_ref().map(|u| u.cursor).unwrap();
+        assert!(
+            after_down > after_up,
+            "wheel down moves the selection further than wheel up ({after_up} -> {after_down})"
         );
     }
 

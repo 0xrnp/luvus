@@ -1,0 +1,116 @@
+//! Embeds every `changelog/*.md` release note into the binary at compile time,
+//! so the in-app changelog modal (click the sidebar version number) works no
+//! matter where bohay is installed — the raw files are not shipped to a running
+//! host. Emits `$OUT_DIR/changelog_gen.rs` with a `CHANGELOG` slice of
+//! `(version, date, body)`, newest release first. Front matter (`version` /
+//! `date`) is parsed out; the body is the prose below it.
+
+use std::env;
+use std::fs;
+use std::path::PathBuf;
+
+fn main() {
+    println!("cargo:rerun-if-changed=changelog");
+
+    let dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap()).join("changelog");
+    let out = PathBuf::from(env::var("OUT_DIR").unwrap()).join("changelog_gen.rs");
+
+    let mut entries: Vec<(Version, String, String, String)> = Vec::new();
+    if let Ok(rd) = fs::read_dir(&dir) {
+        for e in rd.flatten() {
+            let path = e.path();
+            if path.extension().and_then(|s| s.to_str()) != Some("md") {
+                continue;
+            }
+            let Ok(text) = fs::read_to_string(&path) else {
+                continue;
+            };
+            let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+            let (version, date, body) = parse(&text, stem);
+            entries.push((parse_version(&version), version, date, body));
+        }
+    }
+    // Newest release first.
+    entries.sort_by_key(|e| std::cmp::Reverse(e.0));
+
+    let mut src = String::from("pub static CHANGELOG: &[(&str, &str, &str)] = &[\n");
+    for (_, version, date, body) in &entries {
+        src.push_str(&format!("    ({version:?}, {date:?}, {body:?}),\n"));
+    }
+    src.push_str("];\n");
+    fs::write(&out, src).expect("write changelog_gen.rs");
+}
+
+/// Split a note into `(version, date, body)`. Front matter is an optional
+/// leading `---` … `---` block of `key: value` lines; the body is everything
+/// after it (trimmed). Falls back to the filename for the version.
+fn parse(text: &str, stem: &str) -> (String, String, String) {
+    let mut version = stem.to_string();
+    let mut date = String::new();
+    let body;
+
+    if let Some(rest) = text.strip_prefix("---\n") {
+        if let Some(end) = rest.find("\n---") {
+            let front = &rest[..end];
+            for line in front.lines() {
+                if let Some(v) = line.strip_prefix("version:") {
+                    version = v.trim().to_string();
+                } else if let Some(d) = line.strip_prefix("date:") {
+                    date = d.trim().to_string();
+                }
+            }
+            // Skip past the closing `---` line to the body.
+            let after = &rest[end + 4..];
+            body = clean_body(after.trim_start_matches('\n'));
+            return (version, date, body);
+        }
+    }
+    body = clean_body(text);
+    (version, date, body)
+}
+
+/// Trim the note body for the in-app modal (docs): the modal shows the changelog
+/// itself, not credits, so drop the `Contributors` section and the trailing bare
+/// `Full Changelog` compare link. The website reads the raw files separately, so
+/// it still shows both.
+fn clean_body(body: &str) -> String {
+    let mut out: Vec<&str> = Vec::new();
+    let mut skipping = false;
+    for line in body.lines() {
+        let t = line.trim_start();
+        if let Some(h) = t.strip_prefix('#') {
+            // A heading ends any skipped section and may start a new one.
+            skipping = h
+                .trim_start_matches('#')
+                .trim()
+                .to_lowercase()
+                .contains("contributor");
+            if skipping {
+                continue;
+            }
+        }
+        if skipping {
+            continue;
+        }
+        if t.to_lowercase().starts_with("**full changelog")
+            || t.to_lowercase().starts_with("full changelog")
+        {
+            continue;
+        }
+        out.push(line);
+    }
+    out.join("\n").trim_end().to_string()
+}
+
+/// A comparable `(major, minor, patch)`, tolerant of a leading `v`.
+type Version = (u32, u32, u32);
+
+fn parse_version(s: &str) -> Version {
+    let s = s.trim().trim_start_matches('v');
+    let mut it = s.split('.').map(|p| p.trim().parse::<u32>().unwrap_or(0));
+    (
+        it.next().unwrap_or(0),
+        it.next().unwrap_or(0),
+        it.next().unwrap_or(0),
+    )
+}

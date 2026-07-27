@@ -54,6 +54,7 @@ impl<'a> RenderTarget<'a> {
 
 mod board;
 mod borders;
+mod changelog;
 mod cmdinfo;
 mod files;
 mod git;
@@ -185,6 +186,7 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
     app.settings_icon_rect = None;
     app.sidebar_toggle_rect = None;
     app.right_sidebar_toggle_rect = None;
+    app.version_rect = None;
     app.workspaces_area = Rect::ZERO;
     app.agents_area = Rect::ZERO;
     app.agents_filter_rects.clear();
@@ -321,6 +323,13 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
     // The keyboard cheat-sheet overlay draws on top of everything.
     if app.help_open {
         help::draw_help(f, area, app, &t);
+    }
+    // The changelog modal (click the version number) draws on top too. Clear its
+    // close-button geometry when shut so a stale rect can't fire.
+    if app.changelog_open {
+        changelog::draw_changelog(f, area, app, &t);
+    } else {
+        app.changelog_close_rect = None;
     }
     // The running-command overlay (click a pane title) draws above that.
     if let Some(c) = app.cmd_inspect.as_ref() {

@@ -47,6 +47,11 @@ pub fn run() -> Result<()> {
     // repaints the docks it owns (docs/13 §3.7).
     app.run_module_startup_hooks();
 
+    // Background "update available" check (off if the user disabled it).
+    if app.config.check_updates {
+        crate::update::spawn_check(tx.clone());
+    }
+
     let mut clients: Clients = HashMap::new();
     let mut foreground: Option<u64> = None;
     let mut size = DEFAULT_SIZE;

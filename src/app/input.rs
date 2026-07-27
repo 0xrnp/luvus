@@ -101,6 +101,11 @@ impl App {
                 self.task_gate_finished(&task, code, out);
                 true
             }
+            AppEvent::UpdateAvailable(version) => {
+                let changed = self.update_available.as_deref() != Some(version.as_str());
+                self.update_available = Some(version);
+                changed // repaint to show the dot only if it's news
+            }
             // Handled by the server loop; never reaches here at runtime.
             AppEvent::ClientConnected { .. } | AppEvent::ClientDetach { .. } => false,
         }
@@ -170,6 +175,21 @@ impl App {
             }
             return;
         }
+        // The changelog modal owns the mouse: the wheel scrolls it, a left click
+        // dismisses it (there is nothing to click inside but the ✕).
+        if self.changelog_open {
+            match m.kind {
+                MouseEventKind::ScrollUp => {
+                    self.changelog_scroll = self.changelog_scroll.saturating_sub(2)
+                }
+                MouseEventKind::ScrollDown => {
+                    self.changelog_scroll = self.changelog_scroll.saturating_add(2)
+                }
+                MouseEventKind::Down(MouseButton::Left) => self.changelog_open = false,
+                _ => {}
+            }
+            return;
+        }
         // The running-command overlay owns the mouse while open.
         if self.cmd_inspect.is_some() {
             match m.kind {
@@ -197,10 +217,17 @@ impl App {
             return;
         }
         // While the Settings modal is open it owns the mouse: clicks hit the
-        // modal (or dismiss it); everything else is swallowed.
+        // modal (or dismiss it), and the wheel scrolls the current tab's list by
+        // moving the selection (which drives the scroll) — so a long list like the
+        // Keys reference doesn't need the arrow keys held down.
         if self.settings.is_some() {
-            if let MouseEventKind::Down(MouseButton::Left) = m.kind {
-                self.handle_settings_click(m.column, m.row);
+            match m.kind {
+                MouseEventKind::Down(MouseButton::Left) => {
+                    self.handle_settings_click(m.column, m.row)
+                }
+                MouseEventKind::ScrollUp => self.settings_scroll(-1),
+                MouseEventKind::ScrollDown => self.settings_scroll(1),
+                _ => {}
             }
             return;
         }
@@ -584,6 +611,11 @@ impl App {
         // The sidebar gear opens Settings.
         if self.settings_icon_rect.is_some_and(hit) {
             self.open_settings();
+            return;
+        }
+        // The version number opens the changelog modal.
+        if self.version_rect.is_some_and(hit) {
+            self.open_changelog();
             return;
         }
         // The `«`/`»` chevrons show/hide their sidebar — same as ⌃Space b (left)
@@ -1120,6 +1152,26 @@ impl App {
         // The help cheat-sheet overlay swallows the next key press and closes.
         if self.help_open {
             self.help_open = false;
+            return true;
+        }
+        // The changelog modal captures keys: scroll with the arrows / j/k / page
+        // keys, dismiss with esc / q / Enter.
+        if self.changelog_open {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q') | KeyCode::Enter => self.changelog_open = false,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.changelog_scroll = self.changelog_scroll.saturating_add(1)
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.changelog_scroll = self.changelog_scroll.saturating_sub(1)
+                }
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    self.changelog_scroll = self.changelog_scroll.saturating_add(10)
+                }
+                KeyCode::PageUp => self.changelog_scroll = self.changelog_scroll.saturating_sub(10),
+                KeyCode::Home | KeyCode::Char('g') => self.changelog_scroll = 0,
+                _ => {}
+            }
             return true;
         }
         // A module-setting prompt sits *inside* the Settings modal, so it must

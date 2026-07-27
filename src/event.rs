@@ -69,4 +69,7 @@ pub enum AppEvent {
         code: Option<i32>,
         out: String,
     },
+    /// The background update check found a newer release than this build (the
+    /// version string, e.g. `"0.9.3"`). Shows the indicator by the version number.
+    UpdateAvailable(String),
 }

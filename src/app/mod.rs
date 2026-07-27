@@ -34,7 +34,7 @@ mod picker;
 mod settings;
 mod switcher;
 
-pub use keys::Cmd;
+pub use keys::{key_reference_rows, Cmd, KEY_REFERENCE};
 pub use modules::ModuleMenuAction;
 pub use picker::{FolderPicker, Row};
 pub use settings::{GeneralRow, LayoutRow, ModuleRow, SettingsTab, SettingsUi};
@@ -738,6 +738,15 @@ pub struct App {
     pub picker_rects: Vec<(usize, Rect)>,
     /// Whether the keyboard-shortcut cheat-sheet overlay is open (`Ctrl+Space ?`).
     pub help_open: bool,
+    /// Whether the changelog modal is open (click the sidebar version number).
+    /// Shows every shipped release's notes; captures input while open.
+    pub changelog_open: bool,
+    /// Scroll offset (in lines) into the changelog modal body.
+    pub changelog_scroll: u16,
+    /// Set by the background update check (docs) to the newer version string
+    /// (e.g. `"0.9.3"`) when a release is available; shown as a dot by the
+    /// version number and a banner in the changelog modal. `None` = up to date.
+    pub update_available: Option<String>,
     /// The "what is actually running in this pane?" overlay (docs/07): a
     /// snapshot of the pane's process tree, taken once when it opens. Click a
     /// pane's title to open it. `None` = closed.
@@ -960,6 +969,10 @@ pub struct App {
     pub sidebar_toggle_rect: Option<Rect>,
     /// The right sidebar's collapse/reopen toggle button (docs/29).
     pub right_sidebar_toggle_rect: Option<Rect>,
+    /// The sidebar version number, clickable to open the changelog modal.
+    pub version_rect: Option<Rect>,
+    /// The changelog modal's close button, for mouse hit-testing.
+    pub changelog_close_rect: Option<Rect>,
     // Settings modal hit-test geometry (populated by render when the modal is open).
     pub settings_icon_rect: Option<Rect>,
     pub settings_close_rect: Option<Rect>,
@@ -1044,6 +1057,9 @@ impl App {
             picker: None,
             picker_rects: Vec::new(),
             help_open: false,
+            changelog_open: false,
+            changelog_scroll: 0,
+            update_available: None,
             cmd_inspect: None,
             pane_title_rects: Vec::new(),
             worktree_prompt: None,
@@ -1157,6 +1173,8 @@ impl App {
             pane_zoom_rect: None,
             sidebar_toggle_rect: None,
             right_sidebar_toggle_rect: None,
+            version_rect: None,
+            changelog_close_rect: None,
             settings_icon_rect: None,
             settings_close_rect: None,
             settings_modal_rect: None,
@@ -1392,6 +1410,9 @@ impl App {
             picker: None,
             picker_rects: Vec::new(),
             help_open: false,
+            changelog_open: false,
+            changelog_scroll: 0,
+            update_available: None,
             cmd_inspect: None,
             pane_title_rects: Vec::new(),
             worktree_prompt: None,
@@ -1505,6 +1526,8 @@ impl App {
             pane_zoom_rect: None,
             sidebar_toggle_rect: None,
             right_sidebar_toggle_rect: None,
+            version_rect: None,
+            changelog_close_rect: None,
             settings_icon_rect: None,
             settings_close_rect: None,
             settings_modal_rect: None,

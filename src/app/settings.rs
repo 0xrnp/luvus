@@ -98,6 +98,7 @@ pub enum GeneralRow {
     FileOpen,
     FilesShowHidden,
     ShiftEnter,
+    CheckUpdates,
     SoundDone,
     SoundBlocked,
     TestSound,
@@ -122,6 +123,7 @@ impl App {
             GeneralRow::FileOpen,
             GeneralRow::FilesShowHidden,
             GeneralRow::ShiftEnter,
+            GeneralRow::CheckUpdates,
             GeneralRow::SoundDone,
             GeneralRow::SoundBlocked,
             GeneralRow::TestSound,
@@ -129,10 +131,11 @@ impl App {
     }
 
     /// Index of the first notification row (where the `── Notifications ──`
-    /// divider goes), mirroring `dock_section_start` in the Layout tab. The three
-    /// general settings (file-open, show-hidden, Shift+Enter) sit above it.
+    /// divider goes), mirroring `dock_section_start` in the Layout tab. The four
+    /// general settings (file-open, show-hidden, Shift+Enter, check-updates) sit
+    /// above it.
     pub fn general_section_start(&self) -> usize {
-        3
+        4
     }
 
     /// The Layout tab's ordered selectable rows (docs/29). The first index of the
@@ -186,13 +189,22 @@ impl App {
         self.module_setting_edit = None;
     }
 
+    /// Open the changelog modal (click the sidebar version number), scrolled to
+    /// the top so the newest release is shown first.
+    pub fn open_changelog(&mut self) {
+        self.changelog_open = true;
+        self.changelog_scroll = 0;
+    }
+
     /// Number of selectable control rows in `tab` (for cursor clamping + render).
     pub fn settings_rows(&self, tab: SettingsTab) -> usize {
         match tab {
             SettingsTab::General => self.general_rows().len(),
             SettingsTab::Theme => theme::THEMES.len(),
             SettingsTab::Layout => self.layout_rows().len(),
-            SettingsTab::Keys => crate::app::Cmd::ALL.len(),
+            // Rebindable commands first, then the read-only reference rows — the
+            // cursor steps through both so the whole reference is keyboard-reachable.
+            SettingsTab::Keys => crate::app::Cmd::ALL.len() + crate::app::key_reference_rows(),
             SettingsTab::Modules => self.module_rows().len(),
             SettingsTab::Integrations => crate::integration::AGENTS.len(),
             SettingsTab::Language => crate::i18n::LANGS.len(),
@@ -213,8 +225,8 @@ impl App {
         // like Tab / digits can themselves be bound.
         if capturing {
             if key.code != KeyCode::Esc {
-                if let Some(s) = keys::key_string(&key) {
-                    self.rebind(Self::keys_cmd_at(cursor), s);
+                if let (Some(cmd), Some(s)) = (Self::keys_cmd_at(cursor), keys::key_string(&key)) {
+                    self.rebind(cmd, s);
                 }
             }
             if let Some(ui) = self.settings.as_mut() {
@@ -233,9 +245,12 @@ impl App {
             KeyCode::Left => self.settings_adjust(cursor, -1),
             KeyCode::Right => self.settings_adjust(cursor, 1),
             KeyCode::Enter | KeyCode::Char(' ') => self.settings_activate(cursor),
-            // In the Keys tab, Backspace/Delete resets a binding to its default.
+            // In the Keys tab, Backspace/Delete resets a binding to its default
+            // (a no-op on a reference row, which has no command).
             KeyCode::Backspace | KeyCode::Delete if tab == SettingsTab::Keys => {
-                self.reset_binding(Self::keys_cmd_at(cursor));
+                if let Some(cmd) = Self::keys_cmd_at(cursor) {
+                    self.reset_binding(cmd);
+                }
             }
             KeyCode::Char(c) if ('1'..='7').contains(&c) => {
                 self.settings_set_tab(SettingsTab::from_index(c as usize - '1' as usize));
@@ -326,6 +341,13 @@ impl App {
         }
     }
 
+    /// Mouse-wheel scroll in the open modal: nudge the selection a few rows so a
+    /// long list (the Keys reference, the theme list) scrolls without holding the
+    /// arrows. `dir` is -1 (up) or +1 (down).
+    pub fn settings_scroll(&mut self, dir: i32) {
+        self.settings_move(dir * 3);
+    }
+
     fn settings_move(&mut self, delta: i32) {
         let Some(&SettingsUi { tab, cursor, .. }) = self.settings.as_ref() else {
             return;
@@ -378,10 +400,13 @@ impl App {
                 Some(GeneralRow::TestSound) => self.test_sound(),
                 _ => self.adjust_general(cursor, 1),
             },
-            // Enter on a Keys row starts capturing the next key as its binding.
+            // Enter on a rebindable Keys row starts capturing the next key as its
+            // binding; on a reference row there's nothing to capture.
             SettingsTab::Keys => {
-                if let Some(ui) = self.settings.as_mut() {
-                    ui.capturing = true;
+                if Self::keys_cmd_at(cursor).is_some() {
+                    if let Some(ui) = self.settings.as_mut() {
+                        ui.capturing = true;
+                    }
                 }
             }
             SettingsTab::Integrations => self.install_integration(cursor),
@@ -389,10 +414,10 @@ impl App {
         }
     }
 
-    /// The command at row `cursor` in the Keys tab.
-    fn keys_cmd_at(cursor: usize) -> crate::app::Cmd {
-        let all = crate::app::Cmd::ALL;
-        all[cursor.min(all.len() - 1)]
+    /// The command at row `cursor` in the Keys tab, or `None` when the cursor is
+    /// on a read-only reference row (which lives past the command list).
+    fn keys_cmd_at(cursor: usize) -> Option<crate::app::Cmd> {
+        crate::app::Cmd::ALL.get(cursor).copied()
     }
 
     /// The Modules tab's dynamic row model: one row per installed module,
@@ -717,6 +742,10 @@ impl App {
             // Flips config *and* the live tree (docs/38), so it applies at once.
             Some(GeneralRow::FilesShowHidden) => self.toggle_files_hidden(),
             Some(GeneralRow::ShiftEnter) => self.cycle_shift_enter(delta),
+            Some(GeneralRow::CheckUpdates) => {
+                self.config.check_updates = !self.config.check_updates;
+                config::save(&self.config);
+            }
             Some(GeneralRow::SoundDone) => {
                 self.config.notifications.sound_on_done = !self.config.notifications.sound_on_done;
                 config::save(&self.config);
@@ -782,7 +811,7 @@ mod tests {
         if let Some(ui) = app.settings.as_mut() {
             ui.tab = SettingsTab::General;
         }
-        assert_eq!(app.settings_rows(SettingsTab::General), 6);
+        assert_eq!(app.settings_rows(SettingsTab::General), 7);
         let rows = app.general_rows();
         assert_eq!(rows[0], GeneralRow::FileOpen, "file-open leads the tab");
 

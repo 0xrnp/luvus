@@ -38,6 +38,12 @@ pub struct Config {
     pub layout: LayoutConfig,
     #[serde(default)]
     pub notifications: NotifyConfig,
+    /// Check `bohay.dev/latest.json` in the background for a newer release and
+    /// show an indicator by the version number. A single periodic `curl`/`wget`
+    /// GET; on by default, toggled in Settings → General. Notify-only — bohay
+    /// never self-updates (installed via cargo/brew/etc).
+    #[serde(default = "yes")]
+    pub check_updates: bool,
     /// Custom keybindings: command id → key string (overrides the defaults).
     /// An empty value means the command is explicitly unbound.
     #[serde(default)]
@@ -217,6 +223,7 @@ impl Default for Config {
             sidebars: None,
             layout: LayoutConfig::default(),
             notifications: NotifyConfig::default(),
+            check_updates: true,
             keybindings: std::collections::HashMap::new(),
         }
     }
