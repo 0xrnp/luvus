@@ -83,7 +83,11 @@ trap '[ "$committed" = 1 ] || git checkout -- Cargo.toml Cargo.lock 2>/dev/null 
 
 step "Preconditions"
 [ "$(git branch --show-current)" = "main" ] || die "not on main"
-[ -z "$(git status --porcelain)" ] || die "working tree is dirty — commit or stash first"
+# The release commit below includes this tag's changelog note, so a modified or
+# untracked `changelog/<tag>.md` is allowed here; anything else dirty blocks the
+# release (commit or stash it first).
+DIRTY="$(git status --porcelain | grep -v -e "changelog/$TAG.md\$" || true)"
+[ -z "$DIRTY" ] || die "working tree is dirty (besides the changelog) — commit or stash first"
 git fetch --tags --quiet
 git rev-parse "$TAG" >/dev/null 2>&1 && die "$TAG already exists"
 CURRENT=$(grep -m1 '^version = ' Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
@@ -139,7 +143,9 @@ if [ "$MODE" != "--yes" ]; then
 fi
 
 step "Commit + tag"
-git add Cargo.toml Cargo.lock
+# The changelog note ships in the same release commit as the version bump, so a
+# tag always has its notes (the GitHub Release + bohay.dev render from it).
+git add Cargo.toml Cargo.lock "$CHANGELOG"
 git commit -m "release: $TAG"
 committed=1 # past here the bump is committed — the trap must not revert it
 git tag -a "$TAG" -m "$TAG"
