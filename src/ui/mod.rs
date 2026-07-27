@@ -192,6 +192,13 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
     app.agents_filter_rects.clear();
     app.workspace_branch_rects.clear();
     app.module_dock_rects.clear();
+    // The FILES dock's geometry must be zeroed here too, or its row rects go stale
+    // when it isn't drawn this frame (its sidebar hidden, or the dock moved/off as
+    // the user rearranges docks). A left click checks `file_tree_rects` before
+    // `ws_rects`, so a stale file rect left over a relocated WORKSPACES row opens a
+    // file instead of switching workspace (docs/29 + docs/38).
+    app.files_area = Rect::ZERO;
+    app.file_tree_rects.clear();
     let mut ws_rects = Vec::new();
     let mut agent_rects = Vec::new();
     let mut session_rects = Vec::new();

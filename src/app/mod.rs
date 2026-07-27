@@ -4384,6 +4384,117 @@ mod tests {
         );
     }
 
+    /// The reported bug: a relocated WORKSPACES dock's rows opened files instead
+    /// of switching workspace. Root cause — the FILES dock's hit geometry
+    /// (`file_tree_rects`/`files_area`) was the one dock geometry *not* zeroed at
+    /// the top of a frame, so when the FILES dock isn't drawn its stale row rects
+    /// linger and, since a left click tests `file_tree_rects` before `ws_rects`,
+    /// swallow clicks meant for a WORKSPACES row sitting in the same cells.
+    #[test]
+    fn stale_files_rects_do_not_swallow_workspace_clicks() {
+        let _env = crate::persist::test_env("ws-dock-stale-files");
+        use crate::event::AppEvent;
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        // A second workspace so there is another row to switch to.
+        app.create_workspace_at(std::env::temp_dir());
+        assert!(
+            app.workspaces.len() >= 2,
+            "two workspaces to switch between"
+        );
+
+        // Simulate stale FILES geometry left from a frame where the dock *was*
+        // drawn (the FILES dock is not in the default sidebars, so it won't draw
+        // now). Cover the whole screen so it would otherwise eat every click.
+        app.file_tree_rects = vec![(0, Rect::new(0, 0, 120, 40))];
+        app.files_area = Rect::new(0, 0, 120, 40);
+
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+
+        // The fix zeroes the FILES geometry because the dock wasn't drawn.
+        assert!(
+            app.file_tree_rects.is_empty(),
+            "stale FILES row rects were cleared"
+        );
+        assert_eq!(app.files_area, Rect::ZERO, "stale FILES area was cleared");
+
+        // So clicking a WORKSPACES row now switches to it instead of opening a file.
+        assert!(
+            !app.ws_rects.is_empty(),
+            "the WORKSPACES dock drew its rows"
+        );
+        let (target, rect) = app
+            .ws_rects
+            .iter()
+            .find(|(i, _)| *i != app.active_ws)
+            .map(|(i, r)| (*i, *r))
+            .expect("a different workspace row to click");
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 1,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        }));
+        assert_eq!(
+            app.active_ws, target,
+            "the workspace-row click switched workspace (did not open a file)"
+        );
+    }
+
+    /// Stability guard for the whole dock system (docs/29): whatever a dock — a
+    /// built-in *or* a user module dock — leaves in the app's click geometry, one
+    /// frame where that dock isn't drawn (its sidebar hidden) must zero it, so no
+    /// stale rect can fire under a widened pane area or a relocated dock. This is
+    /// the invariant the WORKSPACES-vs-FILES bug violated; it now covers every
+    /// dock geometry field at once, so a future dock can't reintroduce it.
+    #[test]
+    fn hidden_sidebar_zeroes_all_dock_geometry_including_module_docks() {
+        let _env = crate::persist::test_env("dock-geometry-reset");
+        use ratatui::backend::TestBackend;
+        use ratatui::layout::Rect;
+        use ratatui::Terminal;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+
+        // Seed every dock's hit geometry with stale rects, as if each had drawn.
+        let junk = Rect::new(0, 0, 40, 40);
+        app.workspaces_area = junk;
+        app.agents_area = junk;
+        app.files_area = junk;
+        app.file_tree_rects = vec![(0, junk)];
+        app.agents_filter_rects = vec![(true, junk)];
+        app.workspace_branch_rects = vec![(0, junk)];
+        app.module_dock_rects = vec![("example.buzz".into(), 0, junk)]; // a user module dock
+
+        // Hide both sidebars so no dock draws this frame — the worst stale case.
+        app.sidebars.left.visible = false;
+        app.sidebars.right.visible = false;
+
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+
+        assert_eq!(app.workspaces_area, Rect::ZERO, "WORKSPACES area cleared");
+        assert_eq!(app.agents_area, Rect::ZERO, "AGENTS area cleared");
+        assert_eq!(app.files_area, Rect::ZERO, "FILES area cleared");
+        assert!(app.file_tree_rects.is_empty(), "FILES row rects cleared");
+        assert!(app.agents_filter_rects.is_empty(), "AGENTS filter cleared");
+        assert!(
+            app.workspace_branch_rects.is_empty(),
+            "branch rects cleared"
+        );
+        assert!(
+            app.module_dock_rects.is_empty(),
+            "user module dock rects cleared — a stale module dock can't fire"
+        );
+    }
+
     #[test]
     fn pane_menu_splits_closes_and_skips_dashboards() {
         let _env = crate::persist::test_env("pane-menu");
