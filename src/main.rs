@@ -984,7 +984,13 @@ mod tests {
 
         let text = render(&mut app);
         assert!(text.contains("Changelog"), "modal title shows");
-        assert!(text.contains("Added"), "release-note content shows");
+        // The newest release's version header is always the first note rendered,
+        // whatever sections it has (a patch release may carry only "Fixed").
+        let newest = crate::changelog::CHANGELOG[0].0;
+        assert!(
+            text.contains(newest),
+            "release notes render (newest header {newest})"
+        );
 
         // esc closes it.
         app.handle_event(AppEvent::Key(KeyEvent::new(
