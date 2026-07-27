@@ -2734,13 +2734,29 @@ impl App {
     /// which for a stacked pane lands exactly on the horizontal divider. Resize
     /// must yield there, or the divider grab zone swallows every click on the ✕
     /// and the pane can't be closed by mouse.
-    fn on_pane_close(&self, c: u16, r: u16) -> bool {
-        self.pane_close_rect
-            .is_some_and(|rc| c >= rc.x && c < rc.right() && r >= rc.y && r < rc.bottom())
+    /// True if `(c, r)` lands on a pane's interactive **border chrome**: a title
+    /// strip (the command-inspector button), the ⤢/⤡ zoom toggle, or the ✕ close
+    /// button. These live on the top border row — exactly the cells a resize grab
+    /// band would otherwise swallow — so every resize path (grab, Ctrl-grab, hover
+    /// highlight) excludes them: the seam between panes stays grabbable, but a
+    /// click on a title or button always wins. On a stacked split this matters
+    /// most, since the divider line *is* the lower pane's top border.
+    fn on_pane_chrome(&self, c: u16, r: u16) -> bool {
+        fn hit(rc: Rect, c: u16, r: u16) -> bool {
+            c >= rc.x && c < rc.right() && r >= rc.y && r < rc.bottom()
+        }
+        self.pane_close_rect.is_some_and(|rc| hit(rc, c, r))
+            || self.pane_zoom_rect.is_some_and(|rc| hit(rc, c, r))
+            || self.pane_title_rects.iter().any(|(_, rc)| hit(*rc, c, r))
     }
 
     pub fn begin_resize(&mut self, c: u16, r: u16) -> bool {
-        if self.active_is_git() || self.active_is_orch() || self.on_pane_close(c, r) {
+        // Pane border chrome (title, ⤢ zoom, ✕ close) always wins the click, even
+        // though it sits on the seam a resize would otherwise grab — see
+        // `on_pane_chrome`. This is what makes those buttons and the title
+        // clickable on a stacked split, where the divider line lands on the lower
+        // pane's top border row.
+        if self.active_is_git() || self.active_is_orch() || self.on_pane_chrome(c, r) {
             return false;
         }
         // A cell inside a pane's *content* belongs to the pane, never to the
@@ -2749,10 +2765,10 @@ impl App {
         // column — so without this the band reaches ~2 columns into each
         // neighbour and swallows clicks meant for the terminal (and starts a
         // resize the user never asked for, since `begin_resize` runs before
-        // selection and mouse-forwarding). Borders and the gap are outside every
-        // content rect, so the seam itself stays as grabbable as before, and
-        // `Ctrl`+drag (`begin_resize_nearest`) is still the deliberate
-        // grab-from-anywhere path.
+        // selection and mouse-forwarding). Content-exclusion also clips the band
+        // back to the seam itself (borders + gap), so the tolerance only ever
+        // helps you *hit* the seam, never bleeds a resize into a pane; `Ctrl`+drag
+        // (`begin_resize_nearest`) stays the deliberate grab-from-anywhere path.
         if self.pane_content_at(c, r).is_some() {
             return false;
         }
@@ -2772,7 +2788,7 @@ impl App {
     /// Start a drag of the divider nearest `(c, r)` — the `Ctrl`+drag path
     /// (RESIZE-5). Skips a pane that tracks the mouse itself (a TUI agent).
     pub fn begin_resize_nearest(&mut self, c: u16, r: u16) -> bool {
-        if self.active_is_git() || self.active_is_orch() || self.on_pane_close(c, r) {
+        if self.active_is_git() || self.active_is_orch() || self.on_pane_chrome(c, r) {
             return false;
         }
         let over_mouse_app = self
@@ -2826,7 +2842,7 @@ impl App {
             // highlight over cells that no longer grab it.
             if self.active_is_git()
                 || self.active_is_orch()
-                || self.on_pane_close(c, r)
+                || self.on_pane_chrome(c, r)
                 || self.pane_content_at(c, r).is_some()
             {
                 None
@@ -4236,6 +4252,136 @@ mod tests {
         app.handle_event(down);
         assert!(app.resize_drag.is_none(), "✕ click did not grab a divider");
         assert_eq!(app.layout().len(), 1, "✕ click closed the pane");
+    }
+
+    /// On a stacked split the horizontal divider lands on the lower pane's top
+    /// border — the very row that holds its title, ⤢ zoom, and ✕ close. A resize
+    /// grab must yield to all of that chrome (not just ✕), or those controls are
+    /// unclickable; the non-chrome part of the seam must still grab the divider.
+    #[test]
+    fn resize_yields_to_pane_title_and_zoom_but_still_grabs_the_seam() {
+        let _env = crate::persist::test_env("resize-title-zoom");
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        app.run_cmd(crate::app::keys::Cmd::SplitDown); // two stacked panes; focus = bottom
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert_eq!(app.layout().len(), 2);
+
+        // The focused (bottom) pane's chrome all sits on its top border = the
+        // divider row. Every piece must yield to the click, not grab a resize.
+        let zoom = app
+            .pane_zoom_rect
+            .expect("focused pane has a ⤢ zoom button");
+        let (_, title) = *app
+            .pane_title_rects
+            .iter()
+            .max_by_key(|(_, rc)| rc.y) // the lower pane's title
+            .expect("the lower pane has a title strip");
+        for (name, rc) in [("zoom", zoom), ("title", title)] {
+            assert!(
+                !app.begin_resize(rc.x + 1, rc.y),
+                "clicking the {name} must not grab the divider"
+            );
+            assert!(app.resize_drag.is_none(), "{name}: no resize started");
+            app.end_resize();
+        }
+
+        // The bare middle of the same border row (between the title and the
+        // buttons) is not chrome, so it still grabs the divider to resize.
+        let divider_row = zoom.y;
+        let bare = 60u16; // mid-width: past the title, before the right-edge buttons
+        assert!(
+            !app.on_pane_chrome(bare, divider_row),
+            "the chosen seam cell is genuinely not chrome"
+        );
+        assert!(
+            app.begin_resize(bare, divider_row),
+            "the non-chrome seam at ({bare},{divider_row}) still grabs the divider"
+        );
+        assert!(app.resize_drag.is_some(), "a drag started from the seam");
+        app.end_resize();
+    }
+
+    /// End-to-end through the real mouse pipeline (`handle_event`), the user's
+    /// exact report: on a stacked split, clicking the bottom pane's title opens
+    /// its command overlay, clicking its ⤢ zoom toggles zoom, and clicking its
+    /// content focuses it — none of them get eaten by a divider resize.
+    #[test]
+    fn stacked_bottom_pane_title_zoom_and_body_are_all_clickable() {
+        let _env = crate::persist::test_env("stacked-clickable");
+        use crate::event::AppEvent;
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::Terminal;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        let top = app.layout().focus;
+        app.run_cmd(crate::app::keys::Cmd::SplitDown); // bottom pane, now focused
+        let bottom = app.layout().focus;
+        assert_ne!(top, bottom);
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let render = |app: &mut App, term: &mut Terminal<TestBackend>| {
+            term.draw(|f| crate::ui::render(f, app)).unwrap();
+        };
+        let click = |app: &mut App, x: u16, y: u16| {
+            app.handle_event(AppEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            }));
+        };
+        render(&mut app, &mut term);
+
+        // 1. The ⤢ zoom button on the bottom pane's top border toggles zoom.
+        let zoom = app.pane_zoom_rect.expect("bottom pane has a ⤢ button");
+        click(&mut app, zoom.x + 1, zoom.y);
+        assert!(app.zoomed, "clicking ⤢ zoomed the split");
+        assert!(app.resize_drag.is_none(), "⤢ did not start a resize");
+        app.zoomed = false;
+        render(&mut app, &mut term);
+
+        // 2. The title strip opens the running-command overlay.
+        let (_, title) = *app
+            .pane_title_rects
+            .iter()
+            .max_by_key(|(_, rc)| rc.y)
+            .expect("bottom pane has a title strip");
+        click(&mut app, title.x + 1, title.y);
+        assert!(
+            app.cmd_inspect.is_some(),
+            "clicking the title opened the command overlay"
+        );
+        assert!(app.resize_drag.is_none(), "title did not start a resize");
+        app.close_cmd_inspect();
+        render(&mut app, &mut term);
+
+        // 3. Focus the top pane, then a click in the bottom pane's *body* focuses
+        //    it back — the pane is clickable, not blocked by the divider band.
+        app.layout_mut().focus = top;
+        let body = app
+            .pane_content_rects
+            .iter()
+            .find(|(id, _)| *id == bottom)
+            .map(|(_, r)| *r)
+            .expect("bottom pane has a content rect");
+        // A cell near the top of the body, inside the ±2 divider band — the case
+        // most likely to be wrongly swallowed.
+        click(&mut app, body.x + 2, body.y);
+        assert_eq!(
+            app.layout().focus,
+            bottom,
+            "a click in the bottom pane body focused it"
+        );
+        assert!(
+            app.resize_drag.is_none(),
+            "body click did not start a resize"
+        );
     }
 
     #[test]

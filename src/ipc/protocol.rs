@@ -427,12 +427,19 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
         buf.set_string(0, 0, "🔴X", Style::default());
         // Sanity: ratatui itself leaves a *space* in the continuation column.
-        assert_eq!(buf[(1, 0)].symbol(), " ", "ratatui leaves a space, not empty");
+        assert_eq!(
+            buf[(1, 0)].symbol(),
+            " ",
+            "ratatui leaves a space, not empty"
+        );
 
         // Full-frame serialization blanks it.
         let frame = frame_from_buffer(&buf, None);
         assert_eq!(frame.cells[0].symbol, "🔴", "emoji at col 0");
-        assert_eq!(frame.cells[1].symbol, "", "continuation blanked (was a space)");
+        assert_eq!(
+            frame.cells[1].symbol, "",
+            "continuation blanked (was a space)"
+        );
         assert_eq!(frame.cells[2].symbol, "X", "next glyph stays at col 2");
 
         // The per-frame diff path blanks it too, so a modal that repaints via
