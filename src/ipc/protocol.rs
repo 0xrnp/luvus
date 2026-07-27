@@ -173,18 +173,46 @@ pub fn read_message<R: Read, M: DeserializeOwned>(r: &mut R) -> io::Result<M> {
 
 // ── buffer ↔ frame ──────────────────────────────────────────────────────────
 
+/// Is `sym` a double-width glyph (emoji / CJK)? Fast-paths the overwhelmingly
+/// common single-byte ASCII cell so the per-cell serialization loop pays the
+/// unicode-width lookup only for the rare multi-byte cell.
+#[inline]
+fn is_wide(sym: &str) -> bool {
+    sym.len() > 1 && unicode_width::UnicodeWidthStr::width(sym) == 2
+}
+
+/// The symbol to put on the wire for a cell, given whether its left neighbour was
+/// a wide glyph. A wide glyph spans two columns; the second is a **continuation**
+/// that must print nothing (an empty symbol), because the client advances its
+/// cursor one column per cell while the terminal advanced two for the glyph.
+/// ratatui leaves that column as a space (`symbol: None`) plus an internal `skip`
+/// flag we don't serialize, so without this the space blits over the glyph's
+/// right half and shifts the row — the emoji glitch, here fixed for *every*
+/// rendered surface (panes, modals, sidebars, the git tab, …), not just panes.
+#[inline]
+fn wire_symbol(raw: &str, prev_wide: bool) -> &str {
+    if prev_wide {
+        ""
+    } else {
+        raw
+    }
+}
+
 pub fn frame_from_buffer(buf: &Buffer, cursor: Option<(u16, u16)>) -> FrameData {
     let area = buf.area;
     let mut cells = Vec::with_capacity(area.width as usize * area.height as usize);
     for y in 0..area.height {
+        let mut prev_wide = false;
         for x in 0..area.width {
             let c = &buf[(area.x + x, area.y + y)];
+            let raw = c.symbol();
             cells.push(CellData {
-                symbol: c.symbol().to_string(),
+                symbol: wire_symbol(raw, prev_wide).to_string(),
                 fg: pack(c.fg),
                 bg: pack(c.bg),
                 mods: c.modifier.bits(),
             });
+            prev_wide = is_wide(raw);
         }
     }
     FrameData {
@@ -207,14 +235,19 @@ pub fn diff_buffer(prev: &mut FrameData, buf: &Buffer) -> Vec<DiffRun> {
     let width = prev.width as u32;
     let mut runs: Vec<DiffRun> = Vec::new();
     for y in 0..area.height {
+        let mut prev_wide = false;
         for x in 0..area.width {
             let c = &buf[(area.x + x, area.y + y)];
+            let raw = c.symbol();
+            // Blank a wide glyph's continuation column (see `wire_symbol`). Computed
+            // before the bounds check so the wide-run accounting can't desync.
+            let sym = wire_symbol(raw, prev_wide);
+            prev_wide = is_wide(raw);
             let i = y as u32 * width + x as u32;
             let Some(slot) = prev.cells.get_mut(i as usize) else {
                 continue;
             };
             let (fg, bg, mods) = (pack(c.fg), pack(c.bg), c.modifier.bits());
-            let sym = c.symbol();
             if slot.fg == fg && slot.bg == bg && slot.mods == mods && slot.symbol == sym {
                 continue; // unchanged — no allocation, no work
             }
@@ -379,6 +412,41 @@ mod tests {
             }
             _ => panic!("wrong variant"),
         }
+    }
+
+    /// A wide glyph written through ratatui's own `set_string` (the path modals,
+    /// the sidebar, the git tab, and every other chrome surface use) leaves its
+    /// second column as a space (`symbol: None`). Serialization must blank that
+    /// continuation so the client doesn't blit the space over the glyph's right
+    /// half — the emoji-shift bug, previously fixed for panes only.
+    #[test]
+    fn wire_blanks_wide_glyph_continuation_from_ratatui_chrome() {
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect;
+        use ratatui::style::Style;
+        let mut buf = Buffer::empty(Rect::new(0, 0, 6, 1));
+        buf.set_string(0, 0, "🔴X", Style::default());
+        // Sanity: ratatui itself leaves a *space* in the continuation column.
+        assert_eq!(buf[(1, 0)].symbol(), " ", "ratatui leaves a space, not empty");
+
+        // Full-frame serialization blanks it.
+        let frame = frame_from_buffer(&buf, None);
+        assert_eq!(frame.cells[0].symbol, "🔴", "emoji at col 0");
+        assert_eq!(frame.cells[1].symbol, "", "continuation blanked (was a space)");
+        assert_eq!(frame.cells[2].symbol, "X", "next glyph stays at col 2");
+
+        // The per-frame diff path blanks it too, so a modal that repaints via
+        // `diff_buffer` (the hot path) is fixed as well.
+        let mut prev = frame_from_buffer(&Buffer::empty(Rect::new(0, 0, 6, 1)), None);
+        let runs = diff_buffer(&mut prev, &buf);
+        let changed: Vec<&str> = runs
+            .iter()
+            .flat_map(|r| r.symbols.iter().map(String::as_str))
+            .collect();
+        assert!(
+            changed.contains(&"🔴") && changed.contains(&"") && !changed.contains(&" "),
+            "diff sends the emoji + an empty continuation, never a space: {changed:?}"
+        );
     }
 
     #[test]
