@@ -33,7 +33,8 @@ They reach the client as `BOHAY_SETTING_RELAY_URL` / `BOHAY_SETTING_NSEC`.
 ## CLI (the tested foundation the pane calls into)
 
 ```sh
-cargo build --release      # → target/release/bohay-buzz
+cp Cargo.toml.example Cargo.toml   # the manifest ships as .example (see note below)
+cargo build --release              # → target/release/bohay-buzz
 
 bohay-buzz keygen                                   # make an identity
 bohay-buzz channels --relay wss://… --nsec nsec1…   # list channels
@@ -60,3 +61,12 @@ Built on the `nostr` core crate (crypto + event/message codec) and blocking
   non-blocking loop); the UI thread only renders and reads input, so a slow relay
   never stalls the keyboard. WebSocket pings are answered so the relay's 30s
   heartbeat (3 missed pongs disconnects) never drops us.
+
+## Why the manifest ships as `Cargo.toml.example`
+
+`cargo install --git <bohay>` searches the whole repository for any file named
+`Cargo.toml` and refuses to install when two packages have binaries (it would
+find both `bohay` and `bohay-buzz`). Shipping this example's manifest as
+`Cargo.toml.example` keeps the top-level install unambiguous. The module's build
+step (and the snippet above) copy it to `Cargo.toml` before compiling; that
+generated file is gitignored so building in place never reintroduces the clash.

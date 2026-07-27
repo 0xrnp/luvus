@@ -23,6 +23,16 @@ type = "string"
 secret = true
 
 # Compile the native client. Run once on install (and on demand).
+#
+# The manifest is shipped as `Cargo.toml.example`, not `Cargo.toml`, and copied
+# into place here first. Reason: `cargo install --git <bohay>` scans the whole
+# repo for any file named `Cargo.toml` and refuses when two packages have
+# binaries (bohay + bohay-buzz). Keeping the example's manifest under a different
+# name leaves the top-level install unambiguous; the generated `Cargo.toml` is
+# gitignored so building in place never reintroduces the clash.
+[[build]]
+command = ["cp", "Cargo.toml.example", "Cargo.toml"]
+
 [[build]]
 command = ["cargo", "build", "--release"]
 
