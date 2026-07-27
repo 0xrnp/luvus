@@ -141,6 +141,39 @@ impl Cmd {
         }
     }
 
+    /// Group heading for the Settings → Keys list. `Cmd::ALL` is ordered so each
+    /// group is contiguous; the Keys tab prints this label when it changes. Kept
+    /// English to match the tab's (English) how-to intro; the per-command
+    /// `label()` stays localized.
+    pub fn section(self) -> &'static str {
+        match self {
+            Cmd::FocusLeft
+            | Cmd::FocusDown
+            | Cmd::FocusUp
+            | Cmd::FocusRight
+            | Cmd::SplitRight
+            | Cmd::SplitDown
+            | Cmd::ForkSession
+            | Cmd::ClosePane
+            | Cmd::ZoomPane
+            | Cmd::ResizeMode => "Panes",
+            Cmd::NewTab | Cmd::NextTab | Cmd::PrevTab => "Tabs",
+            Cmd::NewWorkspace
+            | Cmd::CloseWorkspace
+            | Cmd::NextWorkspace
+            | Cmd::PrevWorkspace
+            | Cmd::NewWorktree => "Nodes & worktrees",
+            Cmd::OpenGit
+            | Cmd::OpenBoard
+            | Cmd::OpenSettings
+            | Cmd::ToggleSidebar
+            | Cmd::ToggleRightSidebar
+            | Cmd::ToggleAgents
+            | Cmd::ToggleFiles => "Views & panels",
+            Cmd::Switcher | Cmd::Detach => "Session",
+        }
+    }
+
     /// Default key (a [`key_string`] value).
     pub fn default_key(self) -> &'static str {
         match self {
@@ -173,6 +206,111 @@ impl Cmd {
             Cmd::Detach => "d",
         }
     }
+}
+
+/// Read-only reference blocks shown below the rebindable commands in Settings →
+/// Keys: the fixed keys and the context-specific shortcuts (scroll mode, the git
+/// tab, the task board, the folder picker, the mouse). Kept in one table so the
+/// count is authoritative for cursor bounds and the renderer just draws it. Each
+/// entry is `(section heading, &[(keys, what it does)])`. English, like the tab's
+/// how-to intro; the rebindable command labels stay localized.
+pub const KEY_REFERENCE: &[(&str, &[(&str, &str)])] = &[
+    (
+        "Always on (not rebindable)",
+        &[
+            ("h j k l", "focus panes (vim aliases)"),
+            ("q", "detach, leave the server running"),
+            ("X", "close pane"),
+            ("-", "split down"),
+            ("⇥ / ⇧⇥", "next / previous tab"),
+            ("⌃Space ⌃Space", "send a literal Ctrl+Space"),
+        ],
+    ),
+    (
+        "Scroll history  (no prefix)",
+        &[
+            ("Shift+↑", "enter scroll mode on the focused pane"),
+            ("j / k", "line down / up"),
+            ("Space / b", "page down / up"),
+            ("g / G", "top of history / back to live"),
+            ("1–9", "jump through history (1 oldest, 9 newest)"),
+            ("q  esc", "back to live"),
+        ],
+    ),
+    (
+        "Resize mode  (⌃Space r)",
+        &[
+            ("arrows  hjkl", "resize the focused pane"),
+            ("Shift+arrow", "bigger step"),
+            ("=  0", "equalize splits"),
+            ("esc", "exit resize mode"),
+        ],
+    ),
+    (
+        "Git tab  (⌃Space g)",
+        &[
+            ("1–6", "Commits Flow Branches PRs Issues Status"),
+            ("⇥ / ⇧⇥", "next / previous view"),
+            ("j / k", "scroll the list"),
+            ("/", "filter the list"),
+            ("d  c", "diff / create a PR"),
+            ("m", "scope: this repo or my work"),
+            ("o", "open on GitHub"),
+            ("r  q", "refresh / close the tab"),
+        ],
+    ),
+    (
+        "Task board  (⌃Space o)",
+        &[
+            ("a", "new task"),
+            ("s  d  m", "start / done / merge"),
+            ("x  D", "release / delete"),
+            ("o  ⏎", "detail / jump to worker pane"),
+            ("j / k", "move the cursor"),
+            ("q", "close the board"),
+        ],
+    ),
+    (
+        "Folder picker  (⌃Space n)",
+        &[
+            ("j / k", "move"),
+            ("→ / ←", "enter folder / go up"),
+            ("⏎", "open the folder as a node"),
+            ("n  w", "new folder / open as a worktree"),
+            ("esc", "cancel"),
+        ],
+    ),
+    (
+        "Copy & paste",
+        &[
+            ("drag", "select text; on release it copies to the clipboard"),
+            (
+                "shift+drag",
+                "select inside a mouse-aware app (e.g. an agent)",
+            ),
+            (
+                "⌘V  Ctrl+⇧V",
+                "your terminal's paste, into the focused pane",
+            ),
+        ],
+    ),
+    (
+        "Mouse",
+        &[
+            ("click", "focus a pane, or hit a row / button"),
+            ("right-click", "context menu: pane, node, agent, tab"),
+            ("wheel", "scroll the pane's history, or a list"),
+            ("drag divider", "resize the split"),
+            ("click branch", "open that node's git tab"),
+            ("tap pane", "zoom it (touch / mobile)"),
+        ],
+    ),
+];
+
+/// Total reference rows (not counting the section headings) — the authoritative
+/// count for the Keys-tab cursor, which steps through commands then these.
+pub fn key_reference_rows() -> usize {
+    KEY_REFERENCE.iter().map(|(_, rows)| rows.len()).sum()
 }
 
 /// Canonical string for a key in prefix mode (the opening `Ctrl` is already
