@@ -183,7 +183,7 @@ pub fn run(args: &[String]) -> Result<i32> {
         return wait_cmd(args);
     }
     let (method, params) = parse(args)?;
-    let path = crate::persist::socket_path();
+    let path = crate::persist::cli_socket_path();
     let mut stream = crate::ipc::transport::connect(&path)
         .map_err(|_| anyhow!("no bohay server running (socket: {})", path.display()))?;
 
@@ -368,6 +368,9 @@ fn doctor() -> i32 {
 
 enum KeyProto {
     Supported,
+    // Windows always reports Supported (native console records), so this variant
+    // is only constructed off Windows.
+    #[cfg_attr(windows, allow(dead_code))]
     Unsupported,
     /// Queried from inside a bohay pane, which answers for *bohay's* PTY rather
     /// than the real terminal — so the result would be misleading.
@@ -378,19 +381,30 @@ enum KeyProto {
 /// query needs raw mode (crossterm writes a request and reads the reply), so it
 /// is enabled just for the probe and always restored.
 fn keyboard_protocol_status() -> KeyProto {
-    use ratatui::crossterm::terminal;
     if std::env::var_os("BOHAY_ENV").is_some() {
         return KeyProto::InsidePane;
     }
-    let raw = terminal::enable_raw_mode().is_ok();
-    let supported = matches!(terminal::supports_keyboard_enhancement(), Ok(true));
-    if raw {
-        let _ = terminal::disable_raw_mode();
+    // Windows reads keys from native console records (not the keyboard protocol,
+    // which `supports_keyboard_enhancement` always reports `false` for there), and
+    // those records carry the SHIFT modifier — so Shift+Enter is distinguishable
+    // regardless. Reporting on the protocol would wrongly say it isn't.
+    #[cfg(windows)]
+    {
+        return KeyProto::Supported;
     }
-    if supported {
-        KeyProto::Supported
-    } else {
-        KeyProto::Unsupported
+    #[cfg(not(windows))]
+    {
+        use ratatui::crossterm::terminal;
+        let raw = terminal::enable_raw_mode().is_ok();
+        let supported = matches!(terminal::supports_keyboard_enhancement(), Ok(true));
+        if raw {
+            let _ = terminal::disable_raw_mode();
+        }
+        if supported {
+            KeyProto::Supported
+        } else {
+            KeyProto::Unsupported
+        }
     }
 }
 
@@ -517,7 +531,7 @@ fn pane_status(pane: &str) -> Result<Option<String>> {
 /// status — so a transition that happens between the poll and the subscribe is
 /// never missed (it's already buffered on the stream).
 fn wait_status_stream(pane: &str, target: &str, deadline: Option<Instant>) -> Result<i32> {
-    let path = crate::persist::socket_path();
+    let path = crate::persist::cli_socket_path();
     let stream =
         crate::ipc::transport::connect(&path).map_err(|_| anyhow!("no bohay server running"))?;
     let mut writer = stream.clone();
@@ -577,7 +591,7 @@ pub fn request_attach(pane: &str) -> Result<()> {
 
 /// One request/response over the control socket.
 fn send_request(method: &str, params: Value) -> Result<Value> {
-    let path = crate::persist::socket_path();
+    let path = crate::persist::cli_socket_path();
     let mut stream =
         crate::ipc::transport::connect(&path).map_err(|_| anyhow!("no bohay server running"))?;
     let req = json!({ "id": "1", "method": method, "params": params });
