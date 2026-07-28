@@ -52,6 +52,12 @@ pub enum AppEvent {
         id: PaneId,
         load: crate::files::FileLoad,
     },
+    /// Per-line git change markers for a file view finished computing
+    /// (docs/38 + docs/30).
+    FileChanges {
+        id: PaneId,
+        changes: Vec<crate::git::local::ChangeSpan>,
+    },
     /// The periodic process scan finished: command lines running under each
     /// pane's child pid, from one `ps`. `None` means the platform cannot tell
     /// (Windows) or `ps` failed — detection then falls back to text heuristics

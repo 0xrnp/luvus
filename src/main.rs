@@ -1885,4 +1885,66 @@ span{{white-space:pre}}</style><pre>{body}</pre>"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    /// End-to-end through the real render path: an edited file shows git change
+    /// markers in the viewer's gutter (docs/38 + docs/30).
+    #[test]
+    fn file_viewer_shows_git_change_markers() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let _env = crate::persist::test_env("file-diff-markers");
+
+        let dir = std::env::temp_dir().join(format!("bohay-fvdiff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sh = |args: &[&str]| {
+            let _ = std::process::Command::new("git")
+                .args(args)
+                .current_dir(&dir)
+                .output();
+        };
+        sh(&["init", "-q"]);
+        sh(&["config", "user.email", "t@t"]);
+        sh(&["config", "user.name", "t"]);
+        let file = dir.join("code.rs");
+        std::fs::write(&file, "alpha\nbravo\ncharlie\n").unwrap();
+        sh(&["add", "code.rs"]);
+        sh(&["commit", "-qm", "base"]);
+        std::fs::write(&file, "alpha\nBRAVO\ncharlie\ndelta\n").unwrap();
+
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let mut app = App::new(100, 20, tx).unwrap();
+        app.open_file_view(file.clone(), crate::app::files::OpenTarget::Pane);
+        let vid = app.layout().focus;
+        if let Some(crate::app::ViewKind::File(v)) = app.views.get_mut(&vid) {
+            v.apply(crate::files::read_file(&file));
+            v.changes = crate::git::local::file_changes(&file);
+            assert!(!v.changes.is_empty(), "the edit produced change spans");
+        }
+
+        let mut term = Terminal::new(TestBackend::new(100, 20)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let b = term.backend().buffer();
+        // Find the marker column: the cell just left of the text on each row.
+        let mut marks = 0usize;
+        for y in 0..b.area.height {
+            for x in 0..b.area.width {
+                if b[(x, y)].symbol() == "▎" {
+                    marks += 1;
+                }
+            }
+        }
+        assert!(marks > 0, "changed lines are marked in the gutter");
+
+        // A clean file in the same repo shows no markers.
+        let clean = dir.join("clean.rs");
+        std::fs::write(&clean, "untouched\n").unwrap();
+        sh(&["add", "clean.rs"]);
+        sh(&["commit", "-qm", "clean"]);
+        assert!(
+            crate::git::local::file_changes(&clean).is_empty(),
+            "a clean file has no markers"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

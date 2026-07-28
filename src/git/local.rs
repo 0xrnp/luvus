@@ -119,6 +119,17 @@ pub fn worktree_remove(repo: &Path, path: &Path) -> Result<(), String> {
     run(repo, &["worktree", "remove", &path.to_string_lossy()]).map(|_| ())
 }
 
+/// `git worktree remove --force <path>` — remove the worktree **and its folder**
+/// even when it has uncommitted or untracked changes. The branch is kept. Used by
+/// the sidebar "Delete worktree" action, which gates it behind a confirm prompt.
+pub fn worktree_remove_force(repo: &Path, path: &Path) -> Result<(), String> {
+    run(
+        repo,
+        &["worktree", "remove", "--force", &path.to_string_lossy()],
+    )
+    .map(|_| ())
+}
+
 /// Branch + ahead/behind + working-tree changes + stashes.
 pub fn status(cwd: &Path) -> Result<RepoStatus, String> {
     let raw = run(cwd, &["status", "--porcelain=v1", "--branch"])?;
@@ -781,4 +792,261 @@ pub fn tree_status(root: &Path) -> std::collections::HashMap<PathBuf, FileStatus
         }
     }
     map
+}
+
+// ── per-line change markers for the file viewer (docs/38 + docs/30) ─────────
+
+/// What happened to a run of lines in the working tree, relative to HEAD.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ChangeKind {
+    Added,
+    Modified,
+    /// Lines were deleted *after* this one; there is no line left to mark, so the
+    /// marker sits on the surviving line above the gap.
+    Removed,
+}
+
+/// A run of consecutive lines sharing one [`ChangeKind`]. Line numbers are
+/// **1-based**, matching git and the viewer's gutter; `end` is exclusive.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct ChangeSpan {
+    pub start: u32,
+    pub end: u32,
+    pub kind: ChangeKind,
+}
+
+/// Per-line change markers for `path`, from `git diff` against HEAD.
+///
+/// Uses `-U0` so each hunk covers exactly the changed lines with no context, and
+/// only the `@@` headers are parsed — the payload is never read, so cost is
+/// independent of how large the diff is. Returns an empty vec for a clean file,
+/// an untracked file, or anything outside a repo: markers are an enhancement, so
+/// every failure degrades to "no markers" rather than an error.
+pub fn file_changes(path: &Path) -> Vec<ChangeSpan> {
+    let Some(dir) = path.parent() else {
+        return Vec::new();
+    };
+    let Some(p) = path.to_str() else {
+        return Vec::new();
+    };
+    // `--` separates the pathspec, so a file named like a flag cannot be read as
+    // one. This is argv, not a shell, so there is nothing to quote.
+    let out = match run(dir, &["diff", "-U0", "--no-color", "--", p]) {
+        Ok(o) => o,
+        Err(_) => return Vec::new(),
+    };
+    parse_hunks(&out)
+}
+
+/// Parse the `@@ -a,b +c,d @@` headers of a `-U0` diff into line spans.
+fn parse_hunks(diff: &str) -> Vec<ChangeSpan> {
+    let mut out = Vec::new();
+    for line in diff.lines() {
+        let Some(rest) = line.strip_prefix("@@ ") else {
+            continue;
+        };
+        let Some((ranges, _)) = rest.split_once(" @@") else {
+            continue;
+        };
+        let mut parts = ranges.split_whitespace();
+        let (Some(old), Some(new)) = (parts.next(), parts.next()) else {
+            continue;
+        };
+        let (Some(old), Some(new)) = (old.strip_prefix('-'), new.strip_prefix('+')) else {
+            continue;
+        };
+        // `start,count`; a missing count means exactly one line.
+        let field = |s: &str| -> Option<(u32, u32)> {
+            match s.split_once(',') {
+                Some((a, b)) => Some((a.parse().ok()?, b.parse().ok()?)),
+                None => Some((s.parse().ok()?, 1)),
+            }
+        };
+        let (Some((_, old_count)), Some((new_start, new_count))) = (field(old), field(new)) else {
+            continue;
+        };
+        let kind = match (old_count, new_count) {
+            // Nothing removed → the new lines are pure additions.
+            (0, _) => ChangeKind::Added,
+            // Nothing added → a deletion; git points at the line *before* the gap,
+            // so mark that surviving line (clamped for a deletion at the top).
+            (_, 0) => {
+                out.push(ChangeSpan {
+                    start: new_start.max(1),
+                    end: new_start.max(1) + 1,
+                    kind: ChangeKind::Removed,
+                });
+                continue;
+            }
+            _ => ChangeKind::Modified,
+        };
+        out.push(ChangeSpan {
+            start: new_start,
+            end: new_start + new_count,
+            kind,
+        });
+    }
+    out.sort_by_key(|s| s.start);
+    out
+}
+
+#[cfg(test)]
+mod change_tests {
+    use super::*;
+
+    /// End-to-end against a **real** repo: edit a tracked file and confirm the
+    /// markers land on the right lines. The parser tests above use canned diff
+    /// text; this proves the actual `git diff -U0` invocation agrees with it.
+    #[test]
+    fn file_changes_reads_a_real_working_tree_edit() {
+        let dir = std::env::temp_dir().join(format!("bohay-chg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &[&str]| {
+            let _ = run(&dir, args);
+        };
+        g(&["init", "-q"]);
+        g(&["config", "user.email", "t@t"]);
+        g(&["config", "user.name", "t"]);
+
+        let file = dir.join("a.txt");
+        std::fs::write(&file, "one\ntwo\nthree\nfour\nfive\n").unwrap();
+        g(&["add", "a.txt"]);
+        g(&["commit", "-qm", "base"]);
+
+        // Clean file: no markers at all.
+        assert!(
+            file_changes(&file).is_empty(),
+            "an unmodified file has no markers"
+        );
+
+        // Modify line 2, append two lines, delete line 4 ("four").
+        std::fs::write(&file, "one\nTWO\nthree\nfive\nsix\nseven\n").unwrap();
+        let spans = file_changes(&file);
+        assert!(!spans.is_empty(), "a modified file reports markers");
+
+        let kind_at = |line: u32| {
+            spans
+                .iter()
+                .find(|s| line >= s.start && line < s.end)
+                .map(|s| s.kind)
+        };
+        assert_eq!(kind_at(1), None, "unchanged line 1 is unmarked");
+        assert_eq!(kind_at(2), Some(ChangeKind::Modified), "line 2 was edited");
+        assert_eq!(
+            kind_at(6),
+            Some(ChangeKind::Added),
+            "the appended line is marked added"
+        );
+        // The deletion of "four" is flagged somewhere at or after line 3.
+        assert!(
+            spans.iter().any(|s| s.kind == ChangeKind::Removed),
+            "the deleted line is flagged: {spans:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Outside a repo (and for a path with no parent) markers degrade to empty
+    /// rather than erroring — they are an enhancement, never a requirement.
+    #[test]
+    fn file_changes_degrades_outside_a_repo() {
+        let dir = std::env::temp_dir().join(format!("bohay-norepo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("loose.txt");
+        std::fs::write(&file, "hello\n").unwrap();
+        assert!(file_changes(&file).is_empty(), "no repo → no markers");
+        assert!(
+            file_changes(Path::new("/")).is_empty(),
+            "no parent → no markers"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_added_modified_and_removed_hunks() {
+        // A real `git diff -U0` shape: pure add, pure delete, and a replacement.
+        let diff = "\
+diff --git a/x.rs b/x.rs
+index 111..222 100644
+--- a/x.rs
++++ b/x.rs
+@@ -0,0 +1,2 @@
++one
++two
+@@ -10,3 +12,0 @@ fn ctx()
+-gone
+-also gone
+-and this
+@@ -20,2 +18,2 @@ fn ctx()
+-old a
+-old b
++new a
++new b
+";
+        let spans = parse_hunks(diff);
+        assert_eq!(
+            spans,
+            vec![
+                ChangeSpan {
+                    start: 1,
+                    end: 3,
+                    kind: ChangeKind::Added
+                },
+                ChangeSpan {
+                    start: 12,
+                    end: 13,
+                    kind: ChangeKind::Removed
+                },
+                ChangeSpan {
+                    start: 18,
+                    end: 20,
+                    kind: ChangeKind::Modified
+                },
+            ]
+        );
+    }
+
+    /// A hunk with no comma means a single line — the most common one-line edit.
+    #[test]
+    fn a_count_less_header_means_one_line() {
+        let spans = parse_hunks("@@ -5 +5 @@\n-a\n+b\n");
+        assert_eq!(
+            spans,
+            vec![ChangeSpan {
+                start: 5,
+                end: 6,
+                kind: ChangeKind::Modified
+            }]
+        );
+    }
+
+    /// A deletion at the very top reports `+0`, which must not underflow to line 0.
+    #[test]
+    fn deletion_at_the_top_of_the_file_clamps_to_line_one() {
+        let spans = parse_hunks("@@ -1,2 +0,0 @@\n-a\n-b\n");
+        assert_eq!(
+            spans,
+            vec![ChangeSpan {
+                start: 1,
+                end: 2,
+                kind: ChangeKind::Removed
+            }]
+        );
+    }
+
+    /// Garbage must never panic or produce spans — markers are best-effort.
+    #[test]
+    fn malformed_input_yields_no_spans() {
+        for junk in [
+            "",
+            "not a diff",
+            "@@ nonsense @@",
+            "@@ -x,y +z,w @@",
+            "@@ -1,1 @@",
+        ] {
+            assert!(parse_hunks(junk).is_empty(), "junk: {junk:?}");
+        }
+    }
 }

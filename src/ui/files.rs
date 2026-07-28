@@ -3,6 +3,7 @@
 //! clickable rect per row. O(visible rows): it slices the flattened list to the
 //! viewport and draws that, nothing more.
 
+use crate::git::local::ChangeKind;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -205,15 +206,29 @@ fn draw_text(f: &mut RenderTarget, body: Rect, v: &FileView, lines: &[String], t
     if text_w == 0 {
         return;
     }
-    let gutter_cell = |f: &mut RenderTarget, y: u16, num: Option<usize>| {
+    // The gutter is `number + one column`. That trailing column doubles as the
+    // git change marker (docs/38 + docs/30), so markers cost no extra width and
+    // sit right against the text — a wrapped continuation row keeps the marker
+    // (the line is still changed) but drops the number.
+    let gutter_cell = |f: &mut RenderTarget, y: u16, num: Option<usize>, line: usize| {
         let s = match num {
-            Some(n) => format!("{:>w$} ", n, w = gutter as usize),
-            // Continuation rows leave the gutter blank so a wrapped line reads as
+            Some(n) => format!("{:>w$}", n, w = gutter as usize),
+            // Continuation rows leave the number blank so a wrapped line reads as
             // one paragraph, not many numbered lines.
-            None => " ".repeat(gutter as usize + 1),
+            None => " ".repeat(gutter as usize),
+        };
+        let (mark, mark_fg) = match v.change_at(line) {
+            Some(ChangeKind::Added) => ("▎", t.green),
+            Some(ChangeKind::Modified) => ("▎", t.amber),
+            // Nothing survives to highlight, so flag the gap under this line.
+            Some(ChangeKind::Removed) => ("▁", t.coral),
+            None => (" ", t.overlay0),
         };
         f.render_widget(
-            Paragraph::new(Line::from(Span::styled(s, Style::new().fg(t.overlay0)))),
+            Paragraph::new(Line::from(vec![
+                Span::styled(s, Style::new().fg(t.overlay0)),
+                Span::styled(mark, Style::new().fg(mark_fg)),
+            ])),
             Rect::new(body.x, y, gutter + 1, 1),
         );
     };
@@ -234,7 +249,7 @@ fn draw_text(f: &mut RenderTarget, body: Rect, v: &FileView, lines: &[String], t
                 if y >= bottom {
                     break;
                 }
-                gutter_cell(f, y, (si == 0).then_some(i + 1));
+                gutter_cell(f, y, (si == 0).then_some(i + 1), i + 1);
                 f.render_widget(
                     Paragraph::new(Span::styled(
                         crate::files::seg_text(line, range),
@@ -252,7 +267,7 @@ fn draw_text(f: &mut RenderTarget, body: Rect, v: &FileView, lines: &[String], t
     // No-wrap: one file line per row, clipped, with horizontal scroll.
     for (i, line) in lines.iter().enumerate().skip(v.scroll).take(rows) {
         let y = body.y + (i - v.scroll) as u16;
-        gutter_cell(f, y, Some(i + 1));
+        gutter_cell(f, y, Some(i + 1), i + 1);
         let line_ui = search_line(v, i, line, t);
         f.render_widget(
             Paragraph::new(line_ui).scroll((0, v.hscroll)),
@@ -358,6 +373,7 @@ pub(super) fn draw_delete_confirm(
     f: &mut RenderTarget,
     area: Rect,
     path: &std::path::Path,
+    heading: Option<&str>,
     hover: Option<(u16, u16)>,
     t: &Theme,
 ) -> (Option<Rect>, Option<Rect>) {
@@ -394,12 +410,12 @@ pub(super) fn draw_delete_confirm(
     } else {
         "file"
     };
+    let head = heading
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("Delete {what}?"));
     f.render_widget(
-        Paragraph::new(Span::styled(
-            format!("Delete {what}?"),
-            Style::new().fg(t.text).bold(),
-        ))
-        .alignment(Alignment::Center),
+        Paragraph::new(Span::styled(head, Style::new().fg(t.text).bold()))
+            .alignment(Alignment::Center),
         Rect::new(inner.x, inner.y, inner.width, 1),
     );
     f.render_widget(

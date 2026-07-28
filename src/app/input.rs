@@ -85,6 +85,14 @@ impl App {
                 self.file_git_status = map;
                 changed
             }
+            AppEvent::FileChanges { id, changes } => {
+                if let Some(crate::app::ViewKind::File(v)) = self.views.get_mut(&id) {
+                    v.changes = changes;
+                    true
+                } else {
+                    false // the view leaf closed before the diff landed
+                }
+            }
             AppEvent::FileRead { id, load } => {
                 if let Some(crate::app::ViewKind::File(v)) = self.views.get_mut(&id) {
                     v.apply(load);
@@ -312,6 +320,12 @@ impl App {
         if self.file_delete.is_some() {
             if let Some(k) = self.modal_button_key(&m) {
                 self.file_delete_key(k);
+            }
+            return;
+        }
+        if self.worktree_delete.is_some() {
+            if let Some(k) = self.modal_button_key(&m) {
+                self.worktree_delete_key(k);
             }
             return;
         }
@@ -1232,6 +1246,10 @@ impl App {
         }
         if self.file_delete.is_some() {
             self.file_delete_key(key);
+            return true;
+        }
+        if self.worktree_delete.is_some() {
+            self.worktree_delete_key(key);
             return true;
         }
         if self.file_menu.is_some() {

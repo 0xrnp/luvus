@@ -525,6 +525,11 @@ impl App {
         std::thread::spawn(move || {
             let load = crate::files::read_file(&path);
             let _ = tx.send(AppEvent::FileRead { id, load });
+            // Change markers ride the same worker, *after* the text: the file
+            // must render immediately even in a huge repo where `git diff` is
+            // slow, and markers simply appear a moment later.
+            let changes = crate::git::local::file_changes(&path);
+            let _ = tx.send(AppEvent::FileChanges { id, changes });
         });
     }
 

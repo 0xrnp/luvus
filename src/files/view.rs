@@ -55,9 +55,27 @@ pub struct FileView {
     pub mtime: Option<std::time::SystemTime>,
     /// In-file search state (docs/38 FILE-6), `None` when not searching.
     pub search: Option<Search>,
+    /// Per-line change markers vs HEAD (docs/38 + docs/30), sorted by `start`.
+    /// Empty for a clean file, an untracked file, or outside a repo — markers are
+    /// an enhancement, never a requirement.
+    pub changes: Vec<crate::git::local::ChangeSpan>,
 }
 
 impl FileView {
+    /// The change marker for **1-based** file line `line`, if any.
+    ///
+    /// Binary search over the sorted spans: the render path calls this once per
+    /// visible row, so it must not scan (docs/41 — O(visible), never O(file)).
+    pub fn change_at(&self, line: usize) -> Option<crate::git::local::ChangeKind> {
+        let line = line as u32;
+        let i = self
+            .changes
+            .partition_point(|s| s.end <= line)
+            .min(self.changes.len().saturating_sub(1));
+        let s = self.changes.get(i)?;
+        (line >= s.start && line < s.end).then_some(s.kind)
+    }
+
     pub fn new(path: PathBuf) -> Self {
         FileView {
             path,
@@ -68,6 +86,7 @@ impl FileView {
             // right edge. `w` toggles to no-wrap + horizontal scroll for code.
             wrap: true,
             mtime: None,
+            changes: Vec::new(),
             search: None,
         }
     }
@@ -405,6 +424,55 @@ pub fn read_file(path: &Path) -> FileLoad {
 
 #[cfg(test)]
 mod tests {
+
+    /// `change_at` is the render hot path (once per visible row), so it binary
+    /// searches rather than scanning — and it must be exact at span boundaries.
+    #[test]
+    fn change_at_maps_lines_to_their_span() {
+        use crate::git::local::{ChangeKind, ChangeSpan};
+        let mut v = FileView::new(PathBuf::from("/x.rs"));
+        v.changes = vec![
+            ChangeSpan {
+                start: 2,
+                end: 4,
+                kind: ChangeKind::Added,
+            },
+            ChangeSpan {
+                start: 10,
+                end: 11,
+                kind: ChangeKind::Removed,
+            },
+            ChangeSpan {
+                start: 20,
+                end: 23,
+                kind: ChangeKind::Modified,
+            },
+        ];
+        assert_eq!(v.change_at(1), None, "before the first span");
+        assert_eq!(v.change_at(2), Some(ChangeKind::Added), "span start");
+        assert_eq!(v.change_at(3), Some(ChangeKind::Added), "inside");
+        assert_eq!(v.change_at(4), None, "end is exclusive");
+        assert_eq!(v.change_at(9), None, "between spans");
+        assert_eq!(v.change_at(10), Some(ChangeKind::Removed));
+        assert_eq!(v.change_at(19), None);
+        assert_eq!(
+            v.change_at(22),
+            Some(ChangeKind::Modified),
+            "last line inside"
+        );
+        assert_eq!(v.change_at(23), None, "past the last span");
+        assert_eq!(v.change_at(9999), None, "far past the end");
+    }
+
+    /// A file with no diff (clean, untracked, or outside a repo) must never mark.
+    #[test]
+    fn no_changes_means_no_markers() {
+        let v = FileView::new(PathBuf::from("/x.rs"));
+        assert!(v.changes.is_empty());
+        for line in [0usize, 1, 2, 100] {
+            assert_eq!(v.change_at(line), None);
+        }
+    }
     use super::*;
 
     #[test]
