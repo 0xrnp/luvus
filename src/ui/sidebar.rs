@@ -237,7 +237,9 @@ fn draw_left_chrome(f: &mut RenderTarget, area: Rect, app: &mut App, t: &Theme) 
     // changelog modal; it brightens on hover to signal that. When the background
     // update check finds a newer release, a `●` dot follows it.
     let mut brand = vec![Span::styled("  bohay", Style::new().fg(t.text).bold())];
-    let ver = concat!("  v", env!("CARGO_PKG_VERSION"));
+    // One space before the version (not two) so it — and the update dot after it —
+    // sit a column further from the Menu pill on the right.
+    let ver = concat!(" v", env!("CARGO_PKG_VERSION"));
     let ver_w = crate::ui::display_width(ver) as u16;
     let dot = " ●";
     let dot_w = if app.update_available.is_some() {
