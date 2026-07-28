@@ -82,9 +82,38 @@ human review; keep the PR description short and note that tests are disabled
 (`doCheck = false`) because they need PTYs and a writable `$HOME`, and that CI
 runs the full suite upstream.
 
-## Keeping it updated
+## Keeping it updated after each release
 
-nixpkgs does **not** auto-track your releases. After the initial `init`, updates
-come from either a manual PR (`bohay: 0.9.4 -> 0.9.5`, bumping `version` + both
-hashes) or the nixpkgs `r-ryantm` auto-update bot, which lags your tags. Your
-`flake.nix` remains the always-current path for Nix users who add it as an input.
+nixpkgs does **not** auto-track your releases. Once bohay is merged, every new
+version needs its nixpkgs entry bumped (version + both hashes recomputed) and an
+update PR (`bohay: 0.9.5 -> 0.9.6`). There is a script for exactly this.
+
+### The script (one command)
+
+After `scripts/release.sh` publishes a new tag, run:
+
+```sh
+# needs a nixpkgs checkout that already has bohay, plus `nix` + `nix-update`
+# (nix profile install nixpkgs#nix-update), and `gh` for --pr.
+BOHAY_NIXPKGS_DIR=~/nixpkgs scripts/nixpkgs-update.sh          # newest tag
+BOHAY_NIXPKGS_DIR=~/nixpkgs scripts/nixpkgs-update.sh 0.9.6    # a specific version
+scripts/nixpkgs-update.sh 0.9.6 --nixpkgs ~/nixpkgs --pr       # bump + build + open the PR
+```
+
+It branches off master in your nixpkgs checkout, runs `nix-update` to rewrite the
+version and both hashes from the new tag, `nix-build`s and smoke-tests the binary,
+commits `bohay: <old> -> <new>`, and (with `--pr`) pushes and opens the PR. The
+`release.sh` "Done" banner prints this command as a reminder.
+
+### By hand (if you skip the script)
+
+From your nixpkgs checkout: `nix-update bohay --version 0.9.6`, then `nix-build -A
+bohay`, commit `bohay: 0.9.5 -> 0.9.6`, and open the PR. Or set both hashes back
+to `lib.fakeHash`, `nix-build -A bohay` twice, and paste each `got: sha256-…` in
+(the same loop as the initial submission above).
+
+### The other paths
+
+The nixpkgs `r-ryantm` auto-update bot may also open version-bump PRs on its own,
+but it lags your tags. And your `flake.nix` stays the always-current option for
+Nix users who add it as an input, independent of nixpkgs entirely.

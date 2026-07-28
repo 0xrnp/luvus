@@ -24,16 +24,17 @@ rustPlatform.buildRustPackage (finalAttrs: {
   pname = "bohay";
   version = "0.9.5";
 
+  # Required for new by-name packages (nixpkgs-vet NPV-166).
+  __structuredAttrs = true;
+
   src = fetchFromGitHub {
     owner = "RizRiyz";
     repo = "bohay";
     tag = "v${finalAttrs.version}";
-    # Fill in: build once, Nix prints the real hash (see nix/README.md).
-    hash = lib.fakeHash;
+    hash = "sha256-spEjl1qOyxDPjFjLwTEFhF4ObDMIajKvLH74lL4S/sc=";
   };
 
-  # Vendored-dependency hash. Fill in the same way, after the src hash is set.
-  cargoHash = lib.fakeHash;
+  cargoHash = "sha256-w9mdLgx38ZuhqNSiq5Bj8WJ0MHB7FKRDHAW+E0mfgSw=";
 
   nativeBuildInputs = [ makeWrapper ];
 
