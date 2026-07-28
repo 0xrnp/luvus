@@ -36,6 +36,7 @@ exclude = [
     "/website",
     "/flake.nix",
     "/flake.lock",
+    "/nix",
 ]
 
 [[bin]]

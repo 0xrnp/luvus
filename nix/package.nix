@@ -1,0 +1,74 @@
+# nixpkgs package definition for bohay.
+#
+# This is written to drop straight into nixpkgs at
+# `pkgs/by-name/bo/bohay/package.nix`. It differs from the repo's `flake.nix`
+# in the two ways nixpkgs requires: it fetches a *released tag* with a fixed
+# hash (rather than the local tree), and it vendors dependencies via `cargoHash`
+# (rather than a local `cargoLock.lockFile`). See `nix/README.md` for how to fill
+# in the two `lib.fakeHash` placeholders and submit the PR.
+{
+  lib,
+  rustPlatform,
+  fetchFromGitHub,
+  makeWrapper,
+  git,
+  gh,
+  openssh,
+  bashInteractive,
+  coreutils,
+  procps,
+  stdenv,
+}:
+
+rustPlatform.buildRustPackage (finalAttrs: {
+  pname = "bohay";
+  version = "0.9.4";
+
+  src = fetchFromGitHub {
+    owner = "RizRiyz";
+    repo = "bohay";
+    tag = "v${finalAttrs.version}";
+    # Fill in: build once, Nix prints the real hash (see nix/README.md).
+    hash = lib.fakeHash;
+  };
+
+  # Vendored-dependency hash. Fill in the same way, after the src hash is set.
+  cargoHash = lib.fakeHash;
+
+  nativeBuildInputs = [ makeWrapper ];
+
+  # The test suite spawns real PTYs, `ps`, and child processes and reads $HOME,
+  # all awkward inside the Nix sandbox; upstream CI runs the full suite on every
+  # push, so the package build just compiles the release binary.
+  doCheck = false;
+
+  # bohay shells out to these at runtime; bake them into PATH because NixOS has
+  # no implicit global one. The user's own PATH is still appended, so a newer
+  # git/gh they installed wins. `ps` is Linux-only here (procps); on Darwin the
+  # system `ps` is used.
+  postFixup = ''
+    wrapProgram $out/bin/bohay \
+      --prefix PATH : ${
+        lib.makeBinPath (
+          [
+            git
+            gh
+            openssh
+            bashInteractive
+            coreutils
+          ]
+          ++ lib.optionals stdenv.hostPlatform.isLinux [ procps ]
+        )
+      }
+  '';
+
+  meta = {
+    description = "Mission control for your AI coding agents";
+    homepage = "https://bohay.dev";
+    changelog = "https://github.com/RizRiyz/bohay/releases/tag/v${finalAttrs.version}";
+    license = lib.licenses.agpl3Plus;
+    mainProgram = "bohay";
+    maintainers = with lib.maintainers; [ rizriyz ];
+    platforms = lib.platforms.unix;
+  };
+})

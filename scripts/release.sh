@@ -79,7 +79,7 @@ cd "$(git rev-parse --show-toplevel)"
 # Self-heal: if we bail out (failed check, abort, dry-run) before the release is
 # committed, undo the version bump so the tree is never left half-updated.
 committed=0
-trap '[ "$committed" = 1 ] || git checkout -- Cargo.toml Cargo.lock 2>/dev/null || true' EXIT
+trap '[ "$committed" = 1 ] || git checkout -- Cargo.toml Cargo.lock nix/package.nix 2>/dev/null || true' EXIT
 
 step "Preconditions"
 [ "$(git branch --show-current)" = "main" ] || die "not on main"
@@ -119,6 +119,16 @@ perl -0pi -e "s/^version = \"[0-9]+\.[0-9]+\.[0-9]+\"/version = \"$VERSION\"/m" 
 cargo check --quiet                       # syncs Cargo.lock's bohay version
 grep -q "^version = \"$VERSION\"" Cargo.toml || die "Cargo.toml bump failed"
 
+# Keep the nixpkgs package definition in step with the release: bump its version,
+# and reset its source/cargo hashes to a placeholder (both are version-specific).
+# Whoever cuts the nixpkgs PR recomputes them from the pushed tag (see
+# nix/README.md); the release just guarantees the version never goes stale.
+if [ -f nix/package.nix ]; then
+  perl -0pi -e "s/^  version = \"[0-9]+\.[0-9]+\.[0-9]+\";/  version = \"$VERSION\";/m" nix/package.nix
+  perl -0pi -e 's/^(\s*(?:cargoHash|hash)) = "sha256-[^"]*";/$1 = lib.fakeHash;/gm' nix/package.nix
+  grep -q "  version = \"$VERSION\";" nix/package.nix || die "nix/package.nix bump failed"
+fi
+
 step "Verify (fmt · clippy · test · publish dry-run)"
 cargo fmt --all --check
 cargo clippy --all-targets -- -D warnings
@@ -146,6 +156,7 @@ step "Commit + tag"
 # The changelog note ships in the same release commit as the version bump, so a
 # tag always has its notes (the GitHub Release + bohay.dev render from it).
 git add Cargo.toml Cargo.lock "$CHANGELOG"
+[ -f nix/package.nix ] && git add nix/package.nix
 git commit -m "release: $TAG"
 committed=1 # past here the bump is committed — the trap must not revert it
 git tag -a "$TAG" -m "$TAG"
