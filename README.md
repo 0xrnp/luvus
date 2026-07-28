@@ -18,7 +18,7 @@ One place to run, watch, resume, and orchestrate every coding agent.
 
 <br />
 
-<img src="assets/screenshot.png" alt="bohay — split panes, a live agent sidebar, and a built-in git dashboard in one terminal" width="820" />
+<a href="assets/video.mp4"><img src="assets/video.gif" alt="bohay — split panes, a live agent sidebar, and a built-in git dashboard in one terminal" width="820" /></a>
 
 </div>
 
