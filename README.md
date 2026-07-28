@@ -48,8 +48,10 @@ single-digit megabytes.
 curl -fsSL https://bohay.dev/install.sh | sh
 
 brew install RizRiyz/bohay/bohay      # Homebrew (also a prebuilt binary)
-cargo install bohay                   # build from source
+cargo install bohay                   # build from source (needs Rust 1.88+)
 ```
+
+> Building from source with `cargo install` needs **Rust 1.88 or newer** (ratatui 0.30 uses Rust edition 2024). On an older toolchain, run `rustup update` first, or just use a prebuilt binary above (no Rust required).
 
 ```powershell
 # Windows (PowerShell) — use bohay inside Windows Terminal

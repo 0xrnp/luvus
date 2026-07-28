@@ -7,7 +7,7 @@ Thanks for helping make bohay better! Issues and PRs are welcome.
 ```bash
 git clone https://github.com/RizRiyz/bohay
 cd bohay
-cargo build            # pure Rust, no C toolchain needed (Rust ≥ 1.82)
+cargo build            # pure Rust, no C toolchain needed (Rust ≥ 1.88)
 cargo run -- --local   # run client + server in one process (dev escape hatch)
 ```
 
