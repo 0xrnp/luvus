@@ -352,13 +352,20 @@ fn draw_workspaces_dock(
     let nrows = area.height.saturating_sub(1);
     let ncap = list_capacity(nrows);
     let ntotal = app.workspaces.len();
+    // Draw order groups each worktree under the node it branched from (docs/18
+    // WT-4), so scroll positions index into this order, not raw creation order.
+    let order = app.workspace_display_order();
+    let active_pos = order
+        .iter()
+        .position(|(i, _)| *i == app.active_ws)
+        .unwrap_or(0);
     // Auto-reveal the active workspace when it changes (cycle / new / resume), without
     // fighting wheel scrolling (which never changes `active_ws`).
     if app.active_ws != app.last_active_ws_shown {
-        if app.active_ws < app.workspaces_scroll {
-            app.workspaces_scroll = app.active_ws;
-        } else if ncap > 0 && app.active_ws >= app.workspaces_scroll + ncap {
-            app.workspaces_scroll = app.active_ws + 1 - ncap;
+        if active_pos < app.workspaces_scroll {
+            app.workspaces_scroll = active_pos;
+        } else if ncap > 0 && active_pos >= app.workspaces_scroll + ncap {
+            app.workspaces_scroll = active_pos + 1 - ncap;
         }
         app.last_active_ws_shown = app.active_ws;
     }
@@ -366,7 +373,7 @@ fn draw_workspaces_dock(
     app.workspaces_area = Rect::new(area.x, nlist_top, area.width, nrows);
     let nscroll = app.workspaces_scroll;
     app.workspace_branch_rects.clear();
-    for (vi, i) in (nscroll..ntotal).take(ncap).enumerate() {
+    for (vi, (i, is_member)) in order.into_iter().skip(nscroll).take(ncap).enumerate() {
         let y = nlist_top + vi as u16 * ROW_STRIDE;
         let active = i == app.active_ws;
         ws_rects.push((i, Rect::new(area.x, y, area.width, 2)));
@@ -377,13 +384,7 @@ fn draw_workspaces_dock(
         } else {
             Style::new().fg(t.subtext1)
         };
-        // Worktree grouping (docs/18 WT-4): a workspace sharing its repo's common dir
-        // with an earlier workspace is a sibling checkout — nest it with a connector.
-        let is_member = ws.worktree.as_ref().is_some_and(|m| {
-            app.workspaces[..i]
-                .iter()
-                .any(|w| w.worktree.as_ref().map(|o| &o.common_dir) == Some(&m.common_dir))
-        });
+        // A linked worktree is nested under its parent checkout with a connector.
         let indent: u16 = if is_member { 2 } else { 0 };
         // Row 1: state dot + workspace name + git branch (dot aligned with "WORKSPACES").
         let mut line1: Vec<Span> = Vec::new();

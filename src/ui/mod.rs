@@ -393,7 +393,25 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
         app.modal_cancel_rect = x;
     }
     if let Some(path) = &app.file_delete {
-        let (c, x) = files::draw_delete_confirm(f, area, path, hover, &t);
+        let (c, x) = files::draw_delete_confirm(f, area, path, None, hover, &t);
+        app.modal_commit_rect = c;
+        app.modal_cancel_rect = x;
+    }
+    // Worktree-delete confirm (docs/18 WT): reuses the delete modal, worded for a
+    // worktree since it also removes the git worktree, not just a folder.
+    if let Some(path) = app
+        .worktree_delete
+        .and_then(|i| app.workspaces.get(i))
+        .map(|w| w.cwd.clone())
+    {
+        let (c, x) = files::draw_delete_confirm(
+            f,
+            area,
+            &path,
+            Some("Delete worktree and its files?"),
+            hover,
+            &t,
+        );
         app.modal_commit_rect = c;
         app.modal_cancel_rect = x;
     }
@@ -439,6 +457,7 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
         || app.file_menu.is_some()
         || app.file_prompt.is_some()
         || app.file_delete.is_some()
+        || app.worktree_delete.is_some()
         || app.switcher
         || app.orch_form.is_some()
         || app.orch_start.is_some()

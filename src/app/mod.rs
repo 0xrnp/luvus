@@ -301,6 +301,9 @@ pub struct WsMenu {
 pub enum WsMenuItem {
     Close,
     Rename,
+    /// Delete a **linked worktree** and its files (git worktree remove + folder).
+    /// Only offered for worktree nodes, never a main checkout / plain workspace.
+    DeleteWorktree,
     NewWorktree,
     OpenWorktree,
     Divider,
@@ -760,6 +763,10 @@ pub struct App {
     pub tab_rename: Option<TabRename>,
     /// The workspace right-click context menu, and the workspace-rename modal.
     pub ws_menu: Option<WsMenu>,
+    /// Armed worktree-delete confirmation: the workspace index of the worktree to
+    /// delete once confirmed (`y`/⏎). Destructive — removes the folder + git
+    /// worktree — so it goes through the confirm modal like the file delete.
+    pub worktree_delete: Option<usize>,
     /// Active pane context menu (right-click inside a pane); `None` when closed.
     pub pane_menu: Option<PaneMenu>,
     /// Active AGENTS-list context menu (right-click a row); `None` when closed.
@@ -1065,6 +1072,7 @@ impl App {
             worktree_prompt: None,
             tab_rename: None,
             ws_menu: None,
+            worktree_delete: None,
             pane_menu: None,
             agent_menu: None,
             ws_rename: None,
@@ -1418,6 +1426,7 @@ impl App {
             worktree_prompt: None,
             tab_rename: None,
             ws_menu: None,
+            worktree_delete: None,
             pane_menu: None,
             agent_menu: None,
             ws_rename: None,
@@ -1949,6 +1958,26 @@ impl App {
         }
     }
 
+    /// The order the WORKSPACES sidebar draws nodes in: each linked worktree is
+    /// grouped **right under the node it branched from** (its main checkout, by
+    /// shared git common dir) instead of at its raw creation position, so a
+    /// worktree and its parent stay visually correlated. Returns `(index,
+    /// is_member)` where `index` is the position in `self.workspaces` (kept for
+    /// hit-testing) and `is_member` marks a nested worktree row.
+    pub fn workspace_display_order(&self) -> Vec<(usize, bool)> {
+        let nodes: Vec<(Option<&std::path::Path>, bool)> = self
+            .workspaces
+            .iter()
+            .map(|w| {
+                (
+                    w.worktree.as_ref().map(|m| m.common_dir.as_path()),
+                    w.worktree.as_ref().is_some_and(|m| m.linked),
+                )
+            })
+            .collect();
+        group_worktrees(&nodes)
+    }
+
     /// Create a git worktree for `branch` off `repo` and open it as a workspace
     /// (docs/18 WT). Laid out **nested by repo** —
     /// `~/.bohay/worktrees/<repo>/<branch>` — so checkouts don't clutter the repo
@@ -2056,11 +2085,17 @@ impl App {
     /// (close / rename / worktrees) above a divider, then the open-tab actions
     /// (git / orch). Worktree + git actions only appear for nodes in a git repo.
     pub fn ws_menu_items(&self, index: usize) -> Vec<WsMenuItem> {
-        let is_repo = self
-            .workspaces
-            .get(index)
-            .is_some_and(|w| crate::git::local::is_repo(&w.cwd));
+        let ws = self.workspaces.get(index);
+        let is_repo = ws.is_some_and(|w| crate::git::local::is_repo(&w.cwd));
+        // A linked worktree (a `git worktree add` checkout) can be deleted; a main
+        // checkout or plain workspace cannot — only closed.
+        let is_worktree = ws
+            .and_then(|w| w.worktree.as_ref())
+            .is_some_and(|m| m.linked);
         let mut items = vec![WsMenuItem::Close, WsMenuItem::Rename];
+        if is_worktree {
+            items.push(WsMenuItem::DeleteWorktree);
+        }
         if is_repo {
             items.push(WsMenuItem::NewWorktree);
             items.push(WsMenuItem::OpenWorktree);
@@ -2156,6 +2191,8 @@ impl App {
             }
             WsMenuItem::Rename => self.open_ws_rename(index),
             WsMenuItem::Close => self.close_workspace(index),
+            // Destructive: arm the confirm modal rather than delete immediately.
+            WsMenuItem::DeleteWorktree => self.worktree_delete = Some(index),
             WsMenuItem::NewWorktree => {
                 if let Some(cwd) = cwd.filter(|p| crate::git::local::is_repo(p)) {
                     self.worktree_repo = Some(cwd);
@@ -2179,6 +2216,54 @@ impl App {
                     self.open_orch_board();
                 }
             }
+        }
+    }
+
+    /// Keys for the worktree-delete confirm modal: `y`/⏎ deletes, anything else
+    /// cancels (mirrors `file_delete_key`).
+    pub fn worktree_delete_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
+                self.confirm_worktree_delete()
+            }
+            _ => self.worktree_delete = None,
+        }
+    }
+
+    /// Delete the armed worktree: `git worktree remove --force` (its branch is
+    /// kept), a folder-removal fallback if git leaves it, then drop the node.
+    /// Guarded so it only ever acts on a **linked worktree**, never a main
+    /// checkout.
+    fn confirm_worktree_delete(&mut self) {
+        let Some(index) = self.worktree_delete.take() else {
+            return;
+        };
+        // Extract owned paths under an immutable borrow, then act (mutable).
+        let target = self.workspaces.get(index).and_then(|ws| {
+            ws.worktree.as_ref().filter(|m| m.linked).map(|m| {
+                // Run git from the repo's main working tree (the common dir's
+                // parent), so it never refuses "from inside the worktree".
+                let repo = m
+                    .common_dir
+                    .parent()
+                    .map(|p| p.to_path_buf())
+                    .unwrap_or_else(|| ws.cwd.clone());
+                (ws.cwd.clone(), repo)
+            })
+        });
+        let Some((path, repo)) = target else {
+            self.show_toast("not a worktree");
+            return;
+        };
+        match crate::git::local::worktree_remove_force(&repo, &path) {
+            Ok(()) => {
+                if path.exists() {
+                    let _ = std::fs::remove_dir_all(&path);
+                }
+                self.close_workspace(index);
+                self.show_toast("worktree deleted");
+            }
+            Err(e) => self.show_toast(format!("delete failed: {e}")),
         }
     }
 
@@ -3009,6 +3094,36 @@ fn ws_name(cwd: &std::path::Path) -> String {
         .to_string()
 }
 
+/// Group linked worktrees under their main checkout for the WORKSPACES list.
+/// `nodes[i]` is `(git common dir, is-linked-worktree)`. Returns `(index,
+/// is_member)` in draw order: a root (main checkout / non-repo node) followed
+/// immediately by every linked worktree that shares its common dir. Two passes
+/// so a worktree nests under its main checkout when open (pass 0 seeds groups at
+/// roots only), and pass 1 still emits an orphan worktree whose checkout is not.
+fn group_worktrees(nodes: &[(Option<&std::path::Path>, bool)]) -> Vec<(usize, bool)> {
+    let n = nodes.len();
+    let mut out = Vec::with_capacity(n);
+    let mut placed = vec![false; n];
+    for pass in 0..2 {
+        for i in 0..n {
+            if placed[i] || (pass == 0 && nodes[i].1) {
+                continue;
+            }
+            placed[i] = true;
+            out.push((i, false));
+            if let Some(dir) = nodes[i].0 {
+                for (j, node) in nodes.iter().enumerate() {
+                    if j != i && !placed[j] && node.1 && node.0 == Some(dir) {
+                        placed[j] = true;
+                        out.push((j, true));
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 /// `~/.bohay/worktrees/<repo>/` — the folder that holds all of `repo`'s bohay
 /// worktrees. Nested under the **main** worktree's name so every checkout of one
 /// repo groups under a single folder (same rule `create_worktree` uses).
@@ -3113,6 +3228,89 @@ mod tests {
     use std::sync::mpsc;
 
     use crate::persist::TEST_ENV_LOCK as ENV_GUARD;
+
+    /// A worktree groups directly under the node it branched from, wherever that
+    /// parent sits in the list — not at the worktree's raw creation position.
+    #[test]
+    fn worktrees_group_under_their_parent() {
+        use std::path::Path;
+        let sudos = Path::new("/repo/sudos/.git");
+        let agave = Path::new("/repo/agave/.git");
+        // Creation order: sudos (main), agave (main), a non-git node, then a
+        // worktree of sudos added last — which is where the bug put it at the end.
+        let nodes = vec![
+            (Some(sudos), false), // 0 sudos main
+            (Some(agave), false), // 1 agave main
+            (None, false),        // 2 videoscript (not a repo)
+            (Some(sudos), true),  // 3 test — a linked worktree of sudos
+        ];
+        // The worktree (3) nests right under sudos (0), not after videoscript.
+        assert_eq!(
+            group_worktrees(&nodes),
+            vec![(0, false), (3, true), (1, false), (2, false)]
+        );
+    }
+
+    /// Several worktrees of one repo stack under it, and a worktree whose main
+    /// checkout is not open still shows (as its own root, second pass).
+    #[test]
+    fn multiple_worktrees_and_an_orphan() {
+        use std::path::Path;
+        let a = Path::new("/r/a/.git");
+        let b = Path::new("/r/b/.git");
+        let nodes = vec![
+            (Some(b), true),  // 0 orphan worktree of b (main b not open)
+            (Some(a), false), // 1 main a
+            (Some(a), true),  // 2 worktree a1
+            (Some(a), true),  // 3 worktree a2
+        ];
+        assert_eq!(
+            group_worktrees(&nodes),
+            vec![(1, false), (2, true), (3, true), (0, false)]
+        );
+    }
+
+    /// A plain workspace (not a linked worktree) never offers "Delete worktree" —
+    /// only worktree nodes can be deleted; a workspace can only be closed.
+    #[test]
+    fn delete_worktree_absent_for_a_plain_workspace() {
+        let _env = crate::persist::test_env("wt-del-menu");
+        let (tx, _rx) = mpsc::channel();
+        let app = App::new(80, 24, tx).unwrap();
+        let items = app.ws_menu_items(0);
+        assert!(
+            !items.contains(&WsMenuItem::DeleteWorktree),
+            "a non-worktree node has no Delete worktree action"
+        );
+        assert!(items.contains(&WsMenuItem::Close), "but it can be closed");
+    }
+
+    /// The worktree-delete confirm cancels on any non-confirm key, and confirming
+    /// on a non-worktree node is a guarded no-op (never deletes a plain workspace).
+    #[test]
+    fn worktree_delete_confirm_cancels_and_guards() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let _env = crate::persist::test_env("wt-del-confirm");
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+
+        // A non-confirm key dismisses the modal.
+        app.worktree_delete = Some(0);
+        app.worktree_delete_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
+        assert!(app.worktree_delete.is_none(), "n cancels");
+
+        // Confirming on the default node (a main checkout, not a linked worktree)
+        // removes nothing — the guard refuses to delete a plain workspace.
+        let before = app.workspaces.len();
+        app.worktree_delete = Some(0);
+        app.worktree_delete_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(app.worktree_delete.is_none());
+        assert_eq!(
+            app.workspaces.len(),
+            before,
+            "a plain workspace is never deleted"
+        );
+    }
 
     fn key(c: char, m: KeyModifiers) -> AppEvent {
         AppEvent::Key(KeyEvent::new(KeyCode::Char(c), m))

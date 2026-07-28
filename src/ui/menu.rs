@@ -100,7 +100,7 @@ pub(super) fn draw_ws_menu(
         .map(|it| MenuRow {
             text: ws_label(*it, cat, &extras),
             divider: matches!(it, WsMenuItem::Divider),
-            destructive: matches!(it, WsMenuItem::Close),
+            destructive: matches!(it, WsMenuItem::Close | WsMenuItem::DeleteWorktree),
         })
         .collect();
     let rects = render_popup(f, area, anchor, &rows, app.hover, t);
@@ -235,6 +235,7 @@ fn ws_label(it: WsMenuItem, cat: &Catalog, extras: &[ModuleMenuAction]) -> Strin
     match it {
         WsMenuItem::Close => cap_first(cat.act_close),
         WsMenuItem::Rename => cat.menu_rename.to_string(),
+        WsMenuItem::DeleteWorktree => cat.menu_delete_worktree.to_string(),
         WsMenuItem::NewWorktree => cat.new_git_worktree.to_string(),
         WsMenuItem::OpenWorktree => cat.menu_open_worktree.to_string(),
         WsMenuItem::Divider => String::new(),
