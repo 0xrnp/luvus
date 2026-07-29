@@ -148,37 +148,56 @@ impl TileLayout {
         }
     }
 
+    /// The pane to move focus to, or `None` when there is nothing that way.
+    ///
+    /// Movement is geometric, and the rule that makes it feel right is that a
+    /// candidate must actually **face** the current pane: it has to begin beyond
+    /// the edge we are leaving, *and* its span on the perpendicular axis has to
+    /// overlap ours.
+    ///
+    /// Comparing centres alone (what this used to do) let a pane win merely for
+    /// sitting further along the axis, however far off to the side it was. With
+    /// one pane on the left and two stacked on the right, Down from the top-right
+    /// pane jumped back to the **left** pane: its centre was lower, and the cost
+    /// function weighted along-axis distance 1000x against sideways offset, so
+    /// being in a completely different column cost almost nothing.
     fn find_in_direction(&self, area: Rect, dir: Dir) -> Option<PaneId> {
         let panes = self.panes(area);
         let cur = panes.iter().find(|p| p.id == self.focus)?;
-        let (cx, cy) = center(cur.rect);
-        let mut best: Option<PaneId> = None;
-        let mut best_d = i64::MAX;
+        let (c_lo, c_hi) = perp_span(cur.rect, dir);
+
+        // Ordered by (gap along the axis, widest overlap, then topmost/leftmost)
+        // — nearest first, then the pane most face-to-face with us, with a
+        // positional tiebreak so the choice is always deterministic.
+        let mut best: Option<((i64, i64, i64), PaneId)> = None;
+        // Only used when nothing overlaps at all, which a ragged layout or a
+        // configured gap can produce. Without it such a move would silently do
+        // nothing, which reads as a dead keypress.
+        let mut fallback: Option<((i64, i64), PaneId)> = None;
+
         for p in &panes {
             if p.id == self.focus {
                 continue;
             }
-            let (px, py) = center(p.rect);
-            let ahead = match dir {
-                Dir::Right => px > cx,
-                Dir::Left => px < cx,
-                Dir::Down => py > cy,
-                Dir::Up => py < cy,
-            };
-            if !ahead {
-                continue;
+            let gap = gap_towards(cur.rect, p.rect, dir);
+            if gap < 0 {
+                continue; // behind us, or straddling the edge we are leaving
             }
-            let (along, perp) = match dir {
-                Dir::Left | Dir::Right => ((px - cx).abs(), (py - cy).abs()),
-                Dir::Up | Dir::Down => ((py - cy).abs(), (px - cx).abs()),
-            };
-            let d = along as i64 * 1000 + perp as i64;
-            if d < best_d {
-                best_d = d;
-                best = Some(p.id);
+            let (p_lo, p_hi) = perp_span(p.rect, dir);
+            let overlap = c_hi.min(p_hi) - c_lo.max(p_lo);
+            if overlap > 0 {
+                let key = (gap, -overlap, p_lo);
+                if best.as_ref().is_none_or(|(k, _)| key < *k) {
+                    best = Some((key, p.id));
+                }
+            } else {
+                let key = (c_lo.max(p_lo) - c_hi.min(p_hi), gap);
+                if fallback.as_ref().is_none_or(|(k, _)| key < *k) {
+                    fallback = Some((key, p.id));
+                }
             }
         }
-        best
+        best.map(|(_, id)| id).or(fallback.map(|(_, id)| id))
     }
 
     // ── resize (docs/27) ────────────────────────────────────────────────────
@@ -496,11 +515,25 @@ fn build_node(tree: &LayoutTree, remap: &HashMap<u32, PaneId>) -> Option<Node> {
     }
 }
 
-fn center(r: Rect) -> (i32, i32) {
-    (
-        r.x as i32 + r.width as i32 / 2,
-        r.y as i32 + r.height as i32 / 2,
-    )
+/// How far `other` begins beyond the edge of `cur` that we are moving off.
+/// Negative means it is not in that direction at all, so it is not a candidate.
+fn gap_towards(cur: Rect, other: Rect, dir: Dir) -> i64 {
+    let (c, o) = (cur, other);
+    match dir {
+        Dir::Right => o.x as i64 - (c.x as i64 + c.width as i64),
+        Dir::Left => c.x as i64 - (o.x as i64 + o.width as i64),
+        Dir::Down => o.y as i64 - (c.y as i64 + c.height as i64),
+        Dir::Up => c.y as i64 - (o.y as i64 + o.height as i64),
+    }
+}
+
+/// A rect's extent on the axis **perpendicular** to `dir`, as `(start, end)`.
+/// Moving left/right, that is its vertical span; moving up/down, horizontal.
+fn perp_span(r: Rect, dir: Dir) -> (i64, i64) {
+    match dir {
+        Dir::Left | Dir::Right => (r.y as i64, r.y as i64 + r.height as i64),
+        Dir::Up | Dir::Down => (r.x as i64, r.x as i64 + r.width as i64),
+    }
 }
 
 /// Emit every split's divider (line + perpendicular span), tagging each with the
@@ -583,6 +616,109 @@ mod tests {
         assert_eq!(l.len(), 1);
         assert_eq!(l.focus, a);
         assert!(l.remove(a)); // empty
+    }
+
+    /// The reported bug: one pane on the left, two stacked on the right. From
+    /// the top-right pane, Down jumped back to the *left* pane instead of the
+    /// one directly underneath.
+    #[test]
+    fn navigates_to_the_pane_actually_in_that_direction() {
+        let left = PaneId::alloc();
+        let mut l = TileLayout::new(left);
+        let top_right = PaneId::alloc();
+        l.split_focused(Axis::Col, top_right); // left | top_right
+        let bottom_right = PaneId::alloc();
+        l.split_focused(Axis::Row, bottom_right); // right side stacked
+        let area = Rect::new(0, 0, 80, 24);
+
+        l.focus = top_right;
+        l.focus_dir(area, Dir::Down);
+        assert_eq!(l.focus, bottom_right, "Down from top-right goes underneath");
+
+        l.focus_dir(area, Dir::Up);
+        assert_eq!(l.focus, top_right, "and Up comes back");
+
+        l.focus = bottom_right;
+        l.focus_dir(area, Dir::Left);
+        assert_eq!(
+            l.focus, left,
+            "Left from bottom-right reaches the left pane"
+        );
+
+        // Moving into a stacked column lands on the pane it faces, and moving
+        // off the outer edge does nothing rather than jumping somewhere odd.
+        l.focus = left;
+        l.focus_dir(area, Dir::Right);
+        assert_eq!(
+            l.focus, top_right,
+            "Right from the left pane enters the column"
+        );
+        l.focus_dir(area, Dir::Right);
+        assert_eq!(l.focus, top_right, "nothing further right, so no movement");
+        l.focus = left;
+        l.focus_dir(area, Dir::Up);
+        assert_eq!(l.focus, left, "nothing above the full-height left pane");
+    }
+
+    /// A four-pane grid: two columns, each split in two. Every move must land on
+    /// the neighbour that shares an edge, never diagonally across the layout.
+    #[test]
+    fn grid_navigation_never_moves_diagonally() {
+        let tl = PaneId::alloc();
+        let mut l = TileLayout::new(tl);
+        let tr = PaneId::alloc();
+        l.split_focused(Axis::Col, tr); // tl | tr
+        let br = PaneId::alloc();
+        l.split_focused(Axis::Row, br); // right column: tr / br
+        l.focus = tl;
+        let bl = PaneId::alloc();
+        l.split_focused(Axis::Row, bl); // left column: tl / bl
+        let area = Rect::new(0, 0, 80, 24);
+
+        for (from, dir, want, what) in [
+            (tl, Dir::Right, tr, "top-left -> top-right"),
+            (tl, Dir::Down, bl, "top-left -> bottom-left"),
+            (tr, Dir::Left, tl, "top-right -> top-left"),
+            (tr, Dir::Down, br, "top-right -> bottom-right"),
+            (bl, Dir::Right, br, "bottom-left -> bottom-right"),
+            (bl, Dir::Up, tl, "bottom-left -> top-left"),
+            (br, Dir::Left, bl, "bottom-right -> bottom-left"),
+            (br, Dir::Up, tr, "bottom-right -> top-right"),
+        ] {
+            l.focus = from;
+            l.focus_dir(area, dir);
+            assert_eq!(l.focus, want, "{what}");
+        }
+    }
+
+    /// Three panes stacked in one column beside a full-height pane: stepping
+    /// down must visit each in turn instead of skipping or bouncing sideways.
+    #[test]
+    fn stepping_through_a_tall_column_visits_every_pane() {
+        let left = PaneId::alloc();
+        let mut l = TileLayout::new(left);
+        let r1 = PaneId::alloc();
+        l.split_focused(Axis::Col, r1);
+        let r2 = PaneId::alloc();
+        l.split_focused(Axis::Row, r2);
+        let r3 = PaneId::alloc();
+        l.split_focused(Axis::Row, r3);
+        let area = Rect::new(0, 0, 80, 30);
+
+        // Top to bottom of the right column, one step at a time.
+        l.focus = r1;
+        let mut seen = vec![l.focus];
+        for _ in 0..2 {
+            l.focus_dir(area, Dir::Down);
+            seen.push(l.focus);
+        }
+        assert_eq!(seen, vec![r1, r2, r3], "each Down goes one pane down");
+
+        // And back up again.
+        for _ in 0..2 {
+            l.focus_dir(area, Dir::Up);
+        }
+        assert_eq!(l.focus, r1, "Up retraces the same path");
     }
 
     #[test]
