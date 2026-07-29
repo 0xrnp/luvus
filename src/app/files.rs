@@ -818,6 +818,54 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Files get a small dot where folders get their chevron, so a file reads as
+    /// a leaf instead of a blank gap. The alignment assertion is the point: all
+    /// three glyphs must be one cell wide, or every file name shifts out of line
+    /// with the folder names above it.
+    #[test]
+    fn files_get_a_dot_marker_aligned_with_folder_chevrons() {
+        let _env = crate::persist::test_env("files-dot-marker");
+        let root = std::env::temp_dir().join(format!("bohay-fdm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(root.join("README.md"), b"# hi").unwrap();
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        app.workspaces[app.active_ws].cwd = root.clone();
+        app.sidebars.left.docks.push(DockKind::Files);
+        app.ensure_file_tree();
+        app.file_tree
+            .apply_dir(root.clone(), crate::files::read_dir_entries(&root));
+
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let text = buffer_text(&term);
+
+        let file_row = text
+            .lines()
+            .find(|l| l.contains("README.md"))
+            .expect("file row drawn");
+        let dir_row = text
+            .lines()
+            .find(|l| l.contains("src") && l.contains('▸'))
+            .expect("folder row drawn");
+        assert!(
+            file_row.contains('•'),
+            "file row carries the dot: {file_row:?}"
+        );
+
+        // Both names must start in the same column.
+        let name_col = |line: &str, name: &str| line.find(name).expect("name on row");
+        assert_eq!(
+            name_col(file_row, "README.md"),
+            name_col(dir_row, "src"),
+            "file names line up with folder names\n  file: {file_row:?}\n  dir:  {dir_row:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// Dotfiles show by default; the Settings → General toggle hides them and
     /// persists that choice, while `.git` stays hidden either way. Regression:
     /// `show_hidden` existed but was unreachable (no keybinding, menu, config, or

@@ -66,19 +66,27 @@ pub(super) fn draw_files_dock(f: &mut RenderTarget, area: Rect, app: &mut App, t
             hc >= rect.x && hc < rect.right() && hr >= rect.y && hr < rect.bottom()
         });
 
-        // Indentation, then a chevron for a dir / two spaces for a file so names
-        // line up under a chevron.
+        // Indentation, then a marker column: a dir gets its expand chevron, a
+        // file gets a small dot in the same column. A file used to render two
+        // spaces there, so it read as a gap rather than a leaf of the tree.
+        //
+        // All three glyphs are one cell wide (`▾ ▸ •`), which is what keeps file
+        // names aligned under folder names; a wider square like `◾` is two cells
+        // and would shift every file row right by one. `•` (U+2022) is deliberate
+        // over a filled square (`▪`), which out-weighs the thin chevron beside it,
+        // and renders solidly in every font, unlike the hairline hollow shapes
+        // (`▫`, `◦`) that can wash out once the dim marker colour is applied.
         let indent = "  ".repeat(row.depth as usize);
         let glyph = if row.is_dir {
             if row.expanded {
-                "▾ "
+                "▾"
             } else {
-                "▸ "
+                "▸"
             }
         } else {
-            "  "
+            "•"
         };
-        let mut label = format!("{indent}{glyph}{}", row.name);
+        let mut label = row.name.clone();
         if row.loading {
             label.push_str(" …");
         }
@@ -95,7 +103,24 @@ pub(super) fn draw_files_dock(f: &mut RenderTarget, area: Rect, app: &mut App, t
         if hovered {
             style = style.fg(t.accent);
         }
-        let mut spans = vec![Span::styled(label, style)];
+        // A folder's chevron keeps the folder's own styling; a file's dot sits
+        // one step quieter than its name, so a long list still reads as names
+        // first and the dots recede into a column. It still picks up the git
+        // tint, so a changed file reads as one coloured row rather than a
+        // coloured name beside a grey dot.
+        let marker_style = if row.is_dir {
+            style
+        } else {
+            Style::new().fg(if hovered {
+                t.accent
+            } else {
+                git_fg.unwrap_or(t.overlay1)
+            })
+        };
+        let mut spans = vec![
+            Span::styled(format!("{indent}{glyph} "), marker_style),
+            Span::styled(label, style),
+        ];
         if let Some(badge) = git.map(|s| s.badge()).filter(|b| !b.is_empty()) {
             spans.push(Span::styled(
                 format!(" {badge}"),
