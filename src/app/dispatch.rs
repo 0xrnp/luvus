@@ -159,7 +159,8 @@ impl App {
                 // resolved agent_session: keep its disk/hook identity so the brand —
                 // and the notch logo keyed off it — stays stable across an agent's
                 // quiet moments (Claude showing "Opus 4.8" but not "claude", etc.).
-                let detected = if self.manifests.is_agent(&det.agent) {
+                let det_is_agent = self.manifests.is_agent(&det.agent);
+                let detected = if det_is_agent {
                     det.agent
                 } else {
                     match &s.agent_session {
@@ -172,12 +173,23 @@ impl App {
                 if agent_changed && crate::agent::is_resumable(&s.agent) {
                     agent_appeared = true;
                 }
+                // A hooked agent whose process scan now shows a plain shell has
+                // EXITED (running non-empty and not an agent), though its session
+                // id is kept for resume. Mark it Unknown — a dim, distinct state —
+                // so an exited agent reads differently from one idling at its
+                // prompt. This never clears `agent_session`, so resume stays fully
+                // intact; a *blind* scan (running empty) is left alone so a quiet
+                // agent whose UI hides its own name is not mislabeled.
+                let exited = !running.is_empty() && !det_is_agent && s.agent_session.is_some();
                 // The state the raw reading wants right now.
-                let desired = if s.done && det.state == State::Idle {
+                let mut desired = if s.done && det.state == State::Idle {
                     State::Done
                 } else {
                     det.state
                 };
+                if exited {
+                    desired = State::Unknown;
+                }
                 // Debounce with asymmetric hysteresis: a fresh `desired` only
                 // becomes the published `state` once it has held for its dwell.
                 // Active states (Working/Blocked) commit instantly so the sidebar
