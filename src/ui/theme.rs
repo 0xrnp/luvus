@@ -526,10 +526,7 @@ pub enum State {
 impl State {
     pub fn dot(self) -> &'static str {
         match self {
-            // An exited agent (docs/48): a faint dot, dimmer than idle's ring, so
-            // it reads as "gone, session kept" rather than "idling at its prompt".
-            State::Unknown => "·",
-            State::Idle => "○",
+            State::Idle | State::Unknown => "○",
             _ => "●",
         }
     }
@@ -550,8 +547,7 @@ impl State {
             State::Working => "working",
             State::Done => "done",
             State::Idle => "idle",
-            // An exited agent: back to a plain shell, session kept for resume.
-            State::Unknown => "shell",
+            State::Unknown => "—",
         }
     }
 }

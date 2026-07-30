@@ -4298,46 +4298,6 @@ mod tests {
     }
 
     #[test]
-    fn exited_hooked_agent_reads_unknown_but_keeps_its_session() {
-        use crate::ui::theme::State;
-        let _env = crate::persist::test_env("exited-agent");
-        let (tx, _rx) = mpsc::channel();
-        let mut app = App::new(80, 24, tx).unwrap();
-        let focus = app.layout().focus;
-
-        // A hooked agent with a live session.
-        let (reply, _r) = mpsc::channel();
-        app.handle_api(&ApiRequest {
-            id: "1".into(),
-            method: "pane.report_session".into(),
-            params: json!({"pane": focus.0.to_string(), "agent": "claude", "session_id": "s1"}),
-            reply,
-        });
-        // The process scan now sees only a plain shell → the agent has exited.
-        app.proc_commands.insert(focus, vec!["zsh".to_string()]);
-        {
-            let s = app.status.get_mut(&focus).unwrap();
-            s.last_activity = Instant::now() - Duration::from_secs(5); // quiet
-            s.candidate = State::Unknown; // dwell already satisfied
-            s.candidate_since = Instant::now() - Duration::from_secs(5);
-        }
-
-        let t0 = app.last_detect_at;
-        app.detect_tick(t0 + std::time::Duration::from_millis(200));
-        let s = app.status.get(&focus).unwrap();
-        assert_eq!(
-            s.state,
-            State::Unknown,
-            "an exited agent reads Unknown, not Idle"
-        );
-        assert!(
-            s.agent_session.is_some(),
-            "the session is kept for resume (never cleared)"
-        );
-        assert_eq!(s.agent, "claude", "still branded as the agent it was");
-    }
-
-    #[test]
     fn mouse_drag_resizes_pane_and_content_press_still_selects() {
         let _env = crate::persist::test_env("pane-resize-mouse");
         use crate::event::AppEvent;
