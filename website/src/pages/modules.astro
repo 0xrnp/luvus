@@ -2,7 +2,7 @@
 import jetbrainsLatin from '@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url';
 import plexLatin600 from '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2?url';
 import '../styles/themes.css';
-import { THEMES } from '../lib/themes';
+import { THEMES, DEFAULT_THEME } from '../lib/themes';
 // The /modules page: the community module index.
 //
 // There is deliberately **no registry and no backend**. A module is just a
@@ -523,23 +523,23 @@ const examples = [
 
     <style is:global>
       :root {
-        --bg: #070709;
-        --bg2: #111116;
-        --base: #202028;
-        --surface: #1a1a20;
-        --line: #25252d;
-        --border: #383840;
-        --overlay0: #4a4a54;
-        --overlay1: #686873;
-        --sub: #93939f;
-        --sub2: #b6b6c0;
-        --text: #e7e7ed;
-        --accent: #c6ff1a;
-        --sel: #33450e;
-        --green: #8fbc7a;
-        --mint: #6fc6a3;
-        --amber: #e09a4d;
-        --coral: #e06c66;
+    --bg: #242933;
+    --bg2: #2e3440;
+    --base: #3b4252;
+    --surface: #292f3a;
+    --line: #434c5e;
+    --border: #434c5e;
+    --overlay0: #4c566a;
+    --overlay1: #616e88;
+    --sub: #b0b8c8;
+    --sub2: #d8dee9;
+    --text: #eceff4;
+    --accent: #88c0d0;
+    --sel: #3b4a5e;
+    --green: #a3be8c;
+    --mint: #8fbcbb;
+    --amber: #ebcb8b;
+    --coral: #bf616a;
       }
       * { box-sizing: border-box; margin: 0; }
       html { scroll-behavior: smooth; }
@@ -899,7 +899,7 @@ const examples = [
       </ul>
       <button type="button" class="td-btn" id="td-btn" aria-expanded="false" aria-haspopup="listbox">
         <i class="td-sw td-sw-cur" aria-hidden="true"></i>
-        <span id="td-cur">noir</span>
+        <span id="td-cur">{THEMES.find((t) => t.id === DEFAULT_THEME)?.label ?? DEFAULT_THEME}</span>
         <span class="td-caret" aria-hidden="true">▴</span>
       </button>
     </div>
@@ -910,6 +910,7 @@ const examples = [
       //
       // Hovering a name previews it immediately; the choice is only committed on
       // click, so moving away or closing restores what you had.
+      import { DEFAULT_THEME } from '../lib/themes';
       (() => {
         const KEY = 'bohay-theme';
         const dock = document.getElementById('theme-dock');
@@ -920,7 +921,7 @@ const examples = [
         const opts = [...list.querySelectorAll('.td-opt')];
         const root = document.documentElement;
 
-        let committed = localStorage.getItem(KEY) || 'noir';
+        let committed = localStorage.getItem(KEY) || DEFAULT_THEME;
 
         // Preview only: paints the page without touching the committed choice.
         const paint = (id) => root.setAttribute('data-bh-theme', id);

@@ -2,7 +2,7 @@
 import jetbrainsLatin from '@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url';
 import plexLatin600 from '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2?url';
 import '../styles/themes.css';
-import { THEMES } from '../lib/themes';
+import { THEMES, DEFAULT_THEME } from '../lib/themes';
 // The bohay product homepage — a custom landing page, independent of the
 // Starlight docs layout (docs live under /docs/…). Dark-first, the app's own
 // terminal-native aesthetic. The palette is switchable: every colour comes
@@ -556,7 +556,7 @@ const ogImage = 'https://bohay.dev/og.png';
       </ul>
       <button type="button" class="td-btn" id="td-btn" aria-expanded="false" aria-haspopup="listbox">
         <i class="td-sw td-sw-cur" aria-hidden="true"></i>
-        <span id="td-cur">noir</span>
+        <span id="td-cur">{THEMES.find((t) => t.id === DEFAULT_THEME)?.label ?? DEFAULT_THEME}</span>
         <span class="td-caret" aria-hidden="true">▴</span>
       </button>
     </div>
@@ -1021,23 +1021,23 @@ const ogImage = 'https://bohay.dev/og.png';
          render. All selectors are page-specific classes, so no bleed. -->
     <style is:global>
       :root {
-        --bg: #070709;
-        --bg2: #111116;
-        --base: #202028;
-        --surface: #1a1a20;
-        --line: #25252d;
-        --border: #383840;
-        --overlay0: #4a4a54;
-        --overlay1: #686873;
-        --sub: #93939f;
-        --sub2: #b6b6c0;
-        --text: #e7e7ed;
-        --accent: #c6ff1a;
-        --sel: #33450e;
-        --green: #8fbc7a;
-        --mint: #6fc6a3;
-        --amber: #e09a4d;
-        --coral: #e06c66;
+    --bg: #242933;
+    --bg2: #2e3440;
+    --base: #3b4252;
+    --surface: #292f3a;
+    --line: #434c5e;
+    --border: #434c5e;
+    --overlay0: #4c566a;
+    --overlay1: #616e88;
+    --sub: #b0b8c8;
+    --sub2: #d8dee9;
+    --text: #eceff4;
+    --accent: #88c0d0;
+    --sel: #3b4a5e;
+    --green: #a3be8c;
+    --mint: #8fbcbb;
+    --amber: #ebcb8b;
+    --coral: #bf616a;
       }
       * { box-sizing: border-box; margin: 0; }
       html { scroll-behavior: smooth; }
@@ -1386,6 +1386,26 @@ const ogImage = 'https://bohay.dev/og.png';
       @media (max-width: 560px) {
         .features .grid { grid-template-columns: 1fr; }
         .card.s2, .card.s3, .card.s4 { grid-column: span 1; }
+        /* Roomy desktop padding leaves little space for the content itself on a
+           phone, and the card clips (`overflow: hidden`) rather than growing. */
+        .card { padding: 1.15rem 1.1rem; }
+        .fx-tr.in { margin-left: 0.6rem; }
+      }
+
+      /* The inner status rows are single-line flex: a dot, a label, and a tag
+         pushed right with `margin-left: auto`. On a narrow card the label has
+         nowhere to go, so the tag was pushed past the clipped edge. Letting the
+         rows wrap drops the tag onto its own line instead of losing it. */
+      .fx-task, .fx-tr { flex-wrap: wrap; row-gap: 0.2rem; }
+      .fx-task > span, .fx-tr > span { min-width: 0; }
+
+      /* Touch devices never fire `:hover`, so every card's call to action stayed
+         invisible on a phone: `.card-go` is `opacity: 0` until hover, and each
+         card is a link whose label is the only cue about where it goes. Show it
+         unconditionally wherever hover is unavailable. */
+      @media (hover: none) {
+        .card-go { opacity: 1; transform: none; }
+        .card:hover { border-color: var(--line); }
       }
 
       .orch { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; align-items: center; }
@@ -1834,6 +1854,7 @@ const ogImage = 'https://bohay.dev/og.png';
       //
       // Hovering a name previews it immediately; the choice is only committed on
       // click, so moving away or closing restores what you had.
+      import { DEFAULT_THEME } from '../lib/themes';
       (() => {
         const KEY = 'bohay-theme';
         const dock = document.getElementById('theme-dock');
@@ -1844,7 +1865,7 @@ const ogImage = 'https://bohay.dev/og.png';
         const opts = [...list.querySelectorAll('.td-opt')];
         const root = document.documentElement;
 
-        let committed = localStorage.getItem(KEY) || 'noir';
+        let committed = localStorage.getItem(KEY) || DEFAULT_THEME;
 
         // Preview only: paints the page without touching the committed choice.
         const paint = (id) => root.setAttribute('data-bh-theme', id);

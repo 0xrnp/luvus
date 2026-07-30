@@ -14,29 +14,29 @@
  * what Starlight's own light-mode rules and the code-block themes read. */
 
 /* ── palette fallback ─────────────────────────────────────────────────────
-   The tokens for `noir`, bohay's default, for the moment before the theme
+   The tokens for `nord`, the site's default, for the moment before the theme
    attribute is on <html> — and for anyone browsing without JavaScript.
    `html[data-bh-theme]` in themes.css outranks this, so a picked palette wins.
-   Mirrors the generated noir block; it is the one place a hex appears. */
+   Mirrors the generated nord block; it is the one place a hex appears. */
 
 :root {
-  --bg: #070709;
-  --bg2: #111116;
-  --base: #202028;
-  --surface: #1a1a20;
-  --line: #25252d;
-  --border: #383840;
-  --overlay0: #4a4a54;
-  --overlay1: #686873;
-  --sub: #93939f;
-  --sub2: #b6b6c0;
-  --text: #e7e7ed;
-  --accent: #c6ff1a;
-  --sel: #33450e;
-  --green: #8fbc7a;
-  --mint: #6fc6a3;
-  --amber: #e09a4d;
-  --coral: #e06c66;
+  --bg: #242933;
+  --bg2: #2e3440;
+  --base: #3b4252;
+  --surface: #292f3a;
+  --line: #434c5e;
+  --border: #434c5e;
+  --overlay0: #4c566a;
+  --overlay1: #616e88;
+  --sub: #b0b8c8;
+  --sub2: #d8dee9;
+  --text: #eceff4;
+  --accent: #88c0d0;
+  --sel: #3b4a5e;
+  --green: #a3be8c;
+  --mint: #8fbcbb;
+  --amber: #ebcb8b;
+  --coral: #bf616a;
 }
 
 /* ── palette → Starlight ──────────────────────────────────────────────────

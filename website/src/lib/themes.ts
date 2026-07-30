@@ -26,8 +26,8 @@ export const THEMES: { id: string; label: string; note: string }[] = [
   { id: 'mono', label: 'mono', note: 'grayscale, no accent color' },
 ];
 
-/** The palette the site opens with, matching bohay's own default. */
-export const DEFAULT_THEME = 'noir';
+/** The palette the site opens with for a first-time visitor. */
+export const DEFAULT_THEME = 'nord';
 
 /**
  * The palettes whose surfaces are light. bohay's registry has no light/dark
