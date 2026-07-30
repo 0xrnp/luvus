@@ -12,9 +12,16 @@ export default defineConfig({
       title: 'bohay',
       description:
         'Mission control for your AI coding agents. Run Claude Code, Copilot, Codex, and opencode side by side, with a live view of every agent, session resume, and multi-agent orchestration.',
-      logo: { src: './src/assets/logo.svg', alt: 'bohay' },
-      favicon: '/favicon.svg',
+      // No `logo` option: Starlight would ship the full-resolution artwork to
+      // draw a 34px mark. The SiteTitle override renders it through the same
+      // `Logo` component the landing pages use, which optimises and rounds it.
+      // The brand mark, as PNGs: the artwork is a raster illustration, so there
+      // is no vector icon to serve. `favicon` covers the default <link>; the
+      // small and Apple sizes are added by hand, as the landing pages do.
+      favicon: '/favicon.png',
       head: [
+        { tag: 'link', attrs: { rel: 'icon', type: 'image/png', sizes: '32x32', href: '/favicon-32.png' } },
+        { tag: 'link', attrs: { rel: 'apple-touch-icon', href: '/apple-touch-icon.png' } },
         { tag: 'meta', attrs: { property: 'og:image', content: 'https://bohay.dev/og.png' } },
         { tag: 'meta', attrs: { property: 'og:image:width', content: '1200' } },
         { tag: 'meta', attrs: { property: 'og:image:height', content: '630' } },
@@ -26,13 +33,28 @@ export default defineConfig({
         { icon: 'github', label: 'GitHub', href: 'https://github.com/RizRiyz/bohay' },
       ],
       customCss: [
-        '@fontsource-variable/inter',
+        // Mono throughout, like the landing page: JetBrains Mono for body and
+        // code, IBM Plex Mono for the wordmark, headings and labels.
         '@fontsource-variable/jetbrains-mono',
         '@fontsource/ibm-plex-mono/500.css',
         '@fontsource/ibm-plex-mono/600.css',
         '@fontsource/ibm-plex-mono/700.css',
+        // bohay's shipped palettes (generated from src/ui/theme.rs) followed by
+        // the brand layer that maps their tokens onto Starlight's variables.
+        './src/styles/themes.css',
         './src/styles/custom.css',
       ],
+      // The docs wear the landing page's chrome: bohay's own palettes instead
+      // of a light/dark switch (ThemeProvider paints the saved one before first
+      // paint, ThemeSelect is the palette picker in the navbar), and the site
+      // nav in place of the social-icon row. See src/styles/custom.css for how
+      // the palette tokens are mapped onto Starlight's variables.
+      components: {
+        ThemeProvider: './src/components/ThemeProvider.astro',
+        ThemeSelect: './src/components/ThemeSelect.astro',
+        SocialIcons: './src/components/SocialIcons.astro',
+        SiteTitle: './src/components/SiteTitle.astro',
+      },
       sidebar: [
         {
           label: 'Getting Started',
