@@ -22,7 +22,7 @@
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "bohay";
-  version = "0.9.5";
+  version = "0.9.6";
 
   # Required for new by-name packages (nixpkgs-vet NPV-166).
   __structuredAttrs = true;
@@ -31,10 +31,10 @@ rustPlatform.buildRustPackage (finalAttrs: {
     owner = "RizRiyz";
     repo = "bohay";
     tag = "v${finalAttrs.version}";
-    hash = "sha256-spEjl1qOyxDPjFjLwTEFhF4ObDMIajKvLH74lL4S/sc=";
+    hash = lib.fakeHash;
   };
 
-  cargoHash = "sha256-w9mdLgx38ZuhqNSiq5Bj8WJ0MHB7FKRDHAW+E0mfgSw=";
+  cargoHash = lib.fakeHash;
 
   nativeBuildInputs = [ makeWrapper ];
 
