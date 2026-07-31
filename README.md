@@ -2,11 +2,9 @@
 
 <div align="center">
 
-<img src="assets/logo.png" alt="bohay logo" width="116" />
+<img src="assets/logo.png" alt="bohay logo" width="250" />
 
 **Next-Gen mission control for your AI agents.**
-
-One place to run, watch, resume, and orchestrate every coding agent.
 
 [![crates.io](https://img.shields.io/crates/v/bohay.svg)](https://crates.io/crates/bohay)
 [![ci](https://github.com/RizRiyz/bohay/actions/workflows/ci.yml/badge.svg)](https://github.com/RizRiyz/bohay/actions/workflows/ci.yml)
@@ -28,15 +26,29 @@ Working with AI coding agents means juggling terminal windows — one waits for
 permission while you watch another think, and a third finished ten minutes ago
 without you noticing. bohay puts them all in one place.
 
-- **See everything at once** — a sidebar with every agent's live state (*blocked ·
-  working · done · idle*) across all your projects, plus an optional retro chime
-  the moment one finishes or needs you.
-- **Never lose a session** — panes survive closing the terminal; reattach and each
-  agent's own conversation resumes automatically, no flags to remember.
-- **Run agents in parallel, safely** — a task board gives each worker an isolated
-  git worktree and file-path leases, then merges finished branches through a gate.
-- **Stay on the keyboard** — a built-in git dashboard, worktrees, remote sessions
-  over SSH, and a full scripting API, all without leaving the terminal.
+- **See every agent at once.** One sidebar shows what each agent is doing —
+  *blocked · working · done · idle* — across every project, and `Ctrl+Space .`
+  jumps straight to whichever one is waiting on you. *Working* needs on-screen
+  proof, so a launching CLI or your own typing never reads as busy.
+- **Never lose a session.** Close the terminal and nothing stops. Run `bohay`
+  again and every pane, tab, and layout is back, with each agent's own
+  conversation resumed automatically — no flags to remember. Fork a session into
+  a new pane to try a second approach without giving up the first.
+- **Read the files your agents touch.** A file tree tinted by git status, and a
+  fast built-in viewer that marks what changed against your last commit. Open
+  anything in vim, nano, or your `$EDITOR` without leaving the terminal.
+- **Run a team of agents safely.** A task board gives each worker its own git
+  worktree and leases on the files it will touch, then merges finished branches
+  through a quality gate.
+- **Git without leaving the terminal.** Commits, branches, PRs, and issues in a
+  built-in dashboard, with worktrees as first-class workspaces.
+- **Work from anywhere.** Attach to a session over plain SSH — only the cells
+  that changed cross the wire — and the layout adapts down to a phone screen.
+- **Scriptable and extensible.** Every action in the UI is also a CLI command
+  over a local socket, and modules in any language plug in through a small TOML
+  manifest.
+- **Make it yours.** 15 themes, fully remappable keys, movable sidebar docks, and
+  a UI in 8 languages.
 
 Ships as a single **~3 MB Rust binary** — fast, native, memory measured in
 single-digit megabytes.
@@ -51,8 +63,6 @@ brew install RizRiyz/bohay/bohay      # Homebrew (also a prebuilt binary)
 cargo install bohay                   # build from source (needs Rust 1.88+)
 ```
 
-> Building from source with `cargo install` needs **Rust 1.88 or newer** (ratatui 0.30 uses Rust edition 2024). On an older toolchain, run `rustup update` first, or just use a prebuilt binary above (no Rust required).
-
 ```powershell
 # Windows (PowerShell) — use bohay inside Windows Terminal
 irm https://bohay.dev/install.ps1 | iex
@@ -65,14 +75,12 @@ bohay          # launch — or reattach to — your session
 bohay doctor   # check your setup: git, gh, ssh
 ```
 
-`bohay` runs a background server that owns your panes and attaches a thin client,
-so you can **close the terminal any time** and reattach by running `bohay` again.
-Open any folder with `Ctrl+Space` `N` (or run `bohay` inside it), split panes, and
-start your agents — bohay recognizes them automatically.
+Open any folder with `Ctrl+Space` `N` (or run `bohay` inside it), split panes,
+and start your agents — bohay recognizes them automatically.
 
 > **macOS:** free the `Ctrl+Space` prefix under *System Settings → Keyboard →
 > Keyboard Shortcuts → Input Sources* (untick *Select the previous input source*).
-> Everything is mouse-driven too, so you're never locked out. [More →](https://bohay.dev/docs/)
+> Everything is mouse-driven too, so you're never locked out.
 
 ## Supported agents
 
@@ -83,45 +91,15 @@ start your agents — bohay recognizes them automatically.
 | Codex | ✓ | ✓ | ✓ |
 | opencode | ✓ | ✓ | ✓ |
 | Kimi | ✓ | ✓ | ✓ |
+| Grok | ✓ | ✓ | ✓ |
+| Pi | ✓ | ✓ | — |
 | Cursor | ✓ | resume command | — |
-| Gemini · Aider · Amp · Droid | ✓ | — | — |
+| Gemini · Aider · Amp · Droid · Qwen · Kiro | ✓ | — | — |
 
-Live status works out of the box for every agent. [Session resume & hooks →](https://bohay.dev/docs/)
-
-## What's inside
-
-- **Live agent sidebar** — every agent's state across all projects, a spinner while it works, and an optional retro chime when one finishes or blocks (off by default).
-- **States you can trust** — *working* needs on-screen proof (a spinner, an interrupt hint), so a launching CLI or your own typing never reads as work. Tune or add agents with plain TOML rules in `~/.bohay/manifests/`.
-- **Zero-config resume** — reopens each agent's own session after a restart, discovered automatically. Restored panes open straight into the resuming agent, nothing typed at a prompt.
-- **A session that can't die by accident** — only `bohay server stop` ends it. Closing the last pane keeps the server alive, and a reboot or kill saves everything on the way out.
-- **Git dashboard** — commits, flow, branches, PRs, issues; merge & approve without leaving the terminal.
-- **First-class worktrees** — a branch per workspace, nested under its repo.
-- **Multi-agent orchestration** — task board, isolated workers, path leases, quality + merge gates.
-- **Remote over SSH** — attach to a session on another machine; only changed cells cross the wire.
-- **Scriptable to the core** — every UI action is a CLI command over a local socket.
-- **Extensible** — modules in any language via a small TOML manifest.
-- **Make it yours** — 10 themes, fully remappable keys, two sidebars of movable docks (modules can add their own), and a UI in 8 languages.
+Live status works out of the box for every agent, with no setup.
 
 → Full guides, keybindings, and the complete CLI reference live at
 **[bohay.dev/docs](https://bohay.dev/docs/)** — or run `bohay help`.
-
-## The macOS notch companion
-
-<div align="center">
-
-<img src="assets/screenshot-bohay-notch.png" alt="bohay-notch — the agent panel dropping from the macOS notch, showing each agent's state, model, and cost" width="600" />
-
-</div>
-
-**bohay-notch** is a native SwiftUI app that lives in your notch and menu bar. Hover
-for a live panel of every agent — logo, model, project, running cost, and state.
-Approve a blocked agent right there, or click any agent to jump to its pane.
-
-```bash
-brew install --cask --no-quarantine RizRiyz/bohay/bohay-notch
-```
-
-Requires macOS 15+ (ad-hoc signed, hence `--no-quarantine`). [Details →](https://bohay.dev/docs/)
 
 ## Development
 
