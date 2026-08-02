@@ -642,10 +642,27 @@ impl App {
     /// cycle Left → Right → Off → Left.
     fn activate_layout(&mut self, cursor: usize) {
         match self.layout_rows().get(cursor).cloned() {
+            // Cycle Left → Right → Off → Left, but **skip a full side** so the
+            // cycle always makes progress (never stuck because the next side is at
+            // the cap). Skipping is silent here — the explicit `[Left]/[Right]`
+            // buttons still toast when you place directly onto a full side.
             Some(LayoutRow::Dock(kind)) => match self.sidebars.side_of(&kind) {
-                Some(Side::Left) => self.move_dock(&kind, Side::Right),
+                Some(Side::Left) => {
+                    if self.sidebars.has_room(Side::Right) {
+                        self.move_dock(&kind, Side::Right);
+                    } else {
+                        self.unmount_dock(&kind);
+                    }
+                }
                 Some(Side::Right) => self.unmount_dock(&kind),
-                None => self.move_dock(&kind, Side::Left),
+                None => {
+                    if self.sidebars.has_room(Side::Left) {
+                        self.move_dock(&kind, Side::Left);
+                    } else if self.sidebars.has_room(Side::Right) {
+                        self.move_dock(&kind, Side::Right);
+                    }
+                    // Both full: the dock can't be placed, so cycling leaves it off.
+                }
             },
             _ => self.adjust_layout(cursor, 1),
         }

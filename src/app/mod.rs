@@ -58,6 +58,12 @@ pub const SIDEBAR_WIDTH_DEFAULT: u16 = 26;
 pub const SIDEBAR_WIDTH_MIN: u16 = 18;
 pub const SIDEBAR_WIDTH_MAX: u16 = 44;
 
+/// The most docks a single sidebar may hold (docs/29). A side that is full rejects
+/// further placements — the dock stays where it was and the user rearranges in
+/// Settings → Layout. Overflow in a loaded config is truncated to "off". (If this
+/// changes, the `sidebar_full` toast copy in `i18n` stays number-free on purpose.)
+pub const MAX_DOCKS_PER_SIDE: usize = 3;
+
 /// A relocatable sidebar section (docs/29). Built-ins are `Workspaces` and
 /// `Agents`; `Module` is reserved for extension-contributed docks (DOCK-4).
 /// Deliberately distinct from a *pane* (a terminal tile).
@@ -139,10 +145,15 @@ pub struct SideState {
 
 impl SideState {
     fn from_config(c: &crate::config::SideConfig) -> SideState {
+        let mut docks: Vec<DockKind> = c.docks.iter().map(|s| DockKind::from_id(s)).collect();
+        // Enforce the per-side cap on load: a hand-edited or pre-cap config with
+        // more than `MAX_DOCKS_PER_SIDE` here keeps the first few; the overflow
+        // falls to "off" (unmounted, still in the registry to re-place).
+        docks.truncate(MAX_DOCKS_PER_SIDE);
         SideState {
             visible: c.visible,
             width: c.width.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX),
-            docks: c.docks.iter().map(|s| DockKind::from_id(s)).collect(),
+            docks,
         }
     }
     fn to_config(&self) -> crate::config::SideConfig {
@@ -193,6 +204,10 @@ impl Sidebars {
             left: self.left.to_config(),
             right: self.right.to_config(),
         }
+    }
+    /// Whether `side` has a free dock slot (below `MAX_DOCKS_PER_SIDE`, docs/29).
+    pub fn has_room(&self, side: Side) -> bool {
+        self.get(side).docks.len() < MAX_DOCKS_PER_SIDE
     }
     /// Which side, if any, currently holds `kind`.
     pub fn side_of(&self, kind: &DockKind) -> Option<Side> {
@@ -1630,7 +1645,18 @@ impl App {
 
     /// Move a dock to `target` (removed from its current side, appended to the
     /// target's end) and persist. A no-op if it is already the only place.
-    pub fn move_dock(&mut self, kind: &DockKind, target: Side) {
+    ///
+    /// Returns `false` without changing anything when `target` is already full
+    /// (`MAX_DOCKS_PER_SIDE`, docs/29): the dock keeps its current spot and a toast
+    /// asks the user to free a slot, rather than silently dropping it or overflowing
+    /// the side. Placing a dock onto the side it already occupies is never "full".
+    pub fn move_dock(&mut self, kind: &DockKind, target: Side) -> bool {
+        let dst = self.sidebars.get(target);
+        if !dst.has(kind) && dst.docks.len() >= MAX_DOCKS_PER_SIDE {
+            let msg = self.catalog.sidebar_full;
+            self.show_toast(msg);
+            return false;
+        }
         for side in [Side::Left, Side::Right] {
             self.sidebars.get_mut(side).docks.retain(|d| d != kind);
         }
@@ -1639,6 +1665,7 @@ impl App {
             dst.docks.push(kind.clone());
         }
         self.save_sidebars();
+        true
     }
 
     /// The "off" state (docs/29): remove a dock from both sidebars so it shows
@@ -1721,7 +1748,11 @@ impl App {
         }
         entry.rows = rows;
         let kind = DockKind::Module(id.to_string());
-        if self.sidebars.side_of(&kind).is_none() {
+        // Auto-mount to the module's default side only if it has a free slot;
+        // otherwise the dock stays "off" (cached, placeable from Settings). We
+        // check room here rather than letting `move_dock` reject it, so a module
+        // pushing on startup never flashes the "sidebar full" toast at the user.
+        if self.sidebars.side_of(&kind).is_none() && self.sidebars.has_room(placement) {
             self.move_dock(&kind, placement);
         }
     }
@@ -6435,6 +6466,107 @@ mod tests {
         app.remove_module_docks(&["mod:status".into()]);
         assert_eq!(app.sidebars.side_of(&k), None);
         assert!(!app.module_docks.contains_key("mod:status"));
+    }
+
+    // docs/29: a sidebar holds at most MAX_DOCKS_PER_SIDE docks. A move onto a
+    // full side is rejected (the dock keeps its spot), and an over-full config is
+    // truncated to "off" on load.
+    #[test]
+    fn sidebar_dock_cap_is_enforced() {
+        let _env = crate::persist::test_env("dock-cap");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+
+        // Fill the left side to the cap: workspaces, agents, files.
+        assert!(app.move_dock(&DockKind::Files, Side::Left));
+        assert_eq!(app.sidebars.left.docks.len(), MAX_DOCKS_PER_SIDE);
+
+        // A module dock now can't auto-mount onto the full left side — it stays off.
+        let m = DockKind::Module("mod:x".into());
+        app.push_module_dock("mod:x", None, Side::Left, Vec::new());
+        assert_eq!(app.sidebars.side_of(&m), None, "no room → dock stays off");
+
+        // Put it on the right, then try to move it onto the full left: rejected,
+        // and it keeps its right-hand spot.
+        assert!(app.move_dock(&m, Side::Right));
+        assert!(
+            !app.move_dock(&m, Side::Left),
+            "moving onto a full side is rejected"
+        );
+        assert_eq!(
+            app.sidebars.side_of(&m),
+            Some(Side::Right),
+            "the rejected dock keeps its original side"
+        );
+        assert_eq!(app.sidebars.left.docks.len(), MAX_DOCKS_PER_SIDE);
+
+        // A config with more than the cap on one side truncates the overflow off.
+        let cfg = crate::config::SidebarsConfig {
+            left: crate::config::SideConfig {
+                visible: true,
+                width: 26,
+                docks: vec![
+                    "workspaces".into(),
+                    "agents".into(),
+                    "files".into(),
+                    "mod:y".into(),
+                ],
+            },
+            right: crate::config::SideConfig {
+                visible: false,
+                width: 26,
+                docks: Vec::new(),
+            },
+        };
+        let sidebars = Sidebars::from_config(&cfg);
+        assert_eq!(
+            sidebars.left.docks.len(),
+            MAX_DOCKS_PER_SIDE,
+            "load truncates the over-cap side"
+        );
+        assert!(
+            !sidebars.left.has(&DockKind::Module("mod:y".into())),
+            "the overflow dock is dropped to off"
+        );
+    }
+
+    // Regression the cap could introduce: cycling (Enter) a dock whose next side is
+    // full must skip to the next state, not get stuck. Left dock + full Right → Off.
+    #[test]
+    fn dock_cycle_skips_a_full_side() {
+        use crate::app::settings::{LayoutRow, SettingsTab, SettingsUi};
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let _env = crate::persist::test_env("dock-cycle");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+
+        // Left = [workspaces]; Right = [agents, files, mod:a] (full).
+        app.move_dock(&DockKind::Agents, Side::Right);
+        app.move_dock(&DockKind::Files, Side::Right);
+        app.push_module_dock("mod:a", None, Side::Right, Vec::new());
+        assert_eq!(app.sidebars.right.docks.len(), MAX_DOCKS_PER_SIDE);
+        assert_eq!(app.sidebars.left.docks, vec![DockKind::Workspaces]);
+
+        // Put the cursor on the Workspaces dock row and press Enter (cycle).
+        let idx = app
+            .layout_rows()
+            .iter()
+            .position(|r| matches!(r, LayoutRow::Dock(k) if *k == DockKind::Workspaces))
+            .unwrap();
+        app.settings = Some(SettingsUi {
+            tab: SettingsTab::Layout,
+            cursor: idx,
+            capturing: false,
+        });
+        app.handle_settings_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        // Right was full, so the cycle skipped it and went straight to off — the
+        // dock is not stuck on the left.
+        assert_eq!(
+            app.sidebars.side_of(&DockKind::Workspaces),
+            None,
+            "a Left dock cycles to off when the Right side is full"
+        );
     }
 
     // docs/29 DOCK-2: with a dock on the right sidebar, it draws on the right and

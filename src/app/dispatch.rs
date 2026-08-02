@@ -743,8 +743,11 @@ impl App {
                     Some("right") => crate::app::Side::Right,
                     _ => crate::app::Side::Left,
                 };
-                self.move_dock(&crate::app::DockKind::from_id(id), side);
-                Ok(json!({"type":"ok"}))
+                if self.move_dock(&crate::app::DockKind::from_id(id), side) {
+                    Ok(json!({"type":"ok"}))
+                } else {
+                    Ok(json!({"type":"error","message":"sidebar is full (max 3 docks)"}))
+                }
             }
             // ── modules (docs/13) ──
             "module.list" => {
