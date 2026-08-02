@@ -132,12 +132,42 @@
   --sl-sidebar-width: 16.5rem;
 }
 @media (min-width: 72rem) {
+  /* One knob for the TOC rail; three rules below have to agree on it. */
+  :root:root {
+    --bh-toc-width: 13rem;
+  }
   body .right-sidebar-container,
   body .right-sidebar {
-    width: 10.5rem;
+    width: var(--bh-toc-width);
+  }
+  /* Starlight's layout is a flex row of [main-pane][right-sidebar-container],
+     and it sizes .main-pane on the assumption that the right column absorbs
+     `--sl-sidebar-width` PLUS half the leftover width. Pinning the rail to a
+     fixed width without telling .main-pane leaves the difference as dead space
+     at the end of the row, growing by half of every extra pixel of width:
+     ~4rem at 1440px, ~19rem at 1920px.
+     Hand that space to the content so the row adds up to 100% again. */
+  html[data-has-sidebar][data-has-toc] body .main-pane {
+    width: calc(100% - var(--bh-toc-width));
+    /* Starlight sets `auto 0` here, so the article hugs the TOC and its whole
+       left margin is whatever is left over. That is fine at Starlight's own
+       proportions, where the leftover is only half the slack — but .main-pane
+       above now absorbs ALL of it, which pushed the article hard right and left
+       a void beside the nav. Centre it so the slack is split evenly and reads
+       as margins rather than a gap on one side. */
+    --sl-content-margin-inline: auto;
   }
   body .right-sidebar-panel {
     padding-inline: 0.75rem;
+  }
+  /* Starlight sizes the TOC's inner box from `--sl-sidebar-width` (it shares the
+     variable with the LEFT nav) minus its own padding. Since we set that
+     variable for the nav and size this rail independently, the box came out
+     wider than the rail and every line was clipped part-way through — losing
+     whole words mid-phrase, not just tail ends. Tie it to the rail instead. */
+  body .right-sidebar-panel .sl-container {
+    width: 100%;
+    max-width: 100%;
   }
   body .right-sidebar-panel a {
     font-size: 0.76rem;

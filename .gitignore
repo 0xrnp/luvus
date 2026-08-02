@@ -17,3 +17,7 @@ website/.astro/
 website/public/install.sh
 website/public/install.ps1
 .DS_Store
+
+# Python bytecode from example modules
+__pycache__/
+*.pyc

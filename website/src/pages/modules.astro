@@ -108,7 +108,7 @@ for (const [path, text] of Object.entries(exampleFiles)) {
   s.lines += String(text).split('\n').length;
 }
 
-// The three examples that ship in the repo. Same card shape as a community
+// The examples that ship in the repo. Same card shape as a community
 // module, so the two grids read as one system.
 const examples = [
   {
@@ -140,6 +140,26 @@ const examples = [
     topics: ['panes', 'selection', 'tabs'],
     install: 'bohay module link ./examples/modules/scratch-pane',
     path: 'examples/modules/scratch-pane',
+  },
+  {
+    name: 'esp-idf',
+    owner: 'bohay/examples',
+    lang: 'Shell',
+    description:
+      'Build, flash and monitor ESP32 boards. Flashing stops the serial monitor and brings it back in the same pane, so the log from before the flash is still there.',
+    topics: ['dock', 'panes', 'settings'],
+    install: 'bohay module link ./examples/modules/esp-idf',
+    path: 'examples/modules/esp-idf',
+  },
+  {
+    name: 'deck',
+    owner: 'bohay/examples',
+    lang: 'Python',
+    description:
+      'Present a Markdown file as slides in a pane. Split on a rule, arrow keys to move, r to reload.',
+    topics: ['panes', 'settings'],
+    install: 'bohay module link ./examples/modules/deck',
+    path: 'examples/modules/deck',
   },
 ];
 ---
@@ -337,8 +357,8 @@ const examples = [
 
     <section class="samples">
       <div class="shead">
-        <h2>Start from a working example</h2>
-        <a class="topic-link" href={`${GITHUB}/tree/main/examples/modules`}>See all three →</a>
+        <h2>Start from a working example</h2>i
+        <a class="topic-link" href={`${GITHUB}/tree/main/examples/modules`}>See all samples →</a>
       </div>
       <p class="lede">
         Three complete modules ship in the repo, one per language, each covering a different part
