@@ -200,8 +200,18 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
     let bordered = rects.len() > 1;
     for (id, rect) in &rects {
         if let Some(content) = pane_content(*rect, bordered) {
-            if let Some(p) = app.panes.get_mut(id) {
-                p.resize(content.width, content.height);
+            let resized = app
+                .panes
+                .get_mut(id)
+                .map(|p| p.resize(content.width, content.height))
+                .unwrap_or(false);
+            // A real resize (e.g. switching to a tab whose panes have a different
+            // geometry) repaints the agent; note it so detection freezes briefly
+            // and a reflowed spinner can't flip the pane to "working" (docs/07).
+            if resized {
+                if let Some(s) = app.status.get_mut(id) {
+                    s.last_resize = Some(std::time::Instant::now());
+                }
             }
         }
     }

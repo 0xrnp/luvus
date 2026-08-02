@@ -374,9 +374,11 @@ impl Pane {
         self.send(&wrap_paste(text, bracketed));
     }
 
-    pub fn resize(&mut self, cols: u16, rows: u16) {
+    /// Resize the PTY + engine. Returns whether the size actually changed (so the
+    /// caller can note the resize for detection's post-resize grace, docs/07).
+    pub fn resize(&mut self, cols: u16, rows: u16) -> bool {
         if cols == 0 || rows == 0 || (cols, rows) == self.size {
-            return;
+            return false;
         }
         let _ = self.master.resize(PtySize {
             rows,
@@ -388,6 +390,7 @@ impl Pane {
             e.resize(cols, rows);
         }
         self.size = (cols, rows);
+        true
     }
 }
 

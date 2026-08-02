@@ -51,6 +51,14 @@ const ACTIVITY_WINDOW: Duration = Duration::from_millis(700);
 /// quiet is debounced. See `detect_tick` and docs/07.
 const QUIET_DWELL: Duration = Duration::from_millis(2500);
 
+/// After a pane's PTY is resized, its grid is transiently unreliable — it reflows
+/// old rows into view and the agent then repaints its whole screen, which can
+/// surface a stale spinner/hint line in the detection region for a tick or two.
+/// Detection is frozen this long after a resize so switching to a tab (whose panes
+/// have a different geometry) can't flip an idle agent to a lingering "working".
+/// Kept short so a genuinely working agent still lights up promptly after a resize.
+const RESIZE_GRACE: Duration = Duration::from_millis(450);
+
 /// Sidebar width in columns. `sidebar_width` is adjustable at runtime and in the
 /// Settings → Layout tab; these bound it. Colors come from the `Theme`, also
 /// selectable in Settings → Theme (see docs/15).
@@ -701,6 +709,13 @@ pub struct PaneStatus {
     /// `candidate_since` this is the hysteresis gate (see `QUIET_DWELL`).
     candidate: State,
     candidate_since: Instant,
+    /// When this pane's PTY was last resized. A resize (e.g. switching to a tab
+    /// whose panes have a different geometry) makes the agent repaint its whole
+    /// screen; during that reflow-then-repaint the grid is transiently unreliable,
+    /// so detection is frozen for `RESIZE_GRACE` afterward — otherwise a reflowed
+    /// old spinner line flips an idle agent to "working" for the ~2.5s the Idle
+    /// dwell then takes to clear. `None` until the pane is first resized (docs/07).
+    pub last_resize: Option<Instant>,
 }
 
 impl PaneStatus {
@@ -721,6 +736,7 @@ impl PaneStatus {
             notify_armed: true,
             candidate: State::Idle,
             candidate_since: Instant::now(),
+            last_resize: None,
         }
     }
 }
@@ -6645,6 +6661,49 @@ mod tests {
             app.status.get(&id).unwrap().state,
             State::Working,
             "output without recent typing is the agent working"
+        );
+    }
+
+    // docs/07: switching to a tab whose panes resize repaints the agent; that
+    // burst must not flip an idle pane to a lingering "working". Detection is
+    // frozen for `RESIZE_GRACE` after a resize, then resumes normally.
+    #[test]
+    fn resize_grace_suppresses_a_transient_working_after_a_switch() {
+        use crate::ui::theme::State;
+        let _env = crate::persist::test_env("resize-grace");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let id = app.layout().focus;
+        let t0 = std::time::Instant::now() + std::time::Duration::from_millis(200);
+
+        // Recent output, no recent typing → the pane *wants* Working, but it was
+        // just resized (switched into this tab), so it's inside the grace window.
+        {
+            let s = app.status.get_mut(&id).unwrap();
+            s.state = State::Idle;
+            s.last_activity = t0;
+            s.last_input = t0 - std::time::Duration::from_secs(5);
+            s.last_resize = Some(t0);
+        }
+        app.detect_tick(t0);
+        assert_eq!(
+            app.status.get(&id).unwrap().state,
+            State::Idle,
+            "a repaint right after a resize must not flip the pane to working"
+        );
+
+        // Past the grace window the same reading commits normally.
+        let t1 = t0 + RESIZE_GRACE + std::time::Duration::from_millis(150);
+        {
+            let s = app.status.get_mut(&id).unwrap();
+            s.last_activity = t1;
+            s.last_input = t1 - std::time::Duration::from_secs(5);
+        }
+        app.detect_tick(t1);
+        assert_eq!(
+            app.status.get(&id).unwrap().state,
+            State::Working,
+            "once the grid settles, a genuinely active pane reads working again"
         );
     }
 

@@ -148,6 +148,18 @@ impl App {
                     // Looking at the pane re-arms its bell for the next event.
                     s.notify_armed = true;
                 }
+                // Freeze the published state briefly after a resize: switching to a
+                // tab whose panes have a different geometry repaints the agent, and
+                // during that reflow-then-repaint a stale spinner/hint line can
+                // surface in the detection region for a tick or two. Committing it
+                // would flip an idle agent to "working" for the whole ~2.5s Idle
+                // dwell. The pane keeps whatever state it already had until the
+                // grid settles (docs/07).
+                if s.last_resize
+                    .is_some_and(|t| now.duration_since(t) < RESIZE_GRACE)
+                {
+                    continue;
+                }
                 // The done-latch and working history track the *raw* reading.
                 if s.prev_working && det.state == State::Idle && !focused {
                     s.done = true;
