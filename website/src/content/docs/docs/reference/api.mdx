@@ -61,11 +61,28 @@ rendering.
 | `ui.dock.list` | `{}` | `{docks: [{id, side}]}` |
 | `ui.dock.move` | `{id, side: "left"\|"right"}` | `{type:"ok"}` |
 
-A `Row` is `{"text": string, "dot"?: "idle"|"working"|"blocked"|"done",
-"action"?: string}`. The first `push` mounts the dock into `placement` (default
-left). Later pushes refresh its rows. A row's `action` is a module action id,
-run when the row is clicked. The CLI wrappers are `bohay ui dock push|list|move`
-(`push` also reads its rows from stdin).
+A `Row` is:
+
+```json
+{ "text": string,
+  "dot":    "idle" | "working" | "blocked" | "done",
+  "action": string,
+  "value":  string,
+  "menu":   [ {"title": string, "action": string, "destructive"?: bool} ] }
+```
+
+Only `text` is required. The first `push` mounts the dock into `placement`
+(default left); later pushes refresh its rows. A row's `action` is a module
+action id run when the row is **left-clicked**, with `value` handed to it as
+`BOHAY_MODULE_ROW_VALUE` so one action can serve every row.
+
+`menu` gives the row a **right-click** menu. Each entry runs an action id, an
+entry with an empty `action` is a divider, and `destructive` tints the label. An
+absent `menu` means the row has no context menu. Menu entries also set
+`BOHAY_MODULE_ACTION_ID`, so one script can handle the whole menu.
+
+The CLI wrappers are `bohay ui dock push|list|move` (`push` also reads its rows
+from stdin).
 
 ## The event stream
 

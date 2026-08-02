@@ -314,3 +314,27 @@ fn file_label(it: FileMenuItem, editors: &[(String, String)]) -> String {
         FileMenuItem::Delete => "Delete".to_string(),
     }
 }
+
+/// The context menu a module declared for one of its dock rows (docs/52).
+///
+/// Unlike the other menus this renders a snapshot rather than recomputing its
+/// items — the live dock rows may already have been replaced underneath it.
+pub(super) fn draw_dock_menu(f: &mut RenderTarget, area: Rect, app: &mut App, t: &Theme) {
+    let Some(menu) = app.dock_menu.as_ref() else {
+        return;
+    };
+    let rows: Vec<MenuRow> = menu
+        .items
+        .iter()
+        .map(|it| MenuRow {
+            text: it.title.clone(),
+            divider: it.is_divider(),
+            destructive: it.destructive,
+        })
+        .collect();
+    let anchor = menu.anchor;
+    let rects = render_popup(f, area, anchor, &rows, app.hover, t);
+    if let Some(menu) = app.dock_menu.as_mut() {
+        menu.rects = rects;
+    }
+}

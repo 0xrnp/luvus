@@ -407,6 +407,10 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
     if app.file_menu.is_some() {
         menu::draw_file_menu(f, area, app, &t);
     }
+    // A module dock row's own context menu (docs/52).
+    if app.dock_menu.is_some() {
+        menu::draw_dock_menu(f, area, app, &t);
+    }
     if let Some(p) = &app.file_prompt {
         let (title, buf, err) = (
             files::file_prompt_title(p),
@@ -481,6 +485,7 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
         || app.pane_menu.is_some()
         || app.agent_menu.is_some()
         || app.file_menu.is_some()
+        || app.dock_menu.is_some()
         || app.file_prompt.is_some()
         || app.file_delete.is_some()
         || app.worktree_delete.is_some()

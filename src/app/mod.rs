@@ -125,6 +125,54 @@ pub struct DockRow {
     /// Opaque per-row payload handed to that action as `BOHAY_MODULE_ROW_VALUE`
     /// — what turns a list of branches into a list of *buttons* (docs/13 §3.10).
     pub value: Option<String>,
+    /// Extra actions offered when this row is **right-clicked** (docs/52).
+    ///
+    /// Empty — the default, and what every pre-existing module pushes — means the
+    /// row has no context menu, exactly as before. bohay cannot infer a menu for
+    /// a row it does not understand (unlike a FILES row, which is a path), so the
+    /// module declares one per row: a device row can offer "flash this board"
+    /// while a command row in the same dock offers nothing.
+    pub menu: Vec<DockRowMenuItem>,
+}
+
+/// One entry in a dock row's right-click menu (docs/52). `destructive` only
+/// tints the label — bohay does not confirm on the module's behalf.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct DockRowMenuItem {
+    pub title: String,
+    /// Action id to invoke. Empty means a non-interactive divider.
+    pub action: String,
+    pub destructive: bool,
+}
+
+impl DockRowMenuItem {
+    pub fn is_divider(&self) -> bool {
+        self.action.is_empty()
+    }
+}
+
+/// A right-click context menu on a module dock row (docs/52).
+///
+/// Everything needed to run a click is **snapshotted here when the menu opens**,
+/// never re-read from `module_docks` afterwards. Module dock rows are the most
+/// volatile thing bohay renders — any `ui.dock.push` replaces the whole list, and
+/// pollers do that on a timer — so indexing back into the live rows at click time
+/// could run a *different* row's action. With `erase flash` on one of them, that
+/// is a destructive mistake, not a cosmetic one.
+pub struct DockMenu {
+    pub dock_id: String,
+    pub row_index: usize,
+    /// Top-left corner of the popup (the click point, clamped to fit on screen).
+    pub anchor: (u16, u16),
+    /// The row's menu, snapshotted at open time.
+    pub items: Vec<DockRowMenuItem>,
+    /// The row's identity at open time, replayed into the action's env.
+    pub row_text: String,
+    pub row_value: Option<String>,
+    /// Module that owns the dock, resolved at open time.
+    pub owner: Option<String>,
+    /// One clickable rect per item, filled in by the renderer.
+    pub rects: Vec<Rect>,
 }
 
 /// A module-contributed dock's cached content (title + rows). bohay owns the
@@ -920,6 +968,8 @@ pub struct App {
     last_file_scan_at: Instant,
     /// FILES-dock right-click menu + its modals (docs/38 FILE-6).
     pub file_menu: Option<FileMenu>,
+    /// Module-dock row right-click menu (docs/52).
+    pub dock_menu: Option<DockMenu>,
     pub file_prompt: Option<FilePrompt>,
     /// The path a delete-confirm modal is asking about.
     pub file_delete: Option<PathBuf>,
@@ -1189,6 +1239,7 @@ impl App {
                 .checked_sub(Duration::from_secs(10))
                 .unwrap_or_else(Instant::now),
             file_menu: None,
+            dock_menu: None,
             file_prompt: None,
             file_delete: None,
             compact: false,
@@ -1549,6 +1600,7 @@ impl App {
                 .checked_sub(Duration::from_secs(10))
                 .unwrap_or_else(Instant::now),
             file_menu: None,
+            dock_menu: None,
             file_prompt: None,
             file_delete: None,
             compact: false,
@@ -5268,6 +5320,185 @@ mod tests {
         assert!(app.pane_menu.is_none(), "no pane menu on the orch board");
     }
 
+    /// A module dock row shows the menu **it declared** (docs/52), and that menu
+    /// is a snapshot: a `ui.dock.push` while it is open — which pollers do on a
+    /// timer — cannot make a click run a different row's action.
+    #[test]
+    fn dock_row_menu_is_declared_per_row_and_survives_a_repaint() {
+        let _env = crate::persist::test_env("dock-menu");
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+
+        let row = |text: &str, value: &str, menu: Vec<DockRowMenuItem>| DockRow {
+            text: text.into(),
+            dot: None,
+            action: Some("select".into()),
+            value: Some(value.into()),
+            menu,
+        };
+        let item = |title: &str, action: &str, destructive: bool| DockRowMenuItem {
+            title: title.into(),
+            action: action.into(),
+            destructive,
+        };
+        let board_menu = || {
+            vec![
+                item("Flash this board", "flash", false),
+                item("", "", false), // divider
+                item("Erase flash", "erase", true),
+            ]
+        };
+
+        app.push_module_dock(
+            "devices",
+            Some("DEVICES".into()),
+            Side::Left,
+            vec![
+                row("esp32s3", "/dev/ttyA", board_menu()),
+                row("build", "build", Vec::new()), // a command row: no menu
+            ],
+        );
+
+        // Rows in one dock differ: a device offers actions, a command offers
+        // none. bohay cannot invent items for a row it does not understand, so
+        // an undeclared menu opens nothing rather than an empty popup.
+        app.open_dock_menu("devices", 1, 6, 6);
+        assert!(app.dock_menu.is_none(), "row without a menu opens nothing");
+
+        app.open_dock_menu("devices", 0, 6, 6);
+        {
+            let menu = app.dock_menu.as_ref().expect("declared menu opens");
+            assert_eq!(menu.items.len(), 3);
+            assert_eq!(menu.row_value.as_deref(), Some("/dev/ttyA"));
+        }
+
+        // A render fills the clickable rects.
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        assert_eq!(app.dock_menu.as_ref().unwrap().rects.len(), 3);
+
+        // ── the property that matters (docs/52 §5) ──────────────────────────
+        // A poller replaces the whole row list underneath the open menu.
+        app.push_module_dock(
+            "devices",
+            None,
+            Side::Left,
+            vec![row("esp32c6", "/dev/ttyZ", board_menu())],
+        );
+        {
+            let menu = app.dock_menu.as_ref().expect("a repaint doesn't close it");
+            assert_eq!(menu.row_text, "esp32s3", "still the row that was clicked");
+            assert_eq!(menu.row_value.as_deref(), Some("/dev/ttyA"));
+            assert_eq!(menu.items[2].title, "Erase flash");
+        }
+
+        // A divider is inert: clicking it keeps the menu open.
+        let d = app.dock_menu.as_ref().unwrap().rects[1];
+        app.dock_menu_click(d.x + 1, d.y);
+        assert!(
+            app.dock_menu.is_some(),
+            "a divider click keeps the menu open"
+        );
+
+        // Clicking a real item runs *that* item and closes the menu. No module
+        // is installed in this test, so the invocation surfaces as a toast
+        // naming the action it tried — which is the snapshotted `erase`, not
+        // whatever the repainted row at index 0 would have given.
+        let r = app.dock_menu.as_ref().unwrap().rects[2];
+        app.dock_menu_click(r.x + 1, r.y);
+        assert!(app.dock_menu.is_none(), "menu closed after an item click");
+        let toast = app
+            .toast
+            .as_ref()
+            .map(|(t, _)| t.clone())
+            .unwrap_or_default();
+        assert!(
+            toast.contains("erase"),
+            "ran the snapshotted action; toast was {toast:?}"
+        );
+
+        // Clicking outside dismisses without running anything.
+        app.open_dock_menu("devices", 0, 6, 6);
+        assert!(app.dock_menu.is_some());
+        app.dock_menu_click(119, 39);
+        assert!(app.dock_menu.is_none(), "a click outside dismisses");
+    }
+
+    /// A real right-click on a rendered module dock row reaches the dock menu
+    /// (docs/52) — and a row with no declared menu does **not** fall through to
+    /// the pane menu sitting underneath the sidebar.
+    #[test]
+    fn right_click_on_a_module_dock_row_opens_its_menu() {
+        let _env = crate::persist::test_env("dock-menu-rclick");
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        use ratatui::Terminal;
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        app.push_module_dock(
+            "devices",
+            Some("DEVICES".into()),
+            Side::Left,
+            vec![
+                DockRow {
+                    text: "esp32s3".into(),
+                    dot: Some("done".into()),
+                    action: Some("select".into()),
+                    value: Some("/dev/ttyA".into()),
+                    menu: vec![DockRowMenuItem {
+                        title: "Flash this board".into(),
+                        action: "flash".into(),
+                        destructive: false,
+                    }],
+                },
+                DockRow {
+                    text: "build".into(),
+                    dot: None,
+                    action: Some("build".into()),
+                    value: None,
+                    menu: Vec::new(),
+                },
+            ],
+        );
+
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+
+        let rect_for = |app: &App, i: usize| {
+            app.module_dock_rects
+                .iter()
+                .find(|(d, r, _)| d == "devices" && *r == i)
+                .map(|(_, _, rect)| *rect)
+                .expect("dock row drew")
+        };
+        let rclick = |app: &mut App, rect: Rect| {
+            app.handle_event(AppEvent::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Right),
+                column: rect.x + 1,
+                row: rect.y,
+                modifiers: KeyModifiers::NONE,
+            }));
+        };
+
+        let r0 = rect_for(&app, 0);
+        rclick(&mut app, r0);
+        let menu = app.dock_menu.as_ref().expect("right-click opened the menu");
+        assert_eq!(menu.items[0].title, "Flash this board");
+        assert_eq!(menu.row_value.as_deref(), Some("/dev/ttyA"));
+        app.dock_menu = None;
+
+        // The command row declares no menu: nothing opens, and crucially the
+        // click does not leak through to the pane menu.
+        let r1 = rect_for(&app, 1);
+        rclick(&mut app, r1);
+        assert!(app.dock_menu.is_none(), "no menu for an undeclared row");
+        assert!(app.pane_menu.is_none(), "and no pane menu underneath it");
+    }
+
     /// Moving a pane to another tab re-parents its id between layout trees — the
     /// process/PTY survives (never through `close_pane`) — and if the source tab
     /// empties it collapses, with focus following the pane.
@@ -6457,6 +6688,7 @@ mod tests {
                 dot: Some("done".into()),
                 action: None,
                 value: None,
+                menu: Vec::new(),
             }],
         );
         assert_eq!(app.sidebars.side_of(&k), Some(Side::Right));

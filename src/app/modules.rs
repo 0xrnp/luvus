@@ -201,6 +201,92 @@ impl App {
         }
     }
 
+    // ── dock-row right-click menus (docs/52) ─────────────────────────────────
+
+    /// Open the context menu for row `row_i` of module dock `dock_id`.
+    ///
+    /// Everything the click will need is captured *now* — the items, the row's
+    /// text and value, and the owning module — because the row list can be
+    /// replaced by any `ui.dock.push` while the menu sits open. A row with no
+    /// declared menu opens nothing, so a right-click there falls through as a
+    /// plain miss rather than showing an empty popup.
+    pub fn open_dock_menu(&mut self, dock_id: &str, row_i: usize, col: u16, row: u16) {
+        let Some(r) = self
+            .module_docks
+            .get(dock_id)
+            .and_then(|d| d.rows.get(row_i))
+        else {
+            return;
+        };
+        if r.menu.is_empty() {
+            return;
+        }
+        self.dock_menu = Some(crate::app::DockMenu {
+            dock_id: dock_id.to_string(),
+            row_index: row_i,
+            anchor: (col, row),
+            items: r.menu.clone(),
+            row_text: r.text.clone(),
+            row_value: r.value.clone(),
+            owner: self.module_owning_dock(dock_id),
+            rects: Vec::new(),
+        });
+    }
+
+    /// Route a click at `(col,row)` to a dock-menu item, or dismiss the menu.
+    pub fn dock_menu_click(&mut self, col: u16, row: u16) {
+        let hit = self.dock_menu.as_ref().and_then(|m| {
+            m.rects
+                .iter()
+                .position(|r| col >= r.x && col < r.right() && row >= r.y && row < r.bottom())
+        });
+        match hit {
+            // A divider is inert: keep the menu open rather than closing on a
+            // click that meant nothing.
+            Some(i)
+                if self
+                    .dock_menu
+                    .as_ref()
+                    .is_some_and(|m| m.items[i].is_divider()) => {}
+            Some(i) => self.dock_menu_action(i),
+            None => self.dock_menu = None,
+        }
+    }
+
+    /// Invoke dock-menu item `i` against the row the menu was opened on, then
+    /// close the menu.
+    ///
+    /// The row env is rebuilt from the menu's snapshot, so the action receives
+    /// the row the user actually right-clicked even if the dock has since been
+    /// repainted — the same identity a left-click would have passed
+    /// (docs/13 §3.10).
+    pub fn dock_menu_action(&mut self, i: usize) {
+        let Some(menu) = self.dock_menu.take() else {
+            return;
+        };
+        let Some(item) = menu.items.get(i).filter(|it| !it.is_divider()) else {
+            return;
+        };
+        let extra = vec![
+            ("BOHAY_MODULE_DOCK_ID".to_string(), menu.dock_id.clone()),
+            (
+                "BOHAY_MODULE_ROW_INDEX".to_string(),
+                menu.row_index.to_string(),
+            ),
+            ("BOHAY_MODULE_ROW_TEXT".to_string(), menu.row_text.clone()),
+            (
+                "BOHAY_MODULE_ROW_VALUE".to_string(),
+                menu.row_value
+                    .clone()
+                    .unwrap_or_else(|| menu.row_text.clone()),
+            ),
+            ("BOHAY_MODULE_ACTION_ID".to_string(), item.action.clone()),
+        ];
+        if let Err(e) = self.module_invoke_dock_action(&item.action, menu.owner.as_deref(), extra) {
+            self.show_toast(e);
+        }
+    }
+
     // ── settings (docs/13 §3.6) ──────────────────────────────────────────────
 
     /// A module's effective settings (manifest defaults under stored values).
@@ -565,6 +651,110 @@ mod tests {
     use super::*;
     use crate::persist::TEST_ENV_LOCK;
     use std::time::{Duration, Instant};
+
+    /// End-to-end: a click on a dock row's right-click menu (docs/52) really
+    /// spawns that module's action, with the **snapshotted** row's identity in
+    /// its environment — even though the dock was repainted while the menu was
+    /// open. This is the last link the render/parse tests don't cover: that a
+    /// menu click reaches a real subprocess with the right env.
+    #[test]
+    fn dock_menu_click_spawns_the_action_with_the_clicked_rows_env() {
+        let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bohay-dockmenu-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::env::set_var("BOHAY_HOME", &home);
+
+        let dir = home.join("boards-mod");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("bohay-module.toml"),
+            r#"
+id = "you.boards"
+name = "Boards"
+version = "0.1.0"
+min_bohay_version = "0.1.0"
+
+[[docks]]
+id = "boards"
+title = "BOARDS"
+placement = "sidebar.left"
+
+[[actions]]
+id = "erase"
+title = "Erase"
+command = ["sh", "-c", "echo ran=$BOHAY_MODULE_ACTION_ID port=$BOHAY_MODULE_ROW_VALUE row=$BOHAY_MODULE_ROW_TEXT dock=$BOHAY_MODULE_DOCK_ID"]
+"#,
+        )
+        .unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let id = app.module_link_with(&dir, true, None).unwrap();
+        assert_eq!(id, "you.boards");
+
+        let mk = |text: &str, port: &str| crate::app::DockRow {
+            text: text.into(),
+            dot: None,
+            action: Some("select".into()),
+            value: Some(port.into()),
+            menu: vec![crate::app::DockRowMenuItem {
+                title: "Erase this board".into(),
+                action: "erase".into(),
+                destructive: true,
+            }],
+        };
+        app.push_module_dock(
+            "boards",
+            Some("BOARDS".into()),
+            crate::app::Side::Left,
+            vec![mk("esp32s3", "/dev/ttyA")],
+        );
+
+        app.open_dock_menu("boards", 0, 4, 4);
+        assert!(app.dock_menu.is_some(), "menu opened");
+        // The dock is fully repainted underneath the open menu, as a poller does.
+        app.push_module_dock(
+            "boards",
+            None,
+            crate::app::Side::Left,
+            vec![mk("esp32c6", "/dev/ttyZ")],
+        );
+
+        let before = app.module_logs.len();
+        app.dock_menu_action(0);
+        assert!(app.dock_menu.is_none(), "menu closed");
+        assert_eq!(app.module_logs.len(), before + 1, "a command was spawned");
+        let log_id = app.module_logs.last().unwrap().id;
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                app.handle_event(ev);
+            }
+            let resolved = app
+                .module_logs
+                .iter()
+                .find(|l| l.id == log_id)
+                .is_some_and(|l| l.status != ModuleStatus::Running);
+            if resolved || Instant::now() > deadline {
+                break;
+            }
+        }
+
+        let log = app.module_logs.iter().find(|l| l.id == log_id).unwrap();
+        assert_eq!(log.status, ModuleStatus::Succeeded, "stderr: {}", log.err);
+        assert!(log.out.contains("ran=erase"), "stdout: {:?}", log.out);
+        assert!(log.out.contains("dock=boards"), "stdout: {:?}", log.out);
+        // The port the user right-clicked, not the one the repaint installed.
+        assert!(
+            log.out.contains("port=/dev/ttyA") && log.out.contains("row=esp32s3"),
+            "menu ran against the repainted row instead of the clicked one: {:?}",
+            log.out
+        );
+
+        std::env::remove_var("BOHAY_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
 
     #[test]
     fn link_then_run_action_captures_output() {

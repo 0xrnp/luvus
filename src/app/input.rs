@@ -311,6 +311,13 @@ impl App {
             }
             return;
         }
+        // A module dock row's menu (docs/52) owns the mouse while open.
+        if self.dock_menu.is_some() {
+            if let MouseEventKind::Down(_) = m.kind {
+                self.dock_menu_click(m.column, m.row); // an item, or dismiss
+            }
+            return;
+        }
         if self.file_prompt.is_some() {
             if let Some(k) = self.modal_button_key(&m) {
                 self.file_prompt_key(k);
@@ -390,6 +397,16 @@ impl App {
                 self.open_agent_menu(AgentTarget::Session(*i), c, r); // session → Resume/Close
             } else if let Some((i, _)) = self.file_tree_rects.iter().find(|(_, rect)| hit(*rect)) {
                 self.open_file_menu(*i, c, r); // FILES-dock row → new/rename/delete (docs/38)
+            } else if let Some((dock, row_i, _)) = self
+                .module_dock_rects
+                .iter()
+                .find(|(_, _, rect)| hit(*rect))
+                .cloned()
+            {
+                // A module dock row → the menu that row declared (docs/52). Rows
+                // without one open nothing, and deliberately do not fall through
+                // to the pane menu underneath.
+                self.open_dock_menu(&dock, row_i, c, r);
             } else if let Some((id, _)) = self.pane_rects.iter().find(|(_, rect)| hit(*rect)) {
                 self.open_pane_menu(*id, c, r); // no-op on a git/orch dashboard tab
             }
@@ -1271,6 +1288,12 @@ impl App {
         if self.file_menu.is_some() {
             if key.code == KeyCode::Esc {
                 self.file_menu = None;
+            }
+            return true;
+        }
+        if self.dock_menu.is_some() {
+            if key.code == KeyCode::Esc {
+                self.dock_menu = None;
             }
             return true;
         }

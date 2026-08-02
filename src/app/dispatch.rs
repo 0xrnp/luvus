@@ -713,6 +713,35 @@ impl App {
                                     .get("value")
                                     .and_then(|v| v.as_str())
                                     .map(|s| s.to_string()),
+                                // Right-click menu for this row (docs/52).
+                                // Absent — every module written before this —
+                                // leaves the row with no menu, as before. An
+                                // entry with no `action` is a divider.
+                                menu: r
+                                    .get("menu")
+                                    .and_then(|v| v.as_array())
+                                    .map(|items| {
+                                        items
+                                            .iter()
+                                            .map(|it| crate::app::DockRowMenuItem {
+                                                title: it
+                                                    .get("title")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("")
+                                                    .to_string(),
+                                                action: it
+                                                    .get("action")
+                                                    .and_then(|v| v.as_str())
+                                                    .unwrap_or("")
+                                                    .to_string(),
+                                                destructive: it
+                                                    .get("destructive")
+                                                    .and_then(|v| v.as_bool())
+                                                    .unwrap_or(false),
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default(),
                             })
                             .collect()
                     })
@@ -1395,6 +1424,51 @@ fn state_str(s: State) -> &'static str {
 mod tests {
     use super::*;
     use crate::app::App;
+
+    /// `ui.dock.push` carries a row's right-click menu (docs/52) through to the
+    /// stored `DockRow`, and a row that omits `menu` keeps the pre-existing
+    /// shape — that backward compatibility is the whole reason the field is
+    /// optional.
+    #[test]
+    fn dock_push_parses_a_rows_right_click_menu() {
+        let _env = crate::persist::test_env("dock-push-menu");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+
+        app.dispatch(
+            "ui.dock.push",
+            &json!({
+                "id": "devices",
+                "title": "DEVICES",
+                "rows": [
+                    {"text": "esp32s3", "dot": "done",
+                     "action": "select", "value": "/dev/ttyA",
+                     "menu": [
+                         {"title": "Flash this board", "action": "flash"},
+                         {"title": "", "action": ""},
+                         {"title": "Erase flash", "action": "erase", "destructive": true}
+                     ]},
+                    {"text": "build", "action": "build"}
+                ]
+            }),
+        )
+        .expect("dock.push ok");
+
+        let rows = &app.module_docks.get("devices").expect("dock stored").rows;
+        assert_eq!(rows.len(), 2);
+
+        let menu = &rows[0].menu;
+        assert_eq!(menu.len(), 3);
+        assert_eq!(menu[0].title, "Flash this board");
+        assert_eq!(menu[0].action, "flash");
+        assert!(!menu[0].destructive);
+        assert!(menu[1].is_divider(), "an empty action is a divider");
+        assert!(menu[2].destructive, "destructive survives the round trip");
+
+        // No `menu` key at all: a row exactly as every earlier module pushes it.
+        assert!(rows[1].menu.is_empty(), "absent menu stays absent");
+        assert_eq!(rows[1].action.as_deref(), Some("build"));
+    }
 
     /// The notch companion (docs/24) patches its rows from **both** `agent.list`
     /// and `pane.agent_status_changed`. If the two disagree about what `project`

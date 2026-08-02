@@ -123,6 +123,11 @@ a background node and `BOHAY_WORKSPACE_CWD` is that node's folder. Actions
 without `contexts` never appear in a menu, which is right for anything meant
 only for the CLI, a dock row, or another module.
 
+`contexts` adds items to **bohay's** menus. To give **your own dock rows** a
+right-click menu, see [a row's own right-click menu](#a-rows-own-right-click-menu)
+further down: those rows are your data, so you declare the menu rather than
+appending to one.
+
 `invocation_source` in the context tells you where a run came from
 (`menu:pane`, `menu:workspace`, `menu:agent`, `dock`, `startup`, `event`,
 `cli`, `api`), so one script can serve several entry points.
@@ -308,6 +313,7 @@ Each **row** is an object:
 | `dot` |  | A status dot: `idle` / `working` / `blocked` / `done` (colored like the Agents list). |
 | `action` |  | A module **action id** run when the row is clicked. |
 | `value` |  | An opaque payload for that action, so one action can back every row. |
+| `menu` |  | Extra actions offered when the row is **right-clicked**. See below. |
 
 The **first push mounts** the dock into its `placement` side automatically (or
 wherever the user has since moved it). Later pushes just refresh the rows. Clear
@@ -327,6 +333,58 @@ readout.
 That's the whole trick behind a clickable branch list: push one row per branch
 with `"action": "checkout"` and `"value": "<branch>"`, then have `checkout` read
 `$BOHAY_MODULE_ROW_VALUE`.
+
+#### A row's own right-click menu
+
+A row can only do one thing on a left-click. Give it a `menu` and right-clicking
+it opens a context menu of your own:
+
+```sh
+"$BOHAY_BIN_PATH" ui dock push --id you:boards --title BOARDS --rows '[
+  {
+    "text": "esp32s3", "dot": "done",
+    "action": "select", "value": "/dev/cu.usbserial-110",
+    "menu": [
+      {"title": "Flash this board", "action": "flash"},
+      {"title": "Open monitor",     "action": "monitor"},
+      {"title": "", "action": ""},
+      {"title": "Erase flash", "action": "erase", "destructive": true}
+    ]
+  },
+  {"text": "build", "action": "build"}
+]'
+```
+
+| Field | Required | Meaning |
+|---|:---:|---|
+| `title` | ✓ | The menu label. |
+| `action` | ✓ | The action id to run. **Leave it empty for a divider.** |
+| `destructive` |  | Tints the label red, like Close and Delete. |
+
+The menu is **per row**, which is the point: in the example above the board row
+offers three actions while the `build` row below it offers none. Bohay can't
+guess a menu for a row it didn't create, so you declare it. A row with no `menu`
+has no context menu, exactly as before.
+
+The action receives the same `BOHAY_MODULE_ROW_*` variables a left-click passes,
+plus `BOHAY_MODULE_ACTION_ID` telling it which item was picked, so one script
+can serve the whole menu:
+
+```sh
+case "$BOHAY_MODULE_ACTION_ID" in
+  flash)   idf.py -p "$BOHAY_MODULE_ROW_VALUE" flash ;;
+  erase)   idf.py -p "$BOHAY_MODULE_ROW_VALUE" erase-flash ;;
+esac
+```
+
+The row identity is captured **when the menu opens**, so a refresh that lands
+while the menu is up can't make a click hit the wrong row. That matters if you
+push on a timer.
+
+`destructive` is only a colour: bohay won't ask "are you sure" for you. If an
+action can't be undone, open a pane that says what it's about to do and waits for
+a keypress. That's better than a generic dialog anyway, because it can name the
+port it's about to erase.
 
 Declared docks show up in the **registry** in Settings → Layout even before they
 push anything, so the user can place them straight away. Disabling or unlinking
