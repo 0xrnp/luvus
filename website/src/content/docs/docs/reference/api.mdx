@@ -68,7 +68,8 @@ A `Row` is:
   "dot":    "idle" | "working" | "blocked" | "done",
   "action": string,
   "value":  string,
-  "menu":   [ {"title": string, "action": string, "destructive"?: bool} ] }
+  "menu":   [ {"title": string, "action": string,
+               "value"?: string, "destructive"?: bool} ] }
 ```
 
 Only `text` is required. The first `push` mounts the dock into `placement`
@@ -78,8 +79,9 @@ action id run when the row is **left-clicked**, with `value` handed to it as
 
 `menu` gives the row a **right-click** menu. Each entry runs an action id, an
 entry with an empty `action` is a divider, and `destructive` tints the label. An
-absent `menu` means the row has no context menu. Menu entries also set
-`BOHAY_MODULE_ACTION_ID`, so one script can handle the whole menu.
+absent `menu` means the row has no context menu. An entry's own `value`
+overrides the row's, so one action can back a menu of variants. Menu entries
+also set `BOHAY_MODULE_ACTION_ID`, so one script can handle the whole menu.
 
 The CLI wrappers are `bohay ui dock push|list|move` (`push` also reads its rows
 from stdin).

@@ -142,6 +142,13 @@ pub struct DockRowMenuItem {
     pub title: String,
     /// Action id to invoke. Empty means a non-interactive divider.
     pub action: String,
+    /// Payload for *this item*, overriding the row's `value` when present.
+    ///
+    /// The row's `value` says which thing the row is (a port, a branch); an
+    /// item's says which variant of the action to run. Without it every entry
+    /// in a menu would need its own action id — the same row-explosion the
+    /// row-level `value` exists to prevent, one level down.
+    pub value: Option<String>,
     pub destructive: bool,
 }
 
@@ -5342,6 +5349,7 @@ mod tests {
         let item = |title: &str, action: &str, destructive: bool| DockRowMenuItem {
             title: title.into(),
             action: action.into(),
+            value: None,
             destructive,
         };
         let board_menu = || {
@@ -5452,6 +5460,7 @@ mod tests {
                     menu: vec![DockRowMenuItem {
                         title: "Flash this board".into(),
                         action: "flash".into(),
+                        value: None,
                         destructive: false,
                     }],
                 },

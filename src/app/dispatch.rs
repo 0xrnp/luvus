@@ -734,6 +734,10 @@ impl App {
                                                     .and_then(|v| v.as_str())
                                                     .unwrap_or("")
                                                     .to_string(),
+                                                value: it
+                                                    .get("value")
+                                                    .and_then(|v| v.as_str())
+                                                    .map(|s| s.to_string()),
                                                 destructive: it
                                                     .get("destructive")
                                                     .and_then(|v| v.as_bool())
@@ -1468,6 +1472,38 @@ mod tests {
         // No `menu` key at all: a row exactly as every earlier module pushes it.
         assert!(rows[1].menu.is_empty(), "absent menu stays absent");
         assert_eq!(rows[1].action.as_deref(), Some("build"));
+    }
+
+    /// A menu item may carry its **own** `value`, overriding the row's. That is
+    /// what lets one action back a menu of variants (`build` / `app` /
+    /// `bootloader`) without an action id per entry.
+    #[test]
+    fn dock_menu_item_value_overrides_the_rows_value() {
+        let _env = crate::persist::test_env("dock-item-value");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+
+        app.dispatch(
+            "ui.dock.push",
+            &json!({
+                "id": "d",
+                "rows": [{
+                    "text": "build", "action": "run", "value": "build",
+                    "menu": [
+                        {"title": "App only",  "action": "run", "value": "app"},
+                        {"title": "Erase",     "action": "run"}
+                    ]
+                }]
+            }),
+        )
+        .expect("push ok");
+
+        let row = &app.module_docks.get("d").unwrap().rows[0];
+        assert_eq!(row.menu[0].value.as_deref(), Some("app"));
+        assert_eq!(row.menu[1].value, None, "no value falls back to the row's");
+
+        // Resolution through the real click path is covered end-to-end by
+        // `dock_menu_click_spawns_the_action_with_the_clicked_rows_env`.
     }
 
     /// The notch companion (docs/24) patches its rows from **both** `agent.list`

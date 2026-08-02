@@ -276,8 +276,11 @@ impl App {
             ("BOHAY_MODULE_ROW_TEXT".to_string(), menu.row_text.clone()),
             (
                 "BOHAY_MODULE_ROW_VALUE".to_string(),
-                menu.row_value
+                // An item's own value wins: the row says *which board*, the
+                // item says *which variant*.
+                item.value
                     .clone()
+                    .or_else(|| menu.row_value.clone())
                     .unwrap_or_else(|| menu.row_text.clone()),
             ),
             ("BOHAY_MODULE_ACTION_ID".to_string(), item.action.clone()),
@@ -700,6 +703,7 @@ command = ["sh", "-c", "echo ran=$BOHAY_MODULE_ACTION_ID port=$BOHAY_MODULE_ROW_
             menu: vec![crate::app::DockRowMenuItem {
                 title: "Erase this board".into(),
                 action: "erase".into(),
+                value: None,
                 destructive: true,
             }],
         };
@@ -749,6 +753,52 @@ command = ["sh", "-c", "echo ran=$BOHAY_MODULE_ACTION_ID port=$BOHAY_MODULE_ROW_
         assert!(
             log.out.contains("port=/dev/ttyA") && log.out.contains("row=esp32s3"),
             "menu ran against the repainted row instead of the clicked one: {:?}",
+            log.out
+        );
+
+        // ── an item with its own `value` overrides the row's ────────────────
+        // One action ("erase" here stands in for a `run`-style dispatcher) backs
+        // a menu of variants without an action id per entry.
+        app.push_module_dock(
+            "boards",
+            None,
+            crate::app::Side::Left,
+            vec![crate::app::DockRow {
+                text: "build".into(),
+                dot: None,
+                action: Some("erase".into()),
+                value: Some("build".into()),
+                menu: vec![crate::app::DockRowMenuItem {
+                    title: "App only".into(),
+                    action: "erase".into(),
+                    value: Some("app".into()),
+                    destructive: false,
+                }],
+            }],
+        );
+        app.open_dock_menu("boards", 0, 4, 4);
+        let before = app.module_logs.len();
+        app.dock_menu_action(0);
+        assert_eq!(app.module_logs.len(), before + 1);
+        let log_id = app.module_logs.last().unwrap().id;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(ev) = rx.recv_timeout(Duration::from_millis(100)) {
+                app.handle_event(ev);
+            }
+            let resolved = app
+                .module_logs
+                .iter()
+                .find(|l| l.id == log_id)
+                .is_some_and(|l| l.status != ModuleStatus::Running);
+            if resolved || Instant::now() > deadline {
+                break;
+            }
+        }
+        let log = app.module_logs.iter().find(|l| l.id == log_id).unwrap();
+        assert!(
+            log.out.contains("port=app"),
+            "the item's own value should win over the row's: {:?}",
             log.out
         );
 

@@ -359,16 +359,30 @@ it opens a context menu of your own:
 |---|:---:|---|
 | `title` | ✓ | The menu label. |
 | `action` | ✓ | The action id to run. **Leave it empty for a divider.** |
+| `value` |  | A payload for this entry, overriding the row's `value`. |
 | `destructive` |  | Tints the label red, like Close and Delete. |
+
+An entry's `value` is what lets **one** action back a whole menu. The row's
+`value` says *which thing* the row is; an entry's says *which variant* to run:
+
+```json
+{ "text": "build", "action": "run", "value": "build",
+  "menu": [ {"title": "App only",        "action": "run", "value": "app"},
+            {"title": "Bootloader only", "action": "run", "value": "bootloader"} ] }
+```
+
+Without it you would need a separate action id per entry, which is the same
+row-explosion the row-level `value` exists to prevent, one level down.
 
 The menu is **per row**, which is the point: in the example above the board row
 offers three actions while the `build` row below it offers none. Bohay can't
 guess a menu for a row it didn't create, so you declare it. A row with no `menu`
 has no context menu, exactly as before.
 
-The action receives the same `BOHAY_MODULE_ROW_*` variables a left-click passes,
-plus `BOHAY_MODULE_ACTION_ID` telling it which item was picked, so one script
-can serve the whole menu:
+The action receives the same `BOHAY_MODULE_ROW_*` variables a left-click passes
+(with `BOHAY_MODULE_ROW_VALUE` set to the entry's `value` when it has one), plus
+`BOHAY_MODULE_ACTION_ID` telling it which item was picked, so one script can
+serve the whole menu:
 
 ```sh
 case "$BOHAY_MODULE_ACTION_ID" in
