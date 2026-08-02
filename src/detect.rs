@@ -250,10 +250,17 @@ impl Cond {
     }
 }
 
-/// A spinner glyph: a braille cell (the common animated spinner) or a moon
-/// phase (Kimi animates 🌑..🌘 for background agents).
+/// A spinner glyph: a *non-blank* braille cell (the common animated spinner) or a
+/// moon phase (Kimi animates 🌑..🌘 for background agents).
+///
+/// The range deliberately starts at `U+2801`, **excluding `U+2800`** (Braille
+/// Pattern Blank). That codepoint is an invisible cell many TUIs use for
+/// padding/indentation, and it is *not* Unicode whitespace, so `trim_start`
+/// leaves it at the start of a line — which used to make an idle agent whose UI
+/// pads a line with it read as a running spinner (stuck "working"). A real
+/// animated spinner only ever shows non-blank frames, so this loses nothing.
 fn is_spinner_glyph(c: char) -> bool {
-    ('\u{2800}'..='\u{28FF}').contains(&c) || ('\u{1F311}'..='\u{1F318}').contains(&c)
+    ('\u{2801}'..='\u{28FF}').contains(&c) || ('\u{1F311}'..='\u{1F318}').contains(&c)
 }
 
 /// A detection rule: `state` is chosen when every `cond` holds in `region`.
@@ -901,6 +908,24 @@ mod tests {
         assert_eq!(
             state("⠹ Thinking… (esc to interrupt)", true, true),
             State::Working
+        );
+    }
+
+    // Regression: a line that merely *starts* with the Braille Pattern Blank
+    // (U+2800) — an invisible padding cell, not whitespace, that many TUIs use to
+    // indent — must not read as a running spinner. It used to pin an idle agent to
+    // "working". A real (non-blank) braille frame still counts.
+    #[test]
+    fn braille_blank_padding_is_not_a_spinner() {
+        assert_eq!(
+            state("\u{2800}\u{2800}> ready for your next task", true, false),
+            State::Idle,
+            "a braille-blank-padded idle line is Idle, not Working"
+        );
+        assert_eq!(
+            state("\u{280B} working on it", true, false),
+            State::Working,
+            "a real (non-blank) braille spinner frame still reads Working"
         );
     }
 
