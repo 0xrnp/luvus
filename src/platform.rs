@@ -254,6 +254,11 @@ pub struct ProcInfo {
 }
 
 /// The process table: `pid → command`, and `ppid → children` for walking it.
+///
+/// Gated with its only consumer, `ps_table` — process discovery shells out to
+/// `ps`, so on Windows neither exists and an ungated alias was dead code there
+/// (the one warning the Windows cross-check emitted).
+#[cfg(unix)]
 type PsTable = (
     std::collections::HashMap<u32, String>,
     std::collections::HashMap<u32, Vec<u32>>,
