@@ -70,7 +70,8 @@ impl App {
         // Live agents first.
         let mut live_sessions = std::collections::HashSet::new();
         for (ti, tab) in node.tabs.iter().enumerate() {
-            for id in tab.layout.leaves() {
+            let leaves = tab.layout.leaves();
+            for (pi, id) in leaves.iter().copied().enumerate() {
                 let Some(s) = self.status.get(&id) else {
                     continue;
                 };
@@ -83,9 +84,18 @@ impl App {
                             self.agent_usage.get(&sess.session_id)
                         })
                         .cloned();
+                    // Where the agent lives: the tab (its own name if set, else its
+                    // number) and — when that tab is split — which pane holds it, so
+                    // you can tell two agents in one tab apart. Click still jumps.
+                    let mut location = match &tab.name {
+                        Some(n) => n.clone(),
+                        None => format!("tab {}", ti + 1),
+                    };
+                    if leaves.len() > 1 {
+                        location.push_str(&format!(" · p{}/{}", pi + 1, leaves.len()));
+                    }
                     // If this pane is an orch worker (docs/22), tag its task id, so
                     // Mission Control links to the board (docs/54 MC-5).
-                    let mut location = format!("tab {}", ti + 1);
                     if let Some(task) = self.orch.tasks.iter().find(|t| t.assignee == Some(id.0)) {
                         location.push_str(&format!(" · {}", task.id));
                     }

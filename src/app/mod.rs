@@ -6985,6 +6985,44 @@ mod tests {
     // docs/54 MC-1: Mission Control opens as a dashboard tab, lists the node's
     // live agents, renders them, and ⏎/click jumps back to the agent's pane.
     #[test]
+    /// Every dashboard must survive a hostile terminal. Mission Control lays its
+    /// rows out in fixed-width columns, which is exactly the shape that panics on
+    /// a subtract-overflow when the pane is narrower than the columns assume — so
+    /// render each dashboard, and a file view, from tiny up to wide.
+    fn dashboards_render_at_extreme_sizes() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let _env = crate::persist::test_env("dash-sizes");
+        for (w, h) in [
+            (20u16, 6u16),
+            (24, 8),
+            (40, 10),
+            (60, 5),
+            (80, 24),
+            (200, 60),
+        ] {
+            let (tx, _rx) = std::sync::mpsc::channel();
+            let mut app = App::new(w.max(20), h.max(5), tx).unwrap();
+            let focus = app.layout().focus;
+            if let Some(st) = app.status.get_mut(&focus) {
+                st.agent = "claude".into();
+            }
+
+            app.open_mission_control(0);
+            let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+
+            app.open_orch_board();
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+
+            // …and with a sidebar hidden, which changes every width downstream.
+            app.sidebars.left.visible = false;
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+            app.sidebars.right.visible = false;
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        }
+    }
+
+    #[test]
     fn mission_control_lists_agents_and_jumps() {
         use crate::mission::MissionRow;
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
