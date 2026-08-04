@@ -264,11 +264,85 @@ type PsTable = (
     std::collections::HashMap<u32, Vec<u32>>,
 );
 
-/// The whole process table from one `ps`.
-/// `None` when `ps` is unavailable or failed, which callers must distinguish
-/// from an empty table: "I cannot tell" is not "nothing is running".
+/// The whole process table: `pid → command` plus `ppid → children`.
+/// `None` when the platform cannot tell, which callers must distinguish from an
+/// empty table: "I cannot tell" is not "nothing is running".
+///
+/// On **Linux (including WSL)** this reads `/proc` directly rather than shelling
+/// out to `ps`. `/proc` is ground truth the `ps` binary merely formats, and the
+/// direct read fixes the setups where the `ps` path silently returns nothing —
+/// a **busybox `ps`** on a musl/Alpine WSL distro (no `ppid` column, so
+/// `-Ao ppid=` yields garbage), a minimal image with no procps, or a stripped
+/// `PATH` in the detached server. Every one of those demoted agent detection to
+/// title/screen-text only, which made agents that don't print their own name
+/// (opencode) vanish from the sidebar. It also skips a subprocess spawn on a
+/// periodic path. macOS/BSD have no comparable `/proc`, so they use `ps`.
 #[cfg(unix)]
 fn ps_table() -> Option<PsTable> {
+    #[cfg(target_os = "linux")]
+    if let Some(t) = proc_fs_table() {
+        return Some(t);
+    }
+    ps_command_table()
+}
+
+/// Walk `/proc/<pid>/{stat,cmdline}` into the process table. `None` only if
+/// `/proc` itself can't be listed (not mounted), so callers fall back to `ps`.
+#[cfg(target_os = "linux")]
+fn proc_fs_table() -> Option<PsTable> {
+    use std::collections::HashMap;
+    let mut cmd: HashMap<u32, String> = HashMap::new();
+    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        let name = entry.file_name();
+        let Some(pid) = name.to_str().and_then(|n| n.parse::<u32>().ok()) else {
+            continue;
+        };
+        // `/proc/<pid>/stat` is `pid (comm) state ppid …`; comm can contain
+        // spaces and parens, so split after the *last* ')' before reading the
+        // fixed fields. ppid is then the second whitespace token (after state).
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            continue;
+        };
+        let Some((_, tail)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        let mut fields = tail.split_whitespace();
+        let _state = fields.next();
+        let Some(Ok(ppid)) = fields.next().map(str::parse::<u32>) else {
+            continue;
+        };
+        // argv from `cmdline` (NUL-separated), space-joined to match `ps args`.
+        // An empty cmdline (kernel thread / zombie) falls back to the bracketed
+        // comm — never an agent, but keeps the tree complete.
+        let command = match std::fs::read(format!("/proc/{pid}/cmdline")) {
+            Ok(bytes) if bytes.iter().any(|&b| b != 0) => bytes
+                .split(|&b| b == 0)
+                .filter(|s| !s.is_empty())
+                .map(String::from_utf8_lossy)
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => stat
+                .split_once('(')
+                .and_then(|(_, r)| r.rsplit_once(')'))
+                .map(|(c, _)| format!("[{c}]"))
+                .unwrap_or_default(),
+        };
+        if command.is_empty() {
+            continue;
+        }
+        cmd.insert(pid, command);
+        children.entry(ppid).or_default().push(pid);
+    }
+    // `/proc` always lists at least this process on Linux; an empty map means
+    // the read_dir yielded nothing usable, so let `ps` have a try.
+    (!cmd.is_empty()).then_some((cmd, children))
+}
+
+/// The process table from one `ps` invocation — the portable fallback and the
+/// path macOS/BSD always take. See [`ps_table`] for why Linux prefers `/proc`.
+#[cfg(unix)]
+fn ps_command_table() -> Option<PsTable> {
     use std::collections::HashMap;
     let out = match std::process::Command::new("ps")
         .args(["-Ao", "pid=,ppid=,args="])
