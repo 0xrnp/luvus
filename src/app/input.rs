@@ -2,6 +2,7 @@
 //! command map, and crossterm→PTY key encoding.
 
 use super::*;
+use crate::files::view_text_w;
 
 impl App {
     /// Apply an event; returns whether it changed the rendered UI (→ the loop
@@ -619,7 +620,8 @@ impl App {
             {
                 let viewport = rect.height.saturating_sub(1) as usize;
                 if let Some(crate::app::ViewKind::File(v)) = self.views.get_mut(&id) {
-                    v.scroll_by(scroll, viewport);
+                    let text_w = view_text_w(v, rect.width);
+                    v.scroll_by(scroll, viewport, text_w);
                 }
                 return;
             }

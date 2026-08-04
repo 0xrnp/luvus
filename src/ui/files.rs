@@ -231,16 +231,19 @@ fn draw_text(f: &mut RenderTarget, body: Rect, v: &FileView, lines: &[String], t
     if text_w == 0 {
         return;
     }
-    // The gutter is `number + one column`. That trailing column doubles as the
-    // git change marker (docs/38 + docs/30), so markers cost no extra width and
-    // sit right against the text — a wrapped continuation row keeps the marker
-    // (the line is still changed) but drops the number.
+    // The gutter is `marker + number + one space`, totalling `gutter + 1` — the
+    // same width as before, so `text_x` and mouse-selection column mapping are
+    // unchanged. The git change marker (docs/38 + docs/30) sits in column 0,
+    // against the pane edge like an editor's change bar, rather than between the
+    // number and the text where it split the two apart. A wrapped continuation
+    // row keeps the marker (the line is still changed) but drops the number.
+    let num_w = gutter.saturating_sub(1) as usize;
     let gutter_cell = |f: &mut RenderTarget, y: u16, num: Option<usize>, line: usize| {
         let s = match num {
-            Some(n) => format!("{:>w$}", n, w = gutter as usize),
+            Some(n) => format!("{:>w$} ", n, w = num_w),
             // Continuation rows leave the number blank so a wrapped line reads as
             // one paragraph, not many numbered lines.
-            None => " ".repeat(gutter as usize),
+            None => " ".repeat(num_w + 1),
         };
         let (mark, mark_fg) = match v.change_at(line) {
             Some(ChangeKind::Added) => ("▎", t.green),
@@ -251,8 +254,8 @@ fn draw_text(f: &mut RenderTarget, body: Rect, v: &FileView, lines: &[String], t
         };
         f.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled(s, Style::new().fg(t.overlay0)),
                 Span::styled(mark, Style::new().fg(mark_fg)),
+                Span::styled(s, Style::new().fg(t.overlay0)),
             ])),
             Rect::new(body.x, y, gutter + 1, 1),
         );

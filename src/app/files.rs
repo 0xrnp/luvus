@@ -1,6 +1,7 @@
 //! App-layer file-tree actions (docs/38 FILE-1): keeping the tree pointed at the
 //! active node, scheduling directory reads off the loop, and opening a file.
 
+use crate::files::view_text_w;
 use std::path::{Path, PathBuf};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent};
@@ -559,15 +560,20 @@ impl App {
     /// frame should repaint.
     pub fn handle_file_key(&mut self, id: PaneId, key: KeyEvent) -> bool {
         // Rows visible in the view = its pane content height minus the footer.
-        let viewport = self
+        let rect = self
             .pane_content_rects
             .iter()
             .find(|(pid, _)| *pid == id)
-            .map(|(_, r)| r.height.saturating_sub(1) as usize)
+            .map(|(_, r)| *r);
+        let viewport = rect
+            .map(|r| r.height.saturating_sub(1) as usize)
             .unwrap_or(20);
         let Some(ViewKind::File(v)) = self.views.get_mut(&id) else {
             return false;
         };
+        // Text column width: the scroll clamp needs it to measure how many rows a
+        // soft-wrapped line really occupies.
+        let text_w = rect.map(|r| view_text_w(v, r.width)).unwrap_or(0);
         // While typing a search query, keys edit the query.
         if v.search.as_ref().is_some_and(|s| s.editing) {
             match key.code {
@@ -583,14 +589,16 @@ impl App {
             return true;
         }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => v.scroll_by(1, viewport),
-            KeyCode::Char('k') | KeyCode::Up => v.scroll_by(-1, viewport),
-            KeyCode::Char('d') => v.scroll_by(viewport as i32 / 2, viewport),
-            KeyCode::Char('u') => v.scroll_by(-(viewport as i32) / 2, viewport),
-            KeyCode::PageDown | KeyCode::Char(' ') => v.scroll_by(viewport as i32, viewport),
-            KeyCode::PageUp => v.scroll_by(-(viewport as i32), viewport),
+            KeyCode::Char('j') | KeyCode::Down => v.scroll_by(1, viewport, text_w),
+            KeyCode::Char('k') | KeyCode::Up => v.scroll_by(-1, viewport, text_w),
+            KeyCode::Char('d') => v.scroll_by(viewport as i32 / 2, viewport, text_w),
+            KeyCode::Char('u') => v.scroll_by(-(viewport as i32) / 2, viewport, text_w),
+            KeyCode::PageDown | KeyCode::Char(' ') => {
+                v.scroll_by(viewport as i32, viewport, text_w)
+            }
+            KeyCode::PageUp => v.scroll_by(-(viewport as i32), viewport, text_w),
             KeyCode::Char('g') | KeyCode::Home => v.goto_top(),
-            KeyCode::Char('G') | KeyCode::End => v.goto_bottom(viewport),
+            KeyCode::Char('G') | KeyCode::End => v.goto_bottom(viewport, text_w),
             KeyCode::Char('h') | KeyCode::Left => v.scroll_right(-8),
             KeyCode::Char('l') | KeyCode::Right => v.scroll_right(8),
             KeyCode::Char('w') => v.wrap = !v.wrap,

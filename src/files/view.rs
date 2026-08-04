@@ -114,14 +114,46 @@ impl FileView {
         }
     }
 
+    /// The largest `scroll` that still fills the viewport — i.e. the top line of
+    /// the last page.
+    ///
+    /// Without wrapping this is just `lines - viewport`, one file line per row.
+    /// **With** wrapping a single file line can occupy many rows, so the
+    /// line-based form is badly wrong: a 44-line changelog whose paragraphs are
+    /// 1,500 characters each fills hundreds of rows, but `44 - viewport` pinned
+    /// the view a few lines from the top and the rest was unreachable. Walk back
+    /// from the end accumulating real screen rows instead.
+    ///
+    /// `text_w` is the text column width; 0 means "unknown", which falls back to
+    /// the line-based clamp rather than guessing.
+    pub fn last_top(&self, viewport: usize, text_w: usize) -> usize {
+        let lines = match &self.load {
+            FileLoad::Text(l) => l,
+            _ => return 0,
+        };
+        let viewport = viewport.max(1);
+        if !self.wrap || text_w == 0 {
+            return lines.len().saturating_sub(viewport);
+        }
+        let mut rows = 0usize;
+        for (i, line) in lines.iter().enumerate().rev() {
+            rows += wrap_rows(line, text_w);
+            if rows >= viewport {
+                return i;
+            }
+        }
+        0
+    }
+
     /// Scroll vertically by `delta` lines, clamped so at least one line stays on
-    /// screen. `viewport` is the number of text rows currently visible.
-    pub fn scroll_by(&mut self, delta: i32, viewport: usize) {
+    /// screen. `viewport` is the number of text rows currently visible and
+    /// `text_w` the text column width (needed to measure wrapped lines).
+    pub fn scroll_by(&mut self, delta: i32, viewport: usize, text_w: usize) {
         let max = self.line_count().saturating_sub(1);
         let next = (self.scroll as i32 + delta).clamp(0, max as i32) as usize;
         self.scroll = next;
         // Also clamp so the last page doesn't scroll into empty space.
-        let last_top = self.line_count().saturating_sub(viewport.max(1));
+        let last_top = self.last_top(viewport, text_w);
         if self.scroll > last_top {
             self.scroll = last_top;
         }
@@ -131,8 +163,8 @@ impl FileView {
         self.scroll = 0;
     }
 
-    pub fn goto_bottom(&mut self, viewport: usize) {
-        self.scroll = self.line_count().saturating_sub(viewport.max(1));
+    pub fn goto_bottom(&mut self, viewport: usize, text_w: usize) {
+        self.scroll = self.last_top(viewport, text_w);
     }
 
     pub fn scroll_right(&mut self, delta: i16) {
@@ -248,6 +280,15 @@ impl FileView {
     }
 }
 
+/// The text column width inside a file view `pane_width` columns wide — the
+/// renderer's `text_w`. One definition, used by the renderer's layout and by the
+/// scroll clamp, so the clamp can never measure wrapping against a width the
+/// view was not actually drawn at.
+pub fn view_text_w(v: &FileView, pane_width: u16) -> usize {
+    let g = gutter_width(v.line_count());
+    pane_width.saturating_sub(g + 1) as usize
+}
+
 /// The line-number gutter width for a file of `line_count` lines. Shared by the
 /// renderer and mouse-selection extraction so their column math agrees.
 pub fn gutter_width(line_count: usize) -> u16 {
@@ -295,6 +336,43 @@ pub fn wrap_ranges(line: &str, width: usize) -> Vec<(usize, usize)> {
         out.push((0, n));
     }
     out
+}
+
+/// How many screen rows `line` occupies when soft-wrapped to `width`.
+///
+/// Must agree exactly with `wrap_ranges(..).len()` — the renderer lays rows out
+/// with that, and the scroll clamp counts them with this, so a disagreement
+/// would let the view scroll past its own last row (or stop short of it). Pinned
+/// by `wrap_rows_matches_wrap_ranges`. Counts without allocating, because the
+/// clamp runs on every keypress and wheel tick.
+pub fn wrap_rows(line: &str, width: usize) -> usize {
+    let n = line.chars().count();
+    if width == 0 || n <= width {
+        return 1;
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let mut rows = 0usize;
+    let mut start = 0usize;
+    while start < n {
+        rows += 1;
+        if n - start <= width {
+            break;
+        }
+        let hard_end = start + width;
+        let mut brk = hard_end;
+        if let Some(pos) = chars[start..hard_end].iter().rposition(|&c| c == ' ') {
+            let abs = start + pos;
+            if abs > start {
+                brk = abs;
+            }
+        }
+        start = if brk < n && chars[brk] == ' ' {
+            brk + 1
+        } else {
+            brk
+        };
+    }
+    rows.max(1)
 }
 
 /// Slice the `(start, end)` char range out of `line`.
@@ -534,10 +612,91 @@ mod tests {
     fn scroll_clamps_to_content() {
         let mut v = FileView::new(PathBuf::from("/x"));
         v.apply(FileLoad::Text((0..10).map(|i| i.to_string()).collect()));
-        v.scroll_by(100, 4); // viewport 4 rows, 10 lines → last top is 6
+        v.scroll_by(100, 4, 0); // viewport 4 rows, 10 lines → last top is 6
         assert_eq!(v.scroll, 6);
-        v.scroll_by(-100, 4);
+        v.scroll_by(-100, 4, 0);
         assert_eq!(v.scroll, 0);
+    }
+
+    /// `wrap_rows` is the scroll clamp's view of how tall a line is and
+    /// `wrap_ranges` is the renderer's. If they ever disagree the view scrolls
+    /// past its own last row, or stops short of it.
+    #[test]
+    fn wrap_rows_matches_wrap_ranges() {
+        let cases = [
+            "",
+            "short",
+            "exactly ten",
+            "a much longer line that will certainly need to wrap several times over",
+            "nospacesatallsothisonlyhardsplitsrepeatedlyacrossmanyrows",
+            "trailing space ",
+            "  leading spaces and then a good deal more text to force wrapping  ",
+        ];
+        for line in cases {
+            for w in [0usize, 1, 2, 5, 10, 11, 40, 200] {
+                assert_eq!(
+                    wrap_rows(line, w),
+                    wrap_ranges(line, w).len(),
+                    "line {line:?} at width {w}"
+                );
+            }
+        }
+    }
+
+    /// Regression: a file of few but very long lines (a changelog whose
+    /// paragraphs are ~1,500 characters) was unscrollable with wrap on. The
+    /// clamp measured file lines, so `44 - viewport` pinned the view a few lines
+    /// from the top while the wrapped content ran hundreds of rows past it.
+    #[test]
+    fn wrapped_long_lines_scroll_to_the_end() {
+        let long = "word ".repeat(300); // ~1500 chars, like a changelog bullet
+        let lines: Vec<String> = (0..44).map(|_| long.clone()).collect();
+        let mut v = FileView::new(std::path::PathBuf::from("changelog.md"));
+        v.load = FileLoad::Text(lines);
+        v.wrap = true;
+        let (viewport, text_w) = (40usize, 80usize);
+
+        // Line-based clamp would have stopped here; the real last page is far past it.
+        let naive = v.line_count().saturating_sub(viewport);
+        let last = v.last_top(viewport, text_w);
+        assert!(
+            last > naive,
+            "wrapped clamp must reach further than the line-based one ({last} vs {naive})"
+        );
+
+        v.goto_bottom(viewport, text_w);
+        assert_eq!(v.scroll, last, "G lands on the last page");
+
+        // And the last page really is a full screen of rows, not empty space.
+        let rows: usize = (v.scroll..v.line_count())
+            .map(|i| match &v.load {
+                FileLoad::Text(l) => wrap_rows(&l[i], text_w),
+                _ => 0,
+            })
+            .sum();
+        assert!(
+            rows >= viewport,
+            "last page fills the viewport ({rows} rows)"
+        );
+
+        // Paging down from the top must be able to reach it.
+        v.goto_top();
+        for _ in 0..500 {
+            v.scroll_by(viewport as i32, viewport, text_w);
+        }
+        assert_eq!(v.scroll, last, "paging down reaches the end");
+    }
+
+    /// Without wrapping the clamp is still the plain line-based one.
+    #[test]
+    fn unwrapped_clamp_is_line_based() {
+        let lines: Vec<String> = (0..100).map(|i| format!("line {i}")).collect();
+        let mut v = FileView::new(std::path::PathBuf::from("x.rs"));
+        v.load = FileLoad::Text(lines);
+        v.wrap = false;
+        assert_eq!(v.last_top(20, 80), 80);
+        v.goto_bottom(20, 80);
+        assert_eq!(v.scroll, 80);
     }
 
     #[test]

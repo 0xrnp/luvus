@@ -257,3 +257,52 @@ fn file_tab_name(tab: &crate::app::Tab, app: &App) -> Option<String> {
     let name = path.file_name()?.to_string_lossy().into_owned();
     Some(format!("■ {name}"))
 }
+
+#[cfg(test)]
+mod close_button_tests {
+    use crate::app::App;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// The dashboard tabs are *views*, not pane trees, but they are still tabs a
+    /// user opens and wants gone — so the active one must carry the same `✕` a
+    /// pane tab does, and clicking it must actually remove the tab.
+    #[test]
+    fn dashboard_tabs_have_a_working_close_button() {
+        let _env = crate::persist::test_env("dash-close");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+
+        for label in ["orch", "mission"] {
+            let before = app.ws().tabs.len();
+            if label == "orch" {
+                app.open_orch_board();
+            } else {
+                app.open_mission_control(app.active_ws);
+            }
+            assert_eq!(app.ws().tabs.len(), before + 1, "{label} tab opened");
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+
+            let active = app.ws().active_tab;
+            let close = app
+                .tab_close_rects
+                .iter()
+                .find(|(i, _)| *i == active)
+                .map(|(_, r)| *r)
+                .unwrap_or_else(|| panic!("{label} tab has no close button"));
+
+            app.handle_event(crate::event::AppEvent::Mouse(
+                ratatui::crossterm::event::MouseEvent {
+                    kind: ratatui::crossterm::event::MouseEventKind::Down(
+                        ratatui::crossterm::event::MouseButton::Left,
+                    ),
+                    column: close.x,
+                    row: close.y,
+                    modifiers: ratatui::crossterm::event::KeyModifiers::NONE,
+                },
+            ));
+            assert_eq!(app.ws().tabs.len(), before, "{label} tab closed by its ✕");
+        }
+    }
+}
