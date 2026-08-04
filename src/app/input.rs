@@ -75,6 +75,24 @@ impl App {
                 self.apply_proc_scan(found);
                 false
             }
+            // Mission Control usage (docs/54, MC-2): swap in the fresh cache; the
+            // mission render blits it. Repaint so a visible mission tab updates.
+            AppEvent::UsageScanned { usage, mtimes } => {
+                self.usage_scan_inflight = false;
+                self.agent_usage = usage;
+                self.usage_mtimes = mtimes;
+                // Fleet burn rate: change in total cost since the last scan (docs/54).
+                let total: f64 = self.agent_usage.values().filter_map(|u| u.cost).sum();
+                let now = std::time::Instant::now();
+                if let Some((prev, at)) = self.mission_last_cost {
+                    let dt = now.duration_since(at).as_secs_f64();
+                    if dt > 1.0 && total >= prev {
+                        self.mission_burn = Some((total - prev) / dt * 3600.0);
+                    }
+                }
+                self.mission_last_cost = Some((total, now));
+                self.active_is_mission()
+            }
             AppEvent::DirRead { path, entries } => {
                 self.file_tree.apply_dir(path, entries);
                 true
@@ -582,6 +600,16 @@ impl App {
                 self.orch_scroll_by(scroll);
                 return;
             }
+            // Wheel over Mission Control scrolls its agent list (docs/54).
+            if self.active_is_mission() && hit(self.mission_area) {
+                let n = self.mission_rows.len();
+                self.mission_cursor = match scroll {
+                    s if s < 0 => self.mission_cursor.saturating_sub(1),
+                    _ if n > 0 => (self.mission_cursor + 1).min(n - 1),
+                    _ => self.mission_cursor,
+                };
+                return;
+            }
             // Wheel over a file view (docs/38) scrolls its content.
             if let Some((id, rect)) = self
                 .pane_content_rects
@@ -843,6 +871,24 @@ impl App {
                 let idx = self.orch_scroll + (m.row - body_top) as usize;
                 if idx < self.orch.tasks.len() {
                     self.orch_cursor = idx;
+                }
+            }
+            return;
+        }
+        // Clicking an agent row in Mission Control jumps straight to that session's
+        // pane (or resumes it), the whole point of the tab (docs/54).
+        if self.active_is_mission() {
+            // A click dismisses an open overlay (detail / answer) rather than
+            // acting behind it.
+            if self.mission_detail.take().is_some() || self.mission_answer.take().is_some() {
+                return;
+            }
+            let body_top = self.mission_area.y + 2; // header + separator
+            if hit(self.mission_area) && m.row >= body_top {
+                let idx = self.mission_scroll + (m.row - body_top) as usize;
+                if idx < self.mission_rows.len() {
+                    self.mission_cursor = idx;
+                    self.mission_activate(idx);
                 }
             }
             return;
@@ -1330,13 +1376,17 @@ impl App {
         if self.mode == Mode::Resize {
             return self.handle_resize_mode_key(key);
         }
-        // A focused git tab captures normal-mode keys (its own j/k/⏎/…); the
-        // `Ctrl+Space` prefix still works for global ops (switch tab/workspace, …).
-        if self.mode == Mode::Normal && (self.active_is_git() || self.active_is_orch()) {
+        // A focused dashboard tab (git / orch / mission) captures normal-mode keys
+        // (its own j/k/⏎/…); the `Ctrl+Space` prefix still works for global ops.
+        if self.mode == Mode::Normal
+            && (self.active_is_git() || self.active_is_orch() || self.active_is_mission())
+        {
             if is_prefix(&key) {
                 self.mode = Mode::Prefix;
             } else if self.active_is_orch() {
                 self.handle_orch_key(key);
+            } else if self.active_is_mission() {
+                self.handle_mission_key(key);
             } else {
                 self.handle_git_key(key);
             }

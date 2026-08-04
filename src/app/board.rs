@@ -22,6 +22,7 @@ impl App {
             layout: TileLayout::new(placeholder),
             git: None,
             orch: true,
+            mission: false,
             name: None,
         });
         ws.active_tab = ws.tabs.len() - 1;

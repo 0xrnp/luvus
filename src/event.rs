@@ -63,6 +63,13 @@ pub enum AppEvent {
     /// (Windows) or `ps` failed — detection then falls back to text heuristics
     /// rather than concluding that no agent is running.
     ProcScanned(Option<std::collections::HashMap<u32, Vec<String>>>),
+    /// A Mission Control usage scan finished (docs/54, MC-2/MC-4): best-effort
+    /// tokens/context/cost keyed by session id, read off-loop from agents' stores,
+    /// plus each transcript's mtime so the next scan can skip unchanged files.
+    UsageScanned {
+        usage: std::collections::HashMap<String, crate::mission::AgentUsage>,
+        mtimes: std::collections::HashMap<String, std::time::SystemTime>,
+    },
     /// A git-tab fetch finished; apply it to the matching `GitView`.
     GitData {
         view: u64,

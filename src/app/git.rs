@@ -34,6 +34,7 @@ impl App {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         ws.active_tab = ws.tabs.len() - 1;
@@ -925,6 +926,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -969,6 +971,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1021,6 +1024,7 @@ mod tests {
             layout: TileLayout::new(PaneId::alloc()),
             git: None,
             orch: true,
+            mission: false,
             name: None,
         });
         let orch_tab = 1usize;
@@ -1028,6 +1032,7 @@ mod tests {
             layout: TileLayout::new(PaneId::alloc()),
             git: Some(Box::new(GitView::new(std::path::PathBuf::from("/tmp")))),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1058,6 +1063,7 @@ mod tests {
             layout: TileLayout::new(PaneId::alloc()),
             git: Some(Box::new(GitView::new(std::path::PathBuf::from("/tmp")))),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1107,6 +1113,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1163,6 +1170,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1203,6 +1211,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1241,6 +1250,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1292,6 +1302,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1404,6 +1415,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1562,6 +1574,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
@@ -1608,6 +1621,7 @@ mod tests {
             layout: TileLayout::new(placeholder),
             git: Some(Box::new(view)),
             orch: false,
+            mission: false,
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;

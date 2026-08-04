@@ -16,6 +16,7 @@ mod ids;
 mod integration;
 mod ipc;
 mod layout;
+mod mission;
 mod module;
 mod orch;
 mod persist;

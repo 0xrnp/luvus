@@ -421,6 +421,8 @@ impl App {
                     self.close_git_tab();
                 } else if self.active_is_orch() {
                     self.close_orch_board();
+                } else if self.active_is_mission() {
+                    self.close_mission_tab();
                 } else {
                     self.close_pane(self.layout().focus);
                 }

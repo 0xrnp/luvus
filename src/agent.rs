@@ -176,6 +176,82 @@ pub fn latest_session(agent: &str, cwd: &Path) -> Option<String> {
     (d.latest)(&(d.base)(), cwd)
 }
 
+/// Best-effort token/context/cost usage for an agent's session, read from its own
+/// on-disk transcript (docs/54 §5, MC-2). Only agents whose store records usage
+/// are supported (Claude today); others return `None`, and the dashboard shows
+/// "—". Bounded IO — a single file read — so callers run it off the render loop.
+pub fn session_usage(
+    agent: &str,
+    cwd: &Path,
+    session_id: &str,
+) -> Option<crate::mission::AgentUsage> {
+    match agent {
+        "claude" => claude_session_usage(&claude_base(), cwd, session_id),
+        _ => None,
+    }
+}
+
+/// The last-modified time of a session's transcript, for the usage-scan cache
+/// (docs/54): a cheap `stat` so an unchanged (idle) transcript is skipped instead
+/// of being re-read and re-parsed each scan. `None` if there's no such file.
+pub fn session_mtime(agent: &str, cwd: &Path, session_id: &str) -> Option<SystemTime> {
+    let path = match agent {
+        "claude" => claude_project_dir(&claude_base(), cwd).join(format!("{session_id}.jsonl")),
+        _ => return None,
+    };
+    std::fs::metadata(&path).and_then(|m| m.modified()).ok()
+}
+
+/// Sum a Claude session's `.jsonl` transcript into an [`AgentUsage`]: cumulative
+/// input/output/cache tokens (for cost) and the *latest* turn's input-side total
+/// (for the live context %). Model comes from the newest assistant line. Tolerant
+/// of shape drift — missing fields count as zero and a bad line is skipped.
+fn claude_session_usage(
+    base: &Path,
+    cwd: &Path,
+    session_id: &str,
+) -> Option<crate::mission::AgentUsage> {
+    use crate::mission::{context_frac, estimate_cost, AgentUsage};
+    let path = claude_project_dir(base, cwd).join(format!("{session_id}.jsonl"));
+    let text = std::fs::read_to_string(&path).ok()?;
+    let field = |u: &serde_json::Value, k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
+    let mut u = AgentUsage::default();
+    let mut context_tokens = 0u64;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let msg = v.get("message");
+        // `usage` lives under `message.usage` (assistant turns) or top-level.
+        if let Some(us) = msg.and_then(|m| m.get("usage")).or_else(|| v.get("usage")) {
+            let cin =
+                field(us, "cache_read_input_tokens") + field(us, "cache_creation_input_tokens");
+            u.tokens_in += field(us, "input_tokens");
+            u.tokens_out += field(us, "output_tokens");
+            u.cache += cin;
+            // The current context ≈ this (latest) turn's whole input side.
+            context_tokens = field(us, "input_tokens") + cin;
+        }
+        if let Some(model) = msg
+            .and_then(|m| m.get("model"))
+            .or_else(|| v.get("model"))
+            .and_then(|x| x.as_str())
+        {
+            if !model.is_empty() {
+                u.model = model.to_string();
+            }
+        }
+    }
+    if u.model.is_empty() && u.total_tokens() == 0 {
+        return None; // nothing usable in this transcript
+    }
+    u.cost = estimate_cost(&u.model, u.tokens_in, u.tokens_out, u.cache);
+    if context_tokens > 0 {
+        u.context = Some(context_frac(&u.model, context_tokens));
+    }
+    Some(u)
+}
+
 /// Every session for `agent` in `cwd`, **newest first**.
 ///
 /// Used when several panes share a folder and must not all be handed the same
@@ -1012,6 +1088,36 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    // docs/54 MC-2: sum a Claude transcript's usage into tokens/context/cost.
+    #[test]
+    fn claude_usage_sums_tokens_context_and_cost() {
+        let base = tmp("claude-usage");
+        let cwd = PathBuf::from("/tmp/some/proj");
+        let dir = claude_project_dir(&base, &cwd);
+        fs::create_dir_all(&dir).unwrap();
+        let jsonl = concat!(
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1000,"output_tokens":500,"cache_read_input_tokens":200}}}"#,
+            "\n",
+            r#"{"type":"assistant","message":{"model":"claude-opus-4-8","usage":{"input_tokens":3000,"output_tokens":700,"cache_creation_input_tokens":100}}}"#,
+            "\n",
+            "definitely not json — must be skipped\n",
+        );
+        fs::write(dir.join("sess-1.jsonl"), jsonl).unwrap();
+
+        let u = claude_session_usage(&base, &cwd, "sess-1").expect("usage read");
+        assert_eq!(u.model, "claude-opus-4-8");
+        assert_eq!(u.tokens_in, 4000, "cumulative input");
+        assert_eq!(u.tokens_out, 1200, "cumulative output");
+        assert_eq!(u.cache, 300, "cache read + creation");
+        // Context ≈ the last turn's input side (3000 + 100) / 200k window.
+        let c = u.context.expect("context");
+        assert!((c - (3100.0 / 200_000.0)).abs() < 1e-4, "context {c}");
+        // Cost estimate (opus): in*15 + out*75 + cache*1.5 per million.
+        let want = (4000.0 * 15.0 + 1200.0 * 75.0 + 300.0 * 1.5) / 1_000_000.0;
+        assert!((u.cost.expect("cost") - want).abs() < 1e-9);
+        let _ = fs::remove_dir_all(&base);
     }
 
     #[test]

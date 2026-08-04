@@ -13,6 +13,17 @@ fn commit_dwell(to: State) -> Duration {
     }
 }
 
+/// The line a blocked agent is waiting on: the last non-empty line of its bottom
+/// text (docs/54). A best-effort snippet for Mission Control, not parsing.
+fn blocking_hint(bottom: &str) -> Option<String> {
+    bottom
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .map(|l| l.to_string())
+}
+
 impl App {
     /// Recompute every pane's agent state. Cheap; called a few times a second.
     /// Returns whether anything the sidebar shows changed, so the loop repaints a
@@ -69,6 +80,77 @@ impl App {
             std::thread::spawn(move || {
                 let found = crate::platform::descendant_commands(&pids);
                 let _ = tx.send(AppEvent::ProcScanned(found));
+            });
+        }
+        // Mission Control usage (docs/54, MC-2): read tokens/context/cost from the
+        // agents' on-disk stores on a worker thread, and only while a mission tab is
+        // open — the default session pays nothing. Targets are gathered here (cheap);
+        // the worker does the file IO and posts the fresh cache back.
+        let mission_open = self
+            .workspaces
+            .iter()
+            .any(|w| w.tabs.iter().any(Tab::is_mission));
+        if mission_open
+            && now.duration_since(self.last_usage_at) >= Duration::from_secs(5)
+            && !self.usage_scan_inflight
+        {
+            self.last_usage_at = now;
+            self.usage_scan_inflight = true;
+            // Targets: every live pane with a session, plus every resumable session
+            // on disk. Keyed by session id (dedup), so a live pane and its resumable
+            // twin share one read (`(agent, cwd, session_id)`).
+            let mut targets: std::collections::HashMap<String, (String, std::path::PathBuf)> =
+                std::collections::HashMap::new();
+            for (id, p) in self.panes.iter() {
+                if let Some(sess) = self.status.get(id).and_then(|s| s.agent_session.as_ref()) {
+                    targets
+                        .entry(sess.session_id.clone())
+                        .or_insert((sess.agent.clone(), p.cwd.clone()));
+                }
+            }
+            for s in self.resumable.iter() {
+                targets
+                    .entry(s.session_id.clone())
+                    .or_insert((s.agent.clone(), s.cwd.clone()));
+            }
+            let overrides = self.config.mission_pricing.clone();
+            // Previous scan's results, so an unchanged transcript is reused instead
+            // of re-read+parsed (the heavy part). Cloned once per scan (every 5s,
+            // only while a mission tab is open) — a handful of small entries.
+            let prev_usage = self.agent_usage.clone();
+            let prev_mtimes = self.usage_mtimes.clone();
+            let tx = self.app_tx.clone();
+            std::thread::spawn(move || {
+                let mut usage = std::collections::HashMap::new();
+                let mut mtimes = std::collections::HashMap::new();
+                for (sid, (agent, cwd)) in targets {
+                    let mtime = crate::agent::session_mtime(&agent, &cwd, &sid);
+                    if let Some(mt) = mtime {
+                        mtimes.insert(sid.clone(), mt);
+                    }
+                    // Unchanged since last scan → reuse the cached figures (one
+                    // `stat`, no read/parse).
+                    if mtime.is_some() && prev_mtimes.get(&sid) == mtime.as_ref() {
+                        if let Some(u) = prev_usage.get(&sid) {
+                            usage.insert(sid, u.clone());
+                            continue;
+                        }
+                    }
+                    if let Some(mut u) = crate::agent::session_usage(&agent, &cwd, &sid) {
+                        // Re-price with any user overrides (MC-5); empty ⇒ unchanged.
+                        if !overrides.is_empty() {
+                            u.cost = crate::mission::estimate_cost_with(
+                                &u.model,
+                                u.tokens_in,
+                                u.tokens_out,
+                                u.cache,
+                                &overrides,
+                            );
+                        }
+                        usage.insert(sid, u);
+                    }
+                }
+                let _ = tx.send(AppEvent::UsageScanned { usage, mtimes });
             });
         }
         // The per-pane classification below locks each pane's VT engine + scans its
@@ -204,6 +286,15 @@ impl App {
                 if s.state != desired && now.duration_since(s.candidate_since) >= dwell {
                     let was_working = s.state == State::Working;
                     s.state = desired;
+                    // Snapshot what a blocked agent is waiting on **once**, at the
+                    // moment it enters Blocked (not every tick), for Mission
+                    // Control's "why blocked / answer inline" (docs/54); cleared
+                    // when it leaves. No per-tick string allocation.
+                    s.blocked_hint = if desired == State::Blocked {
+                        blocking_hint(&bottom)
+                    } else {
+                        None
+                    };
                     changes.push((id, s.state, s.agent.clone()));
                     if was_working && matches!(desired, State::Idle | State::Done) {
                         finished.push(id);

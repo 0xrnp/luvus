@@ -241,6 +241,7 @@ fn ws_label(it: WsMenuItem, cat: &Catalog, extras: &[ModuleMenuAction]) -> Strin
         WsMenuItem::Divider => String::new(),
         WsMenuItem::OpenGit => cat.cmd_open_git.to_string(),
         WsMenuItem::OpenOrch => cat.cmd_open_board.to_string(),
+        WsMenuItem::OpenMission => cat.mc_open.to_string(),
         WsMenuItem::Module(i) => module_label(extras, i),
     }
 }

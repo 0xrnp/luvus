@@ -43,6 +43,10 @@ pub struct TabSnap {
     /// dashboard tab; its data lives in the shared `orch.json` ledger.
     #[serde(default)]
     pub orch: bool,
+    /// The Mission Control dashboard (docs/54) — restored as a placeholder tab; its
+    /// data (agents/usage) is re-derived, nothing is stored.
+    #[serde(default)]
+    pub mission: bool,
     /// User-chosen tab name (docs/28); `None` → the tab shows its number.
     #[serde(default)]
     pub name: Option<String>,
@@ -323,6 +327,7 @@ pub fn snapshot(app: &App) -> SessionSnapshot {
                     panes: Vec::new(),
                     git: true,
                     orch: false,
+                    mission: false,
                     name: tab.name.clone(),
                 });
                 continue;
@@ -335,6 +340,20 @@ pub fn snapshot(app: &App) -> SessionSnapshot {
                     panes: Vec::new(),
                     git: false,
                     orch: true,
+                    mission: false,
+                    name: tab.name.clone(),
+                });
+                continue;
+            }
+            // A Mission Control dashboard (docs/54) — placeholder, re-derived.
+            if tab.is_mission() {
+                tabs.push(TabSnap {
+                    tree: tab.layout.to_tree(),
+                    focus: tab.layout.focus.0,
+                    panes: Vec::new(),
+                    git: false,
+                    orch: false,
+                    mission: true,
                     name: tab.name.clone(),
                 });
                 continue;
@@ -394,6 +413,7 @@ pub fn snapshot(app: &App) -> SessionSnapshot {
                 panes,
                 git: false,
                 orch: false,
+                mission: false,
                 name: tab.name.clone(),
             });
         }

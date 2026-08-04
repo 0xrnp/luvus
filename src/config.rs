@@ -48,6 +48,15 @@ pub struct Config {
     /// An empty value means the command is explicitly unbound.
     #[serde(default)]
     pub keybindings: std::collections::HashMap<String, String>,
+    /// Mission Control cost overrides (docs/54, MC-5): model-id substring →
+    /// `[input, output, cache]` USD per **million** tokens, taking precedence over
+    /// the built-in price table. Empty by default (use the bundled estimates).
+    #[serde(default)]
+    pub mission_pricing: std::collections::HashMap<String, [f64; 3]>,
+    /// Mission Control cost budget in USD (docs/54): when a workspace's total
+    /// session cost passes it, the header cost turns red. `None` = no budget.
+    #[serde(default)]
+    pub mission_budget: Option<f64>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -225,6 +234,8 @@ impl Default for Config {
             notifications: NotifyConfig::default(),
             check_updates: true,
             keybindings: std::collections::HashMap::new(),
+            mission_pricing: std::collections::HashMap::new(),
+            mission_budget: None,
         }
     }
 }

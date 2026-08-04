@@ -60,6 +60,7 @@ mod files;
 mod git;
 mod help;
 mod menu;
+mod mission;
 mod panes;
 mod picker;
 mod settings;
@@ -305,6 +306,26 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
             &t,
         );
         None
+    } else if app.active_is_mission() {
+        // Mission Control (docs/54): rows are precomputed from `App` first (so the
+        // render borrows nothing mutable), stashed for click/⏎ hit-testing, then
+        // drawn; the scroll offset is written back.
+        app.mission_area = pane_area;
+        let rows = app.build_mission_rows();
+        app.mission_scroll = mission::render(
+            f,
+            pane_area,
+            &rows,
+            app.mission_scroll,
+            app.mission_cursor,
+            app.mission_burn,
+            app.config.mission_budget,
+            compact,
+            cat,
+            &t,
+        );
+        app.mission_rows = rows;
+        None
     } else if let Some(g) = app.active_git_mut() {
         git_section_rects = git::render(f, pane_area, g, compact, cat, &t);
         None
@@ -324,14 +345,15 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
     app.pane_title_rects = title_rects;
     // Per-pane content rects so mouse drags map to grid cells for text selection
     // (a git tab has no selectable terminal panes).
-    app.pane_content_rects = if app.active_is_git() || app.active_is_orch() {
-        Vec::new()
-    } else {
-        rects
-            .iter()
-            .filter_map(|(id, r)| pane_content(*r, bordered).map(|c| (*id, c)))
-            .collect()
-    };
+    app.pane_content_rects =
+        if app.active_is_git() || app.active_is_orch() || app.active_is_mission() {
+            Vec::new()
+        } else {
+            rects
+                .iter()
+                .filter_map(|(id, r)| pane_content(*r, bordered).map(|c| (*id, c)))
+                .collect()
+        };
     status::draw_status(f, status, app, &t);
 
     // The Settings modal draws last, on top of everything, and owns the cursor.
@@ -472,6 +494,17 @@ pub fn render_into(f: &mut RenderTarget, app: &mut App) {
             .map(|task| board::draw_detail(f, area, task, app.orch_detail_scroll, cat, &t));
         if let Some(s) = clamped {
             app.orch_detail_scroll = s;
+        }
+    }
+    // Mission Control's row-detail overlay and inline answer input (docs/54).
+    if app.active_is_mission() {
+        if let Some(idx) = app.mission_detail {
+            if let Some(row) = app.mission_rows.get(idx) {
+                mission::draw_detail(f, area, row, cat, &t);
+            }
+        }
+        if let Some(text) = &app.mission_answer {
+            mission::draw_answer(f, area, text, cat, &t);
         }
     }
     // The touch switcher overlay (docs/18), above the chrome but below a toast.

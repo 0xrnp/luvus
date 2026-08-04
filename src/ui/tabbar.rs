@@ -141,15 +141,16 @@ pub(super) fn draw_tabbar(f: &mut RenderTarget, area: Rect, app: &mut App, t: &T
 
     let end = (scroll + max_vis).min(n);
     for i in scroll..end {
-        // A git tab is labeled `⎇ git`, the orchestration board `◇ orch`; pane
-        // tabs are numbered. Both dashboard labels are kept the same length so the
-        // icon centers identically (a longer label left-aligns in the cell).
+        // A git tab is labeled `⎇ git`, the orchestration board `◇ orch`, Mission
+        // Control `⠶ ctrl` (a braille 2×2 "four squares"); pane tabs are numbered.
+        // The dashboard labels are short so they center with a space on each side
+        // (the icon never touches the tab edge) and still leave room for the `✕`.
         let is_git = ws.tabs.get(i).is_some_and(|tb| tb.is_git());
         let is_orch = ws.tabs.get(i).is_some_and(|tb| tb.is_orch());
-        // A user-named pane tab (docs/28) shows its name; git/orch tabs are never
-        // named, so they keep their fixed label.
+        let is_mission = ws.tabs.get(i).is_some_and(|tb| tb.is_mission());
+        // A user-named pane tab (docs/28) shows its name; a single file-view leaf
+        // (docs/38) shows `■ name`.
         let name = ws.tabs.get(i).and_then(|tb| tb.name.as_deref());
-        // A tab that is a single file-view leaf (docs/38) is labeled `■ name`.
         let file_name = ws.tabs.get(i).and_then(|tb| file_tab_name(tb, app));
         let title = |w: usize| {
             let fit = |s: &str, w: usize| -> String {
@@ -167,19 +168,21 @@ pub(super) fn draw_tabbar(f: &mut RenderTarget, area: Rect, app: &mut App, t: &T
                 format!("{label:^w$}")
             } else if let Some(fl) = &file_name {
                 // Cap to `w-2` so centering always leaves at least one space on
-                // each side — the `■` glyph never touches the tab's edge, the
-                // way the short git/orch labels never do.
+                // each side — the `■` glyph never touches the tab's edge.
                 let label = fit(fl, w.saturating_sub(2));
                 format!("{label:^w$}")
             } else if is_git {
                 format!("{:^w$}", "⎇ git", w = w)
             } else if is_orch {
                 format!("{:^w$}", "◇ orch", w = w)
+            } else if is_mission {
+                format!("{:^w$}", "⠶ ctrl", w = w)
             } else {
                 format!("{:^w$}", i + 1, w = w)
             }
         };
         if i == active {
+            // The active tab keeps its `✕` close button in the last two columns.
             let label = title((CELL - 2) as usize);
             let style = Style::new().fg(t.crust).bg(t.accent).bold();
             f.render_widget(

@@ -29,6 +29,7 @@ pub(crate) mod files;
 mod git;
 mod input;
 mod keys;
+mod mission;
 mod modules;
 mod picker;
 mod settings;
@@ -303,8 +304,12 @@ pub struct Tab {
     /// the task/lease dashboard from `App.orch` instead of panes. Same placeholder
     /// -leaf trick as a git tab; mutually exclusive with `git`.
     pub orch: bool,
+    /// When `true`, this is the **Mission Control** dashboard (docs/54): the
+    /// per-workspace agent overview. Same placeholder-leaf trick as git/orch;
+    /// mutually exclusive with both.
+    pub mission: bool,
     /// User-chosen tab name (docs/28). `None` → the tab bar shows its number.
-    /// Git/orch tabs keep their fixed `⎇ git` / `◇ orch` label and are never named.
+    /// Git/orch/mission tabs keep their fixed label and are never named.
     pub name: Option<String>,
 }
 
@@ -315,6 +320,7 @@ impl Tab {
             layout,
             git: None,
             orch: false,
+            mission: false,
             name: None,
         }
     }
@@ -327,9 +333,13 @@ impl Tab {
         self.orch
     }
 
-    /// Pane tabs can be renamed; the git/orch dashboards keep their fixed label.
+    pub fn is_mission(&self) -> bool {
+        self.mission
+    }
+
+    /// Pane tabs can be renamed; the git/orch/mission dashboards keep their label.
     pub fn is_renameable(&self) -> bool {
-        !self.is_git() && !self.is_orch()
+        !self.is_git() && !self.is_orch() && !self.is_mission()
     }
 }
 
@@ -387,6 +397,8 @@ pub enum WsMenuItem {
     Divider,
     OpenGit,
     OpenOrch,
+    /// Open the Mission Control dashboard for this node (docs/54).
+    OpenMission,
     Module(usize),
 }
 
@@ -716,6 +728,11 @@ pub struct PaneStatus {
     /// old spinner line flips an idle agent to "working" for the ~2.5s the Idle
     /// dwell then takes to clear. `None` until the pane is first resized (docs/07).
     pub last_resize: Option<Instant>,
+    /// For a Blocked agent, the on-screen line it is waiting on (its bottom-text
+    /// snippet), so Mission Control can show *why* it's blocked and offer a
+    /// one-key answer. Captured **once** when the pane enters Blocked (not every
+    /// tick), cleared when it leaves; `None` when the pane isn't blocked.
+    pub blocked_hint: Option<String>,
 }
 
 impl PaneStatus {
@@ -737,6 +754,7 @@ impl PaneStatus {
             candidate: State::Idle,
             candidate_since: Instant::now(),
             last_resize: None,
+            blocked_hint: None,
         }
     }
 }
@@ -912,6 +930,32 @@ pub struct App {
     pub orch_last_agent: usize,
     /// The board's content rect, for mouse-wheel hit-testing.
     pub orch_area: Rect,
+    /// Mission Control (docs/54): scroll + selected row of the active mission tab,
+    /// its content rect (mouse hit-testing), the rows currently displayed (so a
+    /// click/⏎ maps back to a pane or session), and the async token/cost cache.
+    pub mission_scroll: usize,
+    pub mission_cursor: usize,
+    pub mission_area: Rect,
+    pub mission_rows: Vec<crate::mission::MissionRowView>,
+    /// Row index whose Mission Control detail overlay is open (`o`), if any (MC-5).
+    pub mission_detail: Option<usize>,
+    /// The inline "answer the agent" input (docs/54): `Some(text)` while typing a
+    /// reply to the selected blocked agent; `⏎` sends it to that pane, `esc` cancels.
+    pub mission_answer: Option<String>,
+    /// Fleet burn rate in USD/hour (docs/54), from the change in total cost between
+    /// usage scans; `None` until two scans have landed.
+    pub mission_burn: Option<f64>,
+    /// Previous (total cost, time) sample, for the burn-rate delta.
+    pub mission_last_cost: Option<(f64, std::time::Instant)>,
+    /// Best-effort usage (tokens/context/cost) keyed by **session id**, so both a
+    /// live pane and a resumable on-disk session share one entry. Refreshed
+    /// off-loop and blitted by the mission render — never computed on the render
+    /// path (docs/54 MC-2/MC-4).
+    pub agent_usage: std::collections::HashMap<String, crate::mission::AgentUsage>,
+    /// Each scanned transcript's mtime, so the next usage scan re-reads a session
+    /// only when its file actually changed (docs/54) — an idle session costs one
+    /// `stat`, not a full read+parse.
+    pub usage_mtimes: std::collections::HashMap<String, std::time::SystemTime>,
     /// Cursor position from the last render (for headless frame streaming).
     pub last_cursor: Option<(u16, u16)>,
     /// Foreground client asked to detach (prefix+q). Distinct from quit.
@@ -966,6 +1010,10 @@ pub struct App {
     /// Throttle for rescanning the agents' on-disk session stores.
     last_sessions_at: Instant,
     last_proc_at: Instant,
+    /// Mission Control usage scan (docs/54, MC-2): throttle + in-flight guard, so
+    /// the token/cost read runs off-loop and only while a mission tab is open.
+    last_usage_at: Instant,
+    usage_scan_inflight: bool,
     /// Throttle for per-pane agent classification — it locks each pane's VT engine
     /// and scans its grid, so it runs at ~100ms, not at the render frame rate.
     last_detect_at: Instant,
@@ -1211,6 +1259,16 @@ impl App {
             orch_detail_scroll: 0,
             orch_last_agent: 0,
             orch_area: Rect::ZERO,
+            mission_scroll: 0,
+            mission_cursor: 0,
+            mission_area: Rect::ZERO,
+            mission_rows: Vec::new(),
+            mission_detail: None,
+            mission_answer: None,
+            mission_burn: None,
+            mission_last_cost: None,
+            agent_usage: std::collections::HashMap::new(),
+            usage_mtimes: std::collections::HashMap::new(),
             last_cursor: None,
             detach_requested: false,
             end_session: false,
@@ -1229,6 +1287,8 @@ impl App {
             proc_scan_inflight: false,
             dismissed_sessions: HashSet::new(),
             last_sessions_at: Instant::now(),
+            last_usage_at: Instant::now(),
+            usage_scan_inflight: false,
             last_proc_at: Instant::now(),
             last_detect_at: Instant::now()
                 .checked_sub(Duration::from_secs(1))
@@ -1358,6 +1418,7 @@ impl App {
                             layout: TileLayout::new(placeholder),
                             git: Some(Box::new(view)),
                             orch: false,
+                            mission: false,
                             name: None,
                         });
                     }
@@ -1371,6 +1432,20 @@ impl App {
                         layout: TileLayout::new(placeholder),
                         git: None,
                         orch: true,
+                        mission: false,
+                        name: None,
+                    });
+                    continue;
+                }
+                // A Mission Control dashboard (docs/54): re-create the placeholder
+                // tab; its agent/usage data is re-derived, nothing was stored.
+                if tab.mission {
+                    let placeholder = PaneId::alloc();
+                    tabs.push(Tab {
+                        layout: TileLayout::new(placeholder),
+                        git: None,
+                        orch: false,
+                        mission: true,
                         name: None,
                     });
                     continue;
@@ -1572,6 +1647,16 @@ impl App {
             orch_detail_scroll: 0,
             orch_last_agent: 0,
             orch_area: Rect::ZERO,
+            mission_scroll: 0,
+            mission_cursor: 0,
+            mission_area: Rect::ZERO,
+            mission_rows: Vec::new(),
+            mission_detail: None,
+            mission_answer: None,
+            mission_burn: None,
+            mission_last_cost: None,
+            agent_usage: std::collections::HashMap::new(),
+            usage_mtimes: std::collections::HashMap::new(),
             last_cursor: None,
             detach_requested: false,
             end_session: false,
@@ -1590,6 +1675,8 @@ impl App {
             proc_scan_inflight: false,
             dismissed_sessions: HashSet::new(),
             last_sessions_at: Instant::now(),
+            last_usage_at: Instant::now(),
+            usage_scan_inflight: false,
             last_proc_at: Instant::now(),
             last_detect_at: Instant::now()
                 .checked_sub(Duration::from_secs(1))
@@ -2257,6 +2344,7 @@ impl App {
             items.push(WsMenuItem::OpenGit);
         }
         items.push(WsMenuItem::OpenOrch);
+        items.push(WsMenuItem::OpenMission);
         // Module actions declaring `contexts = ["workspace"]`, below a divider.
         let extras = self.ws_menu.as_ref().map_or(0, |m| m.module_actions.len());
         if extras > 0 {
@@ -2368,6 +2456,7 @@ impl App {
                     self.open_orch_board();
                 }
             }
+            WsMenuItem::OpenMission => self.open_mission_control(index),
         }
     }
 
@@ -6891,6 +6980,202 @@ mod tests {
             app.last_pane_area.width >= 24,
             "panes keep at least 24 columns"
         );
+    }
+
+    // docs/54 MC-1: Mission Control opens as a dashboard tab, lists the node's
+    // live agents, renders them, and ⏎/click jumps back to the agent's pane.
+    #[test]
+    fn mission_control_lists_agents_and_jumps() {
+        use crate::mission::MissionRow;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::{backend::TestBackend, Terminal};
+        let _env = crate::persist::test_env("mission");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        let agent_pane = app.layout().focus;
+        let agent_tab = app.ws().active_tab;
+        app.status.get_mut(&agent_pane).unwrap().agent = "claude".into();
+
+        // Open Mission Control for the node (the right-click menu action).
+        app.open_mission_control(0);
+        assert!(app.active_is_mission(), "the mission tab is focused");
+        assert_ne!(
+            app.ws().active_tab,
+            agent_tab,
+            "it opened as a new dashboard tab"
+        );
+
+        // It lists the live agent.
+        let rows = app.build_mission_rows();
+        assert_eq!(rows.len(), 1, "one agent row");
+        assert_eq!(rows[0].agent, "claude");
+        assert_eq!(rows[0].row, MissionRow::Live(agent_pane));
+
+        // It renders with the title and the agent visible.
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let buf = term.backend().buffer();
+        let text: String = (0..buf.area.height)
+            .flat_map(|r| {
+                (0..buf.area.width)
+                    .map(move |c| buf.cell((c, r)).map(|x| x.symbol()).unwrap_or(" "))
+            })
+            .collect();
+        assert!(
+            text.contains("Mission Control"),
+            "the dashboard title shows"
+        );
+        assert!(text.contains("claude"), "the agent row shows");
+
+        // ⏎ jumps back to the agent's pane (leaving the dashboard).
+        app.handle_mission_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(!app.active_is_mission(), "jumped off the dashboard");
+        assert_eq!(app.ws().active_tab, agent_tab, "landed on the agent's tab");
+        assert_eq!(app.layout().focus, agent_pane, "focused the agent's pane");
+    }
+
+    // docs/54 MC-2/MC-4: live rows carry cached usage (tokens/cost/context), and
+    // the node's resumable on-disk sessions appear as their own rows.
+    #[test]
+    fn mission_control_shows_usage_and_resumables() {
+        use crate::mission::{AgentUsage, MissionRow};
+        let _env = crate::persist::test_env("mission-usage");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        let pane = app.layout().focus;
+        let node_cwd = app.ws().cwd.clone();
+        {
+            let s = app.status.get_mut(&pane).unwrap();
+            s.agent = "claude".into();
+            s.agent_session = Some(AgentSession {
+                agent: "claude".into(),
+                session_id: "live-1".into(),
+            });
+        }
+        // Seed the usage cache (what the async scan produces), keyed by session id.
+        app.agent_usage.insert(
+            "live-1".into(),
+            AgentUsage {
+                model: "claude-opus-4-8".into(),
+                tokens_in: 4000,
+                tokens_out: 1200,
+                cache: 300,
+                context: Some(0.9),
+                cost: Some(0.12),
+            },
+        );
+        // A resumable session in the same node, with historical usage.
+        app.resumable = vec![crate::agent::SessionInfo {
+            agent: "claude".into(),
+            session_id: "resume-1".into(),
+            cwd: node_cwd,
+            updated: std::time::SystemTime::now(),
+        }];
+        app.agent_usage.insert(
+            "resume-1".into(),
+            AgentUsage {
+                model: "claude-sonnet-4".into(),
+                tokens_in: 1000,
+                tokens_out: 200,
+                cache: 0,
+                context: Some(0.3),
+                cost: Some(0.02),
+            },
+        );
+
+        app.open_mission_control(0);
+        let rows = app.build_mission_rows();
+
+        let live = rows
+            .iter()
+            .find(|r| matches!(r.row, MissionRow::Live(_)))
+            .expect("a live row");
+        assert_eq!(
+            live.usage.as_ref().and_then(|u| u.cost),
+            Some(0.12),
+            "the live row carries its cached cost"
+        );
+        let res = rows
+            .iter()
+            .find(|r| matches!(r.row, MissionRow::Session(_)))
+            .expect("a resumable row");
+        assert!(res.resumable, "flagged resumable");
+        assert_eq!(res.agent, "claude");
+        assert_eq!(
+            res.usage.as_ref().and_then(|u| u.cost),
+            Some(0.02),
+            "the resumable row carries its historical cost"
+        );
+
+        // The detail overlay opens on `o` and closes on esc. (`render` publishes
+        // `mission_rows`; set it directly here since this test doesn't draw.)
+        app.mission_rows = rows;
+        app.handle_mission_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
+        assert!(app.mission_detail.is_some(), "detail overlay opened");
+        app.handle_mission_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        assert!(app.mission_detail.is_none(), "detail overlay closed");
+    }
+
+    // docs/54: a blocked agent shows what it's waiting on, and the inline answer
+    // input captures typing (including keys that are otherwise row shortcuts).
+    #[test]
+    fn mission_control_blocked_hint_and_answer_input() {
+        use crate::ui::theme::State;
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let _env = crate::persist::test_env("mission-answer");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        let pane = app.layout().focus;
+        {
+            let s = app.status.get_mut(&pane).unwrap();
+            s.agent = "claude".into();
+            s.state = State::Blocked;
+            s.blocked_hint = Some("Do you want to proceed? (y/n)".into());
+        }
+        app.open_mission_control(0);
+        app.mission_rows = app.build_mission_rows();
+        assert_eq!(
+            app.mission_rows[0].blocked_hint.as_deref(),
+            Some("Do you want to proceed? (y/n)"),
+            "the row carries the blocking prompt"
+        );
+
+        // Render the tab with both overlays open + a budget set (exercises the
+        // blocked-hint row, the detail modal, the answer input, and the header).
+        {
+            use ratatui::{backend::TestBackend, Terminal};
+            app.config.mission_budget = Some(1.0);
+            app.mission_detail = Some(0);
+            app.mission_answer = Some("hi".into());
+            let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+            app.mission_detail = None;
+            app.mission_answer = None;
+        }
+
+        let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        // `a` opens the inline answer input.
+        app.mission_cursor = 0;
+        app.handle_mission_key(key(KeyCode::Char('a')));
+        assert_eq!(
+            app.mission_answer.as_deref(),
+            Some(""),
+            "answer input opened"
+        );
+        // While answering, ordinary shortcut keys are typed, not acted on: `q`
+        // types a q rather than closing the tab.
+        app.handle_mission_key(key(KeyCode::Char('q')));
+        app.handle_mission_key(key(KeyCode::Char('!')));
+        assert_eq!(app.mission_answer.as_deref(), Some("q!"));
+        assert!(app.active_is_mission(), "still on the mission tab");
+        // Enter sends it and closes the input.
+        app.handle_mission_key(key(KeyCode::Enter));
+        assert!(app.mission_answer.is_none(), "answer sent, input closed");
+
+        // `x` closes the selected live agent's pane.
+        app.mission_rows = app.build_mission_rows();
+        app.handle_mission_key(key(KeyCode::Char('x')));
+        assert!(!app.panes.contains_key(&pane), "x closed the agent's pane");
     }
 
     // The Shell picker is Windows-only (control row 5 doesn't exist elsewhere).
