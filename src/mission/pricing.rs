@@ -36,7 +36,7 @@ pub fn model_window(model: &str) -> u64 {
     if m.contains("gpt") || m.contains("o1") || m.contains("o3") {
         128_000
     } else {
-        200_000 // Claude and unknown default
+        200_000 // Claude default (see `context_frac` for the 1M extended window)
     }
 }
 
@@ -66,8 +66,20 @@ pub fn estimate_cost_with(
 }
 
 /// Fraction (0..1) of the model's context window that `ctx_tokens` fills.
+///
+/// Claude runs a 200k window by default but a **1M** window in extended mode, and
+/// the model id doesn't say which. So the window is *inferred from the data*: a
+/// session whose context already exceeds Claude's 200k base must be on the 1M
+/// window (you can't hold more context than the window), which keeps a near-full
+/// 978k session reading as ~98% rather than clamping every large session to 100%.
 pub fn context_frac(model: &str, ctx_tokens: u64) -> f32 {
-    (ctx_tokens as f64 / model_window(model).max(1) as f64).clamp(0.0, 1.0) as f32
+    let base = model_window(model);
+    let window = if base == 200_000 && ctx_tokens > 200_000 {
+        1_000_000
+    } else {
+        base
+    };
+    (ctx_tokens as f64 / window.max(1) as f64).clamp(0.0, 1.0) as f32
 }
 
 #[cfg(test)]
@@ -84,8 +96,18 @@ mod tests {
         assert_eq!(estimate_cost("mystery", 1000, 1000, 0), None);
         // Context fraction: 100k of a 200k Claude window = 0.5.
         assert!((context_frac("claude-opus", 100_000) - 0.5).abs() < 1e-6);
-        // Over-window clamps to 1.0.
-        assert_eq!(context_frac("claude-opus", 999_999_999), 1.0);
+        // A session past 200k is inferred to be on the 1M window: a real ~978k
+        // context reads as ~98%, not clamped to 100% against a wrong 200k window.
+        assert_eq!(
+            (context_frac("claude-opus-4-8", 978_000) * 100.0).round() as u32,
+            98
+        );
+        assert_eq!(
+            (context_frac("claude-opus", 150_000) * 100.0).round() as u32,
+            75
+        );
+        // Over even the 1M window clamps to 1.0.
+        assert_eq!(context_frac("claude-opus", 9_999_999_999), 1.0);
         // A user override wins over the built-in table.
         let mut ov = std::collections::HashMap::new();
         ov.insert("opus".to_string(), [10.0, 20.0, 1.0]);

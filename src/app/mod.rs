@@ -7107,9 +7107,30 @@ mod tests {
             "the resumable row carries its historical cost"
         );
 
+        // Render the dashboard and confirm the new layout draws: the column
+        // header, the per-row context gauge, and the bottom cost-by-model chart.
+        {
+            use ratatui::{backend::TestBackend, Terminal};
+            let mut term = Terminal::new(TestBackend::new(140, 30)).unwrap();
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+            let buf = term.backend().buffer();
+            let text: String = (0..buf.area.height)
+                .flat_map(|r| {
+                    (0..buf.area.width)
+                        .map(move |c| buf.cell((c, r)).map(|x| x.symbol()).unwrap_or(" "))
+                })
+                .collect();
+            assert!(text.contains("status"), "column header row draws");
+            assert!(text.contains("context"), "the context column header draws");
+            assert!(
+                text.contains("cost by model"),
+                "the bottom cost chart draws"
+            );
+            assert!(text.contains('█'), "a bar (context gauge / chart) draws");
+        }
+
         // The detail overlay opens on `o` and closes on esc. (`render` publishes
-        // `mission_rows`; set it directly here since this test doesn't draw.)
-        app.mission_rows = rows;
+        // `mission_rows`, so it's set now.)
         app.handle_mission_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE));
         assert!(app.mission_detail.is_some(), "detail overlay opened");
         app.handle_mission_key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
