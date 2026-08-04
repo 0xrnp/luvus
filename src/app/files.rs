@@ -1004,11 +1004,11 @@ mod tests {
         let mut app = App::new(120, 40, tx).unwrap();
         app.open_file_view(file.clone(), OpenTarget::Pane);
         let vid = app.layout().focus;
-        // Block for the initial read so the channel is empty and deterministic.
-        let ev = rx
-            .recv_timeout(std::time::Duration::from_secs(2))
-            .expect("initial read");
-        app.handle_event(ev);
+        // Wait for the *text* to land. Each scheduled read sends two events —
+        // `FileRead`, then `FileChanges` once `git diff` returns — so simply
+        // taking the next event races: whichever the worker happens to have
+        // queued first wins. Pump until the one we need arrives.
+        pump_until_read(&rx, &mut app);
         assert_eq!(
             app.views.get(&vid).map(|ViewKind::File(v)| v.line_count()),
             Some(1),
@@ -1019,15 +1019,38 @@ mod tests {
         std::fs::write(&file, b"after edit\nsecond line\n").unwrap();
         filetime_set(&file, std::time::SystemTime::now());
         app.ensure_file_views();
-        // A re-read was scheduled; apply it.
-        let ev = rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
-        app.handle_event(ev);
+        // A re-read was scheduled; apply events until its text arrives — the
+        // first read's trailing `FileChanges` may still be queued ahead of it.
+        pump_until_read(&rx, &mut app);
         if let Some(ViewKind::File(v)) = app.views.get(&vid) {
             assert_eq!(v.line_count(), 2, "the view reloaded the edited file");
         } else {
             panic!("view gone");
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Apply events until a `FileRead` has been handled, or the deadline passes.
+    ///
+    /// A scheduled read emits `FileRead` **and** `FileChanges`; the two arrive in
+    /// whatever order the worker gets to them, and a previous read's
+    /// `FileChanges` can still be in the queue. Waiting for the specific event
+    /// makes the test independent of that timing (it was a CI-only flake: on a
+    /// faster `git diff` the stale `FileChanges` was consumed instead of the
+    /// re-read, so the view kept its old contents).
+    fn pump_until_read(rx: &std::sync::mpsc::Receiver<AppEvent>, app: &mut App) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::time::Instant::now() < deadline {
+            let Ok(ev) = rx.recv_timeout(std::time::Duration::from_millis(250)) else {
+                continue;
+            };
+            let was_read = matches!(ev, AppEvent::FileRead { .. });
+            app.handle_event(ev);
+            if was_read {
+                return;
+            }
+        }
+        panic!("no FileRead arrived within the deadline");
     }
 
     /// Set a file's mtime, portable enough for the test (via a fresh write's
