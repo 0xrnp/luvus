@@ -57,6 +57,14 @@ pub struct Config {
     /// session cost passes it, the header cost turns red. `None` = no budget.
     #[serde(default)]
     pub mission_budget: Option<f64>,
+    /// Module dock ids the user has explicitly turned **off** in Settings → Layout
+    /// (docs/29). A module re-pushes its dock on startup and on events (e.g. the
+    /// esp-idf example on `workspace.created`), and auto-mount cannot otherwise
+    /// tell "user turned it off" from "never placed yet" — both are "not on any
+    /// side" — so it would resurrect the dock on its default side on the next push
+    /// or restart. This set keeps an off dock off; re-placing it clears the flag.
+    #[serde(default)]
+    pub docks_off: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -236,6 +244,7 @@ impl Default for Config {
             keybindings: std::collections::HashMap::new(),
             mission_pricing: std::collections::HashMap::new(),
             mission_budget: None,
+            docks_off: Vec::new(),
         }
     }
 }

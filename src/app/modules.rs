@@ -806,6 +806,62 @@ command = ["sh", "-c", "echo ran=$BOHAY_MODULE_ACTION_ID port=$BOHAY_MODULE_ROW_
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A dock the user turns **off** stays off across re-pushes (docs/29): a
+    /// module re-pushes on startup and on `workspace.created`, and before the
+    /// `docks_off` flag that re-push resurrected the dock on its default side
+    /// because "off" looked identical to "never placed".
+    #[test]
+    fn turned_off_module_dock_is_not_resurrected_by_a_repush() {
+        let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = std::env::temp_dir().join(format!("bohay-dockoff-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        std::env::set_var("BOHAY_HOME", &home);
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let kind = crate::app::DockKind::Module("esp-idf".into());
+        let row = || crate::app::DockRow {
+            text: "esp32s3".into(),
+            dot: None,
+            action: Some("select".into()),
+            value: None,
+            menu: vec![],
+        };
+
+        // First push (startup) auto-mounts to the module's default side.
+        app.push_module_dock(
+            "esp-idf",
+            Some("ESP-IDF".into()),
+            crate::app::Side::Left,
+            vec![row()],
+        );
+        assert_eq!(app.sidebars.side_of(&kind), Some(crate::app::Side::Left));
+
+        // User turns it off in Settings → Layout.
+        app.unmount_dock(&kind);
+        assert_eq!(app.sidebars.side_of(&kind), None);
+        assert!(app.config.docks_off.iter().any(|d| d == "esp-idf"));
+
+        // A re-push (as `workspace.created` / a refresh fires) must NOT bring it
+        // back — this is the reported bug.
+        app.push_module_dock("esp-idf", None, crate::app::Side::Left, vec![row()]);
+        assert_eq!(
+            app.sidebars.side_of(&kind),
+            None,
+            "an off dock was resurrected by a re-push"
+        );
+
+        // Re-placing it from Settings opts back in and clears the off flag; a
+        // later push then leaves it where the user put it.
+        app.move_dock(&kind, crate::app::Side::Right);
+        assert!(!app.config.docks_off.iter().any(|d| d == "esp-idf"));
+        app.push_module_dock("esp-idf", None, crate::app::Side::Left, vec![row()]);
+        assert_eq!(app.sidebars.side_of(&kind), Some(crate::app::Side::Right));
+
+        std::env::remove_var("BOHAY_HOME");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn link_then_run_action_captures_output() {
         let _env = TEST_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());

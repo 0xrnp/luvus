@@ -1826,6 +1826,11 @@ impl App {
         if !dst.docks.contains(kind) {
             dst.docks.push(kind.clone());
         }
+        // Placing a module dock on a side is the user opting it back in, so clear
+        // any explicit "off" flag (the inverse of `unmount_dock`).
+        if let DockKind::Module(id) = kind {
+            self.config.docks_off.retain(|d| d != id);
+        }
         self.save_sidebars();
         true
     }
@@ -1836,6 +1841,15 @@ impl App {
     pub fn unmount_dock(&mut self, kind: &DockKind) {
         for side in [Side::Left, Side::Right] {
             self.sidebars.get_mut(side).docks.retain(|d| d != kind);
+        }
+        // Remember an explicit "off" for a module dock so its own `ui.dock.push`
+        // (startup / `workspace.created` / a refresh) can't resurrect it on the
+        // next push or restart — without this, "off" is indistinguishable from
+        // "never placed" and `push_module_dock` re-mounts it on its default side.
+        if let DockKind::Module(id) = kind {
+            if !self.config.docks_off.iter().any(|d| d == id) {
+                self.config.docks_off.push(id.clone());
+            }
         }
         self.save_sidebars();
     }
@@ -1910,11 +1924,15 @@ impl App {
         }
         entry.rows = rows;
         let kind = DockKind::Module(id.to_string());
-        // Auto-mount to the module's default side only if it has a free slot;
-        // otherwise the dock stays "off" (cached, placeable from Settings). We
+        // Auto-mount to the module's default side only if the user has not turned
+        // it off, it is not already placed, and the side has a free slot;
+        // otherwise the dock stays "off" (cached, placeable from Settings). The
+        // `docks_off` check is what stops a re-push (startup / `workspace.created`
+        // / refresh) from resurrecting a dock the user turned off (docs/29). We
         // check room here rather than letting `move_dock` reject it, so a module
         // pushing on startup never flashes the "sidebar full" toast at the user.
-        if self.sidebars.side_of(&kind).is_none() && self.sidebars.has_room(placement) {
+        let off = self.config.docks_off.iter().any(|d| d == id);
+        if !off && self.sidebars.side_of(&kind).is_none() && self.sidebars.has_room(placement) {
             self.move_dock(&kind, placement);
         }
     }
