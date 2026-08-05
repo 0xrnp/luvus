@@ -13,7 +13,9 @@ import '@fontsource/ibm-plex-mono/500.css';
 import '@fontsource/ibm-plex-mono/600.css';
 import '@fontsource/ibm-plex-mono/700.css';
 import Logo from '../components/Logo.astro';
-import { Image } from 'astro:assets';
+import heroArtSrc from '../assets/logo-black-nobg.png';
+import FeatureIcon from '../components/FeatureIcon.astro';
+import { Image, getImage } from 'astro:assets';
 // Authentic brand marks (24×24 SVGs) for the "works with" grid. The `-color`
 // ones carry their own fills; the rest are `currentColor` (recolored via CSS,
 // flagged `mono`). `hook` marks agents that get native session resume (a dot in
@@ -35,15 +37,26 @@ import IconAider from '../assets/icons/aider.svg';
 // so the mark still inherits `currentColor` like the inline SVGs do.
 import droidMask from '../assets/icons/droid-mask.png';
 
+// The hero mark is 1286px of black line art on transparency. It is used as a
+// CSS *mask* rather than an <img>, so it takes `var(--text)` and therefore comes
+// out light on a dark palette and dark on a light one, with no second asset.
+// Optimised here because the source is ~1.5 MB.
+const heroArt = await getImage({ src: heroArtSrc, width: 720, format: 'webp' });
+
 const GITHUB = 'https://github.com/RizRiyz/bohay';
 
-// Artwork for the closing call to action, sitting above the licence badge.
-// Resolved through a glob rather than a plain import so the page still builds
-// when the file is not in the tree — drop `bohay-cta.png` into src/assets/ and
-// it appears; take it away and the card falls back to text alone.
-const ctaArt = Object.values(
-  import.meta.glob('../assets/bohay-cta.{png,jpg,jpeg,webp}', { eager: true, import: 'default' })
-)[0];
+
+
+// Artwork for the closing call to action. Resolved through a glob rather than a
+// plain import so the page still builds when the file is not in the tree.
+// Drawn as a CSS mask like the hero mark, so it takes the palette instead of
+// shipping a light and a dark copy.
+const ctaArtSrc = Object.values(
+  import.meta.glob('../assets/bohay-cta-black-nobg.{png,jpg,jpeg,webp}', { eager: true, import: 'default' })
+)[0] as { src: string; width: number; height: number } | undefined;
+const ctaArt = ctaArtSrc
+  ? await getImage({ src: ctaArtSrc, width: 720, format: 'webp' })
+  : undefined;
 
 // Every agent in `detect::KNOWN_AGENTS` (14), which CLAUDE.md requires this
 // grid to stay truthful to. `aider` and `droid` have no icon in assets/icons,
@@ -151,25 +164,29 @@ const ogImage = 'https://bohay.dev/og.png';
       </div>
     </nav>
 
+    <div class="page-frame">
+
     <header class="hero">
       <div class="glow" aria-hidden="true"></div>
-      <h1>Next-Gen mission control<br /><span class="accent">for your AI agents</span></h1>
-      <p class="sub">
-        One place to run, watch, resume, and orchestrate every coding agent.
-      </p>
 
-      <div class="install" id="install">
-        <code>curl -fsSL https://bohay.dev/install.sh | sh</code>
-        <button id="copy" aria-label="Copy install command" title="Copy">⧉</button>
-      </div>
-      <p class="alt-install">
-        or <code>brew install RizRiyz/bohay/bohay</code> · <code>cargo install bohay</code> ·
-        <a href="/docs/getting-started/installation/">Windows &amp; more</a>
-      </p>
+      <div class="hero-top">
+        <div class="hero-copy">
+          <h1>Next-Gen mission control<br /><span class="accent">for your AI agents</span></h1>
+          <p class="sub">
+            One place to run, watch, resume, and orchestrate every coding agent.
+          </p>
 
-      <div class="cta">
-        <a class="btn primary" href="/docs/">Get started →</a>
-        <a class="btn" href={GITHUB}>Star on GitHub</a>
+          <div class="install" id="install">
+            <code>curl -fsSL https://bohay.dev/install.sh | sh</code>
+            <button id="copy" aria-label="Copy install command" title="Copy">⧉</button>
+          </div>
+          <p class="alt-install">
+            or <code>brew install RizRiyz/bohay/bohay</code> · <code>cargo install bohay</code> ·
+            <a href="/docs/getting-started/installation/">Windows &amp; more</a>
+          </p>
+        </div>
+
+        <div class="hero-art" style={`--art:url(${heroArt.src})`} aria-hidden="true"></div>
       </div>
 
       <!-- Live, clickable simulation of the real UI, not a screenshot. -->
@@ -187,6 +204,7 @@ const ogImage = 'https://bohay.dev/og.png';
               <span class="side-ver">v0.7</span>
               <button class="menu-pill" id="menu-pill" title="Settings · theme · keys · language">Menu</button>
             </div>
+            <div class="side-dock">
             <div class="side-label">Workspaces</div>
             <button class="ws on" data-ws="sudos">
               <span class="ws-arrow">▾</span> sudos <span class="branch">⎇ main</span><span class="ab">↑2</span>
@@ -194,6 +212,8 @@ const ogImage = 'https://bohay.dev/og.png';
             <button class="ws" data-ws="webapp">
               <span class="ws-arrow">▸</span> webapp <span class="branch">⎇ feat/ui</span>
             </button>
+            </div>
+            <div class="side-dock">
             <div class="side-label agents-label">
               <span>Agents</span>
               <span class="afilter">
@@ -212,12 +232,14 @@ const ogImage = 'https://bohay.dev/og.png';
             <button class="session-row" id="session-row" hidden>
               <span class="c-dim">↺</span> claude <span class="proj">2h ago · api</span>
             </button>
+            </div>
           </aside>
           <div class="demo-main">
             <div class="demo-tabs">
               <button class="tab on" data-tab="main">1 main</button>
               <button class="tab" data-tab="git">2 ⎇ git</button>
               <button class="tab" data-tab="orch">3 ◇ orch</button>
+              <button class="tab" data-tab="ctrl">4 ⠶ ctrl</button>
               <span class="tab plus">+</span>
             </div>
 
@@ -258,87 +280,234 @@ const ogImage = 'https://bohay.dev/og.png';
               <div class="oleases"><span class="c-acc">LEASES</span>&nbsp; L1 <span class="c-dim">pane 4</span> t2 <span class="c-acc">src/api/**</span> &nbsp; L2 <span class="c-dim">pane 5</span> t3 <span class="c-acc">docs/**</span></div>
             </div>
 
+            <div class="demo-view gview" id="view-ctrl" hidden>
+              <div class="oheader">
+                <span class="c-acc">Mission Control</span>&nbsp; 3 agents
+                <span class="sep">·</span> 1 working <span class="sep">·</span> 1 blocked
+                <span class="sep">·</span> <b class="c-acc">$3.99</b> total
+              </div>
+              <div class="mc">
+                <div class="mc-row mc-head">
+                  <span>status</span><span>agent</span><span>ctx</span><span>tokens</span>
+                  <span>cost</span><span>model</span><span>where</span>
+                </div>
+                <button class="mc-row" data-jump="claude">
+                  <span><i class="dot working"></i>working</span><span>claude</span>
+                  <span class="c-acc">28%</span><span>13.2M</span><span>$1.94</span><span>opus</span>
+                  <span class="c-dim">sudos · 1</span>
+                </button>
+                <button class="mc-row" data-jump="copilot">
+                  <span><i class="dot blocked"></i>blocked</span><span>copilot</span>
+                  <span class="c-warn">86%</span><span>30.2M</span><span>$1.71</span><span>opus</span>
+                  <span class="c-dim">webapp · 1</span>
+                </button>
+                <button class="mc-row" data-jump="codex">
+                  <span><i class="dot done"></i>done</span><span>codex</span>
+                  <span class="c-acc">54%</span><span>838k</span><span>$0.34</span><span>opus</span>
+                  <span class="c-dim">sudos · 1</span>
+                </button>
+                <div class="mc-bar">
+                  <span class="c-dim">cost by model</span>
+                  <span class="mcb"><i style="width:88%"></i></span>
+                  <span class="c-acc">$3.99</span>
+                </div>
+              </div>
+              <div class="oleases">
+                <span class="c-acc">⏎</span> go <span class="sep">·</span>
+                <span class="c-acc">a</span> answer <span class="sep">·</span>
+                <span class="c-acc">i</span> stop <span class="sep">·</span>
+                <span class="c-acc">o</span> details
+              </div>
+            </div>
+
             <div class="demo-status">
               <span class="pill">⌃Space</span><span class="dim"> prefix</span>
               <span class="sep">·</span> <span id="status-note">copilot is blocked · click its pane to approve</span>
             </div>
           </div>
+
+          <aside class="demo-right" id="demo-right" data-open="false">
+            <button class="rs-toggle" id="rs-toggle" title="Show files" aria-expanded="false">
+              <span class="rs-chev">«</span>
+            </button>
+            <div class="rs-body">
+              <div class="side-label rs-head">
+                <span>Files</span><span class="c-dim rs-proj">sudos</span>
+              </div>
+              <div class="ftree">
+                <span class="ftr open"><i>▾</i>src</span>
+                <span class="ftr in"><i>▾</i>app</span>
+                <span class="ftr in2 f"><b class="fg m"></b>mod.rs<em>M</em></span>
+                <span class="ftr in2 f"><b class="fg m"></b>input.rs<em>M</em></span>
+                <span class="ftr in2 f"><b class="fg a"></b>mission.rs<em>A</em></span>
+                <span class="ftr in"><i>▸</i>ui</span>
+                <span class="ftr in f"><b class="fg"></b>main.rs</span>
+                <span class="ftr open"><i>▾</i>docs</span>
+                <span class="ftr in f"><b class="fg"></b>54-mission.md</span>
+                <span class="ftr f"><b class="fg"></b>Cargo.toml</span>
+                <span class="ftr f"><b class="fg m"></b>README.md<em>M</em></span>
+              </div>
+            </div>
+          </aside>
         </div>
       </div>
     </header>
 
-    <section class="features">
-      <h2>Everything your agents need, in one place</h2>
-      <p class="feat-sub">One terminal that watches every agent, keeps your work safe, and ships your code without switching windows.</p>
-      <div class="grid" id="feat-grid">
-        <a class="card s4" href="/docs/guides/agents/">
-          <div class="card-ic">◉</div>
-          <h3>See every agent at a glance</h3>
-          <p>One sidebar shows what each agent is doing right now: waiting on you, working, finished, or resting. Status you can trust, too: an agent only counts as working when it really is, so a starting CLI or your own typing never reads as busy. An optional retro chime tells you the moment one finishes or needs you.</p>
-          <div class="fx-strip" aria-hidden="true">
-            <span class="fx-chip blocked"><i></i>claude · waiting</span>
-            <span class="fx-chip working"><i></i>codex · working</span>
-            <span class="fx-chip done"><i></i>copilot · done</span>
-            <span class="fx-chip idle"><i></i>opencode · resting</span>
-          </div>
-          <span class="card-go">See the agent view</span>
-        </a>
-        <a class="card s2" href="/docs/guides/agents/">
-          <div class="card-ic">⌘</div>
-          <h3>See what an agent is really running</h3>
-          <p>Agents shorten long commands on screen. Click a pane's title for the real one, in full, straight from the system.</p>
-          <span class="card-go">Inspect a pane</span>
-        </a>
-        <a class="card s2" href="/docs/getting-started/first-session/">
-          <div class="card-ic">∞</div>
-          <h3>Pick up where you left off</h3>
-          <p>Close the terminal and nothing stops. Open it again and every pane, tab, and layout is right where you left it.</p>
-          <span class="card-go">How sessions work</span>
-        </a>
-        <a class="card s4" href="/docs/guides/files/">
-          <div class="card-ic">■</div>
-          <h3>Read the files your agents touch</h3>
-          <p>A file tree in the sidebar, tinted by git status so you see what changed at a glance. Click a file to read it in a fast built in viewer that updates itself as an agent edits, or open it straight in vim, nano, or whatever your editor is.</p>
-          <div class="fx-tree" aria-hidden="true">
-            <span class="fx-tr">▾ src</span>
-            <span class="fx-tr in">■ files.rs<b class="fx-git m">M</b></span>
-            <span class="fx-tr in">■ viewer.rs<b class="fx-git a">A</b></span>
-          </div>
-          <div class="fx-open" aria-hidden="true">
-            <span>read-only</span><span>vim</span><span>nano</span><span>$EDITOR</span>
-          </div>
-          <span class="card-go">Browse and open files</span>
-        </a>
-        <a class="card s4" href="/docs/guides/orchestration/">
-          <div class="card-ic">◇</div>
-          <h3>Run a whole team at once</h3>
-          <p>Put many agents on one project together without stepping on each other. Every agent works in its own copy, claims the files it touches, and only merges once your tests pass.</p>
-          <div class="fx-tasks" aria-hidden="true">
-            <span class="fx-task"><i class="fx-td done"></i>OAuth module<b class="fx-tag done">done</b></span>
-            <span class="fx-task"><i class="fx-td run"></i>API layer<b class="fx-tag run">running</b></span>
-            <span class="fx-task"><i class="fx-td q"></i>Integration tests<b class="fx-tag q">queued</b></span>
-          </div>
-          <span class="card-go">Meet the task board</span>
-        </a>
-        <a class="card s2" href="/docs/guides/agents/#session-resume--the-flagship">
-          <div class="card-ic">↺</div>
-          <h3>Your agents remember too</h3>
-          <p>After a restart, each agent reloads its own chat history by itself. You never paste a session flag or lose the thread.</p>
-          <span class="card-go">About resume</span>
-        </a>
-        <a class="card s3" href="/docs/guides/git/">
-          <div class="card-ic">⎇</div>
-          <h3>Git without leaving</h3>
-          <p>Browse commits, branches, pull requests, and issues in a built in tab. Open a pull request or merge it right there, without touching another app.</p>
-          <span class="card-go">Explore the git tab</span>
-        </a>
-        <a class="card s3" href="/docs/guides/remote/">
-          <div class="card-ic">⇄</div>
-          <h3>Work on any machine</h3>
-          <p>Drive a session running on another computer straight from your laptop over plain SSH. No port forwarding to set up, and it still feels instant as you type.</p>
-          <span class="card-go">Set up remote</span>
-        </a>
+    <section class="features" id="features">
+      <div class="feat-head">
+        <span class="eyebrow">What it does</span>
+        <h2>Everything your agents need, in one place</h2>
+        <p class="feat-sub">A terminal that watches your agents, reads your repo, and ships your code, without another window.</p>
       </div>
+
+      <div class="flist">
+        <article class="frow">
+          <span class="fr-k">Watch</span>
+          <div class="fr-text">
+            <h3>Status you can trust</h3>
+            <p>Which agents are working, which are blocked on you, which have finished, and where each one lives. An agent only counts as working on positive evidence, so a launching CLI or your own typing never reads as busy.</p>
+            <a class="fc-go" href="/docs/guides/agents/">Agent detection →</a>
+          </div>
+          <div class="fm" aria-hidden="true">
+            <div class="fm-head"><span>AGENTS</span><span class="fm-seg"><i>All</i><i class="on">Active</i></span></div>
+            <div class="fm-row"><span class="d run"></span>working<b>claude</b><em>sudos · core</em></div>
+            <div class="fm-row"><span class="d blk"></span>blocked<b>copilot</b><em>webapp · main</em></div>
+            <div class="fm-row"><span class="d done"></span>done<b>codex</b><em>sudos · notes</em></div>
+            <div class="fm-row"><span class="d"></span>idle<b>opencode</b><em>api · tab 1</em></div>
+          </div>
+        </article>
+
+        <article class="frow">
+          <span class="fr-k">Supervise</span>
+          <div class="fr-text">
+            <h3>Cost and context, per project</h3>
+            <p>One tab lists every agent in a folder with how full its context window is, what the session has cost, and the project total. Answer a blocked agent inline, or jump to its pane. Token figures come from Claude's own session files today.</p>
+            <a class="fc-go" href="/docs/guides/agents/">Mission Control →</a>
+          </div>
+          <div class="fm" aria-hidden="true">
+            <div class="fm-head"><span>⠶ ctrl</span><em>4 agents · 1 blocked · $3.99 total</em></div>
+            <div class="fm-row cols"><i class="hd">status</i><i class="hd">agent</i><i class="hd">ctx</i><i class="hd">cost</i><i class="hd">where</i></div>
+            <div class="fm-row cols"><span><span class="d run"></span>working</span><b>claude</b><i class="ok">28%</i><em>$1.94</em><em>sudos</em></div>
+            <div class="fm-row cols"><span><span class="d blk"></span>blocked</span><b>copilot</b><i class="hot">86%</i><em>$1.71</em><em>webapp</em></div>
+            <div class="fm-row cols"><span><span class="d done"></span>done</span><b>codex</b><i class="ok">54%</i><em>$0.34</em><em>sudos</em></div>
+            <div class="fm-foot">⏎ go · a answer · i stop · o details</div>
+          </div>
+        </article>
+
+        <article class="frow">
+          <span class="fr-k">Ship</span>
+          <div class="fr-text">
+            <h3>Git without leaving</h3>
+            <p>Click a branch and a tab opens on it: commits, branch flow, branches, pull requests, issues and a repo overview. It drives <code>git</code> and the <code>gh</code> CLI you already have, so it never disagrees with your shell.</p>
+            <a class="fc-go" href="/docs/guides/git/">The git tab →</a>
+          </div>
+          <div class="fm" aria-hidden="true">
+            <div class="fm-head"><span>⎇ main</span><em>→ origin/main · clean</em></div>
+            <div class="fm-tabs"><i class="on">Commits</i><i>Flow</i><i>Branches</i><i>PRs</i><i>Issues</i><i>Status</i></div>
+            <div class="fm-row mono"><b>c9c20b1</b>release: v0.9.7<em>2h ago</em></div>
+            <div class="fm-row mono"><b>e1a4a67</b>fix(files): scroll wrapped lines<em>5h ago</em></div>
+            <div class="fm-row mono"><b>9e20057</b>feat(mission): dashboard<em>yesterday</em></div>
+            <div class="fm-foot">j/k move · ⏎ show · / filter · q close</div>
+          </div>
+        </article>
+
+        <article class="frow">
+          <span class="fr-k">Read</span>
+          <div class="fr-text">
+            <h3>Read what agents touch</h3>
+            <p>A file tree tinted by git status, and a viewer that refreshes itself as the file changes on disk. Read it in place, or send it to vim, nano, or whatever <code>$EDITOR</code> is. Modules can add their own panel below it.</p>
+            <a class="fc-go" href="/docs/guides/files/">Files and the viewer →</a>
+          </div>
+          <div class="fm" aria-hidden="true">
+            <div class="fm-head"><span>FILES</span><em>sudos</em></div>
+            <div class="fm-row tree"><i>▾</i>src</div>
+            <div class="fm-row tree in"><i>▾</i>app</div>
+            <div class="fm-row tree in2"><b class="g m"></b>mod.rs<em>M</em></div>
+            <div class="fm-row tree in2"><b class="g a"></b>mission.rs<em>A</em></div>
+            <div class="fm-row tree in"><i>▸</i>ui</div>
+            <div class="fm-row tree"><b class="g"></b>Cargo.toml</div>
+          </div>
+        </article>
+
+        <article class="frow">
+          <span class="fr-k">Resume</span>
+          <div class="fr-text">
+            <h3>Agents pick up where they stopped</h3>
+            <p>bohay finds each agent's own session store on disk and runs its resume command for you. Nothing to configure, no session flag to paste. Works for claude, codex, copilot, opencode, kimi, grok and pi.</p>
+            <a class="fc-go" href="/docs/guides/agents/#session-resume--the-flagship">Session resume →</a>
+          </div>
+          <div class="fm" aria-hidden="true">
+            <div class="fm-head"><span>RESUMABLE</span><em>found on disk</em></div>
+            <div class="fm-row"><span class="c-dim">↺</span><b>claude</b>~/skyrizz/sudos<em>2h ago</em></div>
+            <div class="fm-row"><span class="c-dim">↺</span><b>codex</b>~/skyrizz/api<em>yesterday</em></div>
+            <div class="fm-row"><span class="c-dim">↺</span><b>opencode</b>~/game/skymon<em>3d ago</em></div>
+            <div class="fm-foot">click a row to bring it back</div>
+          </div>
+        </article>
+
+        <article class="frow">
+          <span class="fr-k">Fork</span>
+          <div class="fr-text">
+            <h3>Branch a session without losing it</h3>
+            <p>Right-click a pane and choose <strong>Fork to new pane</strong>. The agent's session is branched into a fresh pane beside it, carrying the whole conversation so far, while the original keeps running untouched. Try an approach without gambling the context you have already built. Also on <code>⌃Space f</code>, and offered only for agents that can really fork.</p>
+            <a class="fc-go" href="/docs/guides/agents/#session-resume--the-flagship">Forking a session →</a>
+          </div>
+          <div class="fm menu" aria-hidden="true">
+            <div class="fm-head"><span>PANE 2</span><em>right-click</em></div>
+            <div class="fm-menu">
+              <span class="mi">Split vertical</span>
+              <span class="mi">Split horizontal</span>
+              <span class="mi on">Fork to new pane</span>
+              <span class="mi">Running command</span>
+              <span class="mi">Move to tab<i>▸</i></span>
+              <span class="mi sep"></span>
+              <span class="mi danger">Close</span>
+            </div>
+            <div class="fm-foot">the fork opens to the right, the original keeps working</div>
+          </div>
+        </article>
+
+        <article class="frow">
+          <span class="fr-k">Reach</span>
+          <div class="fr-text">
+            <h3>Drive another machine</h3>
+            <p>Attach to a session running on another box over plain SSH. No port forwarding, no daemon to install. Only the changed cells cross the wire, about 22 bytes for a keystroke, so it types like it is local.</p>
+            <a class="fc-go" href="/docs/guides/remote/">Remote attach →</a>
+          </div>
+          <div class="fm" aria-hidden="true">
+            <div class="fm-head"><span>REMOTE</span><em>plain ssh</em></div>
+            <div class="fm-cmd">$ bohay --remote devbox</div>
+            <div class="fm-row"><span class="d run"></span>attached<b>devbox</b><em>3 panes</em></div>
+            <div class="fm-row"><span class="d done"></span>frame diff<b>~22 B</b><em>per keystroke</em></div>
+            <div class="fm-foot">the server keeps running when you detach</div>
+          </div>
+        </article>
+
+        <article class="frow">
+          <span class="fr-k">Notch</span>
+          <div class="fr-text">
+            <h3>The same team, in the notch</h3>
+            <p><strong>bohay-notch</strong> mirrors every agent into a native macOS panel that drops out of the MacBook notch. Watch what each one is doing, answer a request or grant permission, and jump straight to its pane, without leaving the app you are in.</p>
+            <a class="fc-go" href="/docs/guides/notch/">How the notch app works →</a>
+          </div>
+          <div class="fm notch" aria-hidden="true">
+            <div class="fm-notch" aria-hidden="true"></div>
+            <div class="fm-head"><span>AGENTS</span><em>4 · $3.99</em></div>
+            <div class="fm-row"><span class="d run"></span><b>claude</b><i class="ok">28%</i><em>Working</em></div>
+            <div class="fm-row"><span class="d blk"></span><b>copilot</b><i class="hot">86%</i><em>Blocked</em></div>
+            <div class="fm-row"><span class="d done"></span><b>codex</b><i class="ok">54%</i><em>Done</em></div>
+            <div class="fm-cmd">brew install --cask RizRiyz/bohay/bohay-notch</div>
+            <div class="fm-foot">macOS 15+ · Apple silicon</div>
+          </div>
+        </article>
+      </div>
+
+      <p class="also">
+        Also: <a href="/docs/guides/worktrees/">a worktree per branch</a> ·
+        <a href="/docs/extend/writing-modules/">modules in any language</a> ·
+        <a href="/docs/reference/keybindings/">remappable keys</a> ·
+        <a href="/docs/guides/layout/">movable panels and themes</a>
+      </p>
     </section>
 
     <section class="orch">
@@ -378,94 +547,6 @@ const ogImage = 'https://bohay.dev/og.png';
       </div>
     </section>
 
-    <!-- The bohay-notch showcase: a full macOS screen with monitor, approve,
-         and jump. An interactive replica of the real app (bohay-notch/). -->
-    <section class="macshow">
-      <h2 class="ms-title">Your agent team, in the notch</h2>
-      <p class="ms-sub">
-        <strong>bohay-notch</strong> mirrors every agent into a native macOS panel that drops
-        from the MacBook notch. <b>Monitor</b> them, <b>approve</b> a request or answer a
-        question, and <b>jump</b> straight to any pane, all without breaking flow.
-      </p>
-
-      <div class="mac">
-        <div class="screen">
-          <div class="menubar">
-            <span class="mb-l"><span class="mb-logo"></span> <b>bohay</b> <span class="mb-mi">File</span> <span class="mb-mi">View</span> <span class="mb-mi">Agents</span></span>
-            <span class="mb-r">100%&nbsp;&nbsp;Tue&nbsp;9:41</span>
-          </div>
-          <div class="desk">
-            <div class="termwin" id="termwin">
-              <div class="tw-bar"><span class="tl r"></span><span class="tl y"></span><span class="tl g"></span><span class="tw-title" id="tw-title">claude · ~/sudos</span></div>
-              <div class="tw-body">
-                <div class="tw-side">
-                  <div class="tw-slabel">Agents</div>
-                  {NOTCH_AGENTS.map((a) => (
-                    <button class="tw-agent" data-jump={a.id}><i class={`tsd ${a.state}`} data-sd={a.id}></i>{a.id}</button>
-                  ))}
-                </div>
-                <div class="tw-pane" id="tw-pane"></div>
-              </div>
-            </div>
-            <div class="jtoast" id="jtoast"></div>
-          </div>
-
-          <div class="island" id="island">
-            <span class="ncamera"></span>
-            <div class="ncollapsed">
-              <span class="ncol-l"><i class="sumdot working" id="sumdot"></i><b id="sumcount">4</b></span>
-              <span class="ncol-r"><span class="ndisc ic-claudecode"><IconClaudeCode /></span></span>
-            </div>
-            <div class="npanel" id="npanel">
-              <div class="nview" id="nview-list">
-                <div class="nhead"><span class="nhead-t">AGENTS</span><i class="ndot green"></i><span class="nspacer"></span><b>4</b></div>
-                <div class="nrows">
-                  {NOTCH_AGENTS.map((a) => (
-                    <button class="nrow" data-jump={a.id}>
-                      <span class={`ndisc ic-${a.slug}`}><a.Icon /></span>
-                      <span class="nmodel">{a.model}</span>
-                      <span class="nproj">{a.proj}</span>
-                      <span class="nspacer"></span>
-                      <span class="nctx"><span class="nctx-bar"><i class={a.ctx >= 85 ? 'red' : a.ctx >= 60 ? 'amber' : 'grn'} style={`width:${a.ctx}%`}></i></span><span class="nctx-n">{a.ctx}%</span></span>
-                      <span class="ncost">${a.cost}</span>
-                      <span class={`npill ${a.state}`} data-pill={a.id}>{cap(a.state)}</span>
-                    </button>
-                  ))}
-                </div>
-                <div class="nfoot">
-                  <span class="fstat"><i class="ndot green"></i><b id="f-run">2</b> running</span>
-                  <span class="fstat"><i class="ndot done"></i><b id="f-done">1</b> done</span>
-                  <span class="fstat"><i class="ndot idle"></i><b id="f-idle">1</b> idle</span>
-                  <span class="nspacer"></span><b class="ftotal">$3.99</b><span class="ftot-l">total</span>
-                </div>
-              </div>
-              <div class="nview" id="nview-approve" hidden>
-                <div class="ncard-head"><span class="ncard-hand">✋</span><b>claude</b><span class="nproj">sudos</span><span class="nspacer"></span><span class="ncard-open">⧉</span></div>
-                <div class="ncard-ctx">Claude wants to run a command</div>
-                <div class="ncard-q">Run <b>cargo&nbsp;test</b> in <b>sudos</b>?</div>
-                <div class="ncard-opts">
-                  <button class="nopt allow" data-answer="yes"><span class="nnum">1</span><span class="nopt-l">Yes</span><span class="nkey">⌘Y</span></button>
-                  <button class="nopt" data-answer="always"><span class="nnum">2</span><span class="nopt-l">Yes, and don't ask again</span></button>
-                  <button class="nopt deny" data-answer="no"><span class="nnum">3</span><span class="nopt-l">No, keep working</span><span class="nkey">⌘N</span></button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div class="caps" id="caps">
-        <button class="cap on" data-cap="monitor"><b>Monitor</b><span>every agent, one glance</span></button>
-        <button class="cap" data-cap="approve"><b>Approve</b><span>answer &amp; grant permission</span></button>
-        <button class="cap" data-cap="jump"><b>Jump</b><span>focus its pane</span></button>
-      </div>
-
-      <div class="ms-foot">
-        <code class="cask">brew install --cask --no-quarantine RizRiyz/bohay/bohay-notch</code>
-        <span class="ms-req">macOS 15+ · Apple silicon · <a href="https://github.com/RizRiyz/bohay/releases">or download the .dmg</a></span>
-      </div>
-    </section>
-
     <section class="agents-strip">
       <h2>Works with the agents you already use</h2>
       <div class="agent-grid">
@@ -489,7 +570,9 @@ const ogImage = 'https://bohay.dev/og.png';
 
     <section class="cta-repo">
       <div class="cta-card">
-        {ctaArt && <Image class="cta-art" src={ctaArt} width={200} densities={[2]} alt="" loading="lazy" />}
+        {ctaArt && <div class="cta-art" style={`--art:url(${ctaArt.src})`} aria-hidden="true"></div>}
+
+        <div class="cta-copy">
         <span class="cta-badge">Open source · AGPL-3.0 licensed</span>
         <h2>If bohay saves you time, give it a star</h2>
         <p>
@@ -507,16 +590,11 @@ const ogImage = 'https://bohay.dev/og.png';
             Browse the code
           </a>
         </div>
-        <div class="cta-mini">
-          <code class="cta-repo-path">github.com/RizRiyz/bohay</code>
-          <a href={`${GITHUB}/issues`}>Open an issue</a>
-          <span class="sep">·</span>
-          <a href="/docs/">Read the docs</a>
-          <span class="sep">·</span>
-          <a href="https://crates.io/crates/bohay">crates.io</a>
         </div>
       </div>
     </section>
+
+    </div>
 
     <footer>
       <div class="foot-inner">
@@ -722,6 +800,23 @@ const ogImage = 'https://bohay.dev/og.png';
           focusAgent(a.getAttribute('data-agent') as AgentId);
         })
       );
+      // The right sidebar opens on click, the way the app's `»` chevron works.
+      const right = $('demo-right');
+      $('rs-toggle')?.addEventListener('click', () => {
+        const open = right?.getAttribute('data-open') === 'true';
+        right?.setAttribute('data-open', open ? 'false' : 'true');
+        $('rs-toggle')?.setAttribute('aria-expanded', open ? 'false' : 'true');
+        $('rs-toggle')?.setAttribute('title', open ? 'Show files' : 'Hide files');
+      });
+
+      // A Mission Control row jumps to that agent's pane, as `⏎` does in the app.
+      document.querySelectorAll('.mc-row[data-jump]').forEach((r) =>
+        r.addEventListener('click', () => {
+          switchTab('main');
+          focusAgent(r.getAttribute('data-jump') as AgentId);
+        })
+      );
+
       $('pane-left')?.addEventListener('click', () => focusAgent('claude'));
       $('pane-codex')?.addEventListener('click', () => focusAgent('codex'));
       $('pane-copilot')?.addEventListener('click', (e) => {
@@ -821,7 +916,7 @@ const ogImage = 'https://bohay.dev/og.png';
       }
       function switchTab(tab: string) {
         activeTab = tab;
-        ['main', 'git', 'orch'].forEach((t) => {
+        ['main', 'git', 'orch', 'ctrl'].forEach((t) => {
           const v = $(`view-${t}`);
           if (v) (v as HTMLElement).hidden = t !== tab;
         });
@@ -1047,11 +1142,17 @@ const ogImage = 'https://bohay.dev/og.png';
       body {
         background: var(--bg);
         color: var(--text);
-        font: 13.5px/1.75 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+        font: 15px/1.75 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
         -webkit-font-smoothing: antialiased;
       }
       a { color: inherit; text-decoration: none; }
-      code, pre, .term { font-family: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace; }
+      /* Prose is the docs' face (`--sl-font`); mono stays where it means
+         something: code, and every surface that replicates the running app.
+         `.demo` inherits from body, so it is pinned here rather than left to
+         chance. */
+      code, pre, .term, .demo, .install code {
+        font-family: 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+      }
       /* Display face · the wordmark and headings. Tight tracking is what keeps a
          monospace heading from looking like plain output. */
       h1, h2, h3, .brand, .foot-brand {
@@ -1060,12 +1161,33 @@ const ogImage = 'https://bohay.dev/og.png';
       }
       /* Wide, as before, but the rhythm now comes from generous vertical space
          between sections rather than from cards and shadows. */
-      section, header.hero { max-width: 1080px; margin: 0 auto; padding: 5.5rem 1.5rem; }
+      /* The page sits in one frame with hairline rules down both edges, so the
+         content has a visible boundary instead of floating in the viewport.
+         Sections then run the frame's full width and divide with a rule of
+         their own — much more room than a 1080px column, and the lines give
+         the extra width something to be measured against. */
+      :root { --gut: 2.6rem; }
+      @media (max-width: 900px) { :root { --gut: 1.6rem; } }
+      @media (max-width: 560px) { :root { --gut: 1.15rem; } }
+      /* Vertical rules bracket the *content* only. The nav and footer sit
+         outside the frame so their horizontal rules run the full viewport
+         width, edge to edge, rather than stopping at 1440px. */
+      .page-frame {
+        max-width: 1440px; margin: 0 auto; background: var(--bg); position: relative;
+        border-inline: 1px solid var(--line);
+      }
+      /* The footer's own top rule closes the page, so the last section would
+         otherwise draw a second, shorter line just above it. */
+      .page-frame > section:last-child { border-bottom: 0; }
+      section, header.hero {
+        max-width: none; margin: 0; padding: 5.5rem var(--gut);
+        border-bottom: 1px solid var(--line);
+      }
       .accent { color: var(--accent); }
       .dim { color: var(--sub); }
       ::selection { background: var(--sel); color: var(--text); }
       h2 { font-size: 1.45rem; letter-spacing: -0.035em; }
-      .feat-sub, .sub, .orch-text p, .ms-sub {
+      .feat-sub, .sub, .orch-text p {
         color: var(--sub); font-size: 0.85rem; line-height: 1.8;
       }
 
@@ -1076,7 +1198,7 @@ const ogImage = 'https://bohay.dev/og.png';
       }
       .nav-inner {
         display: flex; justify-content: space-between; align-items: center;
-        max-width: 1080px; margin: 0 auto; padding: 0.85rem 1.5rem;
+        max-width: 1440px; margin: 0 auto; padding: 0.85rem var(--gut);
       }
       .brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; font-size: 1.45rem; letter-spacing: -0.05em; color: var(--text); }
       /* Inline SVG logo mark · crisp at any size, sits flush with the wordmark. */
@@ -1095,13 +1217,40 @@ const ogImage = 'https://bohay.dev/og.png';
 
       /* Centred, but with the radial green wash gone. The glow and the rounded
          chrome were what made this read as a template, not the alignment. */
-      .hero { text-align: center; padding-top: 5rem; position: relative; }
+      .hero { text-align: left; padding-top: 2.4rem; position: relative; }
       .hero .glow { display: none; }
-      .hero h1 {
-        font-size: clamp(2rem, 5vw, 3.1rem); font-weight: 600; position: relative;
-        letter-spacing: -0.045em;
+      /* Copy left, mark right. The mark is decorative, so it yields first when
+         the row gets tight. */
+      .hero-top {
+        display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 0.52fr);
+        gap: 3rem; align-items: center;
       }
-      .hero .sub { color: var(--sub); max-width: 44rem; margin: 1.2rem auto 0; font-size: 0.95rem; line-height: 1.8; }
+      .hero-copy { min-width: 0; }
+      .hero h1 {
+        font-size: clamp(2.2rem, 5.4vw, 4rem); font-weight: 600; position: relative;
+        letter-spacing: -0.05em; line-height: 1.05;
+      }
+      .hero .sub { color: var(--sub); max-width: 34rem; margin: 1.4rem 0 0; font-size: 1.02rem; line-height: 1.75; }
+
+      /* The mark is drawn as a mask filled with `--text`, so one asset serves
+         every palette: light art on the dark themes, dark art on the light
+         ones, flipping with the picker and never needing a second file. */
+      .hero-art {
+        aspect-ratio: 1; width: 100%; max-width: 30rem;
+        /* Bottom-aligned, not centred: whichever column is taller, the art's
+           lower edge is then the row's lower edge, so the demo below always
+           meets it instead of floating a few pixels clear. */
+        justify-self: end; align-self: end;
+        /* Mirrored so the subject faces the copy rather than the page edge. */
+        transform: scaleX(-1);
+        /* Between the two extremes: `--text` was a white cut-out (+198 luminance
+           over the page) and `--base` vanished (+25). `--overlay1` lands at
+           about +68 — clearly legible, still plainly a watermark — and it
+           inverts with the palette like the rest. */
+        background: var(--overlay1);
+        -webkit-mask: var(--art) center / contain no-repeat;
+        mask: var(--art) center / contain no-repeat;
+      }
       .install {
         display: inline-flex; align-items: center; gap: 0.85rem; margin-top: 2.2rem;
         background: none; border: 1px solid var(--line);
@@ -1118,7 +1267,6 @@ const ogImage = 'https://bohay.dev/og.png';
       .alt-install { color: var(--sub); font-size: 0.78rem; margin-top: 0.85rem; }
       .alt-install code { color: var(--text); background: var(--bg2); padding: 0.1rem 0.4rem;  }
       .alt-install a { color: var(--accent); }
-      .cta { margin-top: 1.6rem; display: flex; gap: 0.8rem; justify-content: center; flex-wrap: wrap; }
       .btn {
         display: inline-block; padding: 0.6rem 1.15rem;
         border: 1px solid var(--line); font-weight: 500; font-size: 0.82rem;
@@ -1129,25 +1277,108 @@ const ogImage = 'https://bohay.dev/og.png';
       .btn.primary:hover { border-color: var(--accent); }
       /* ── the live demo ── */
       .demo {
-        margin-top: 3rem; text-align: left;
+        /* Flush against the hero mark above it. */
+        margin-top: 0; text-align: left;
         background: var(--bg2); border: 1px solid var(--line);
         overflow: hidden; font-size: 0.8rem;
       }
       .demo-chrome {
+        position: relative;
         display: flex; align-items: center; gap: 0.45rem;
         padding: 0.6rem 0.9rem; border-bottom: 1px solid var(--line); background: var(--bg2);
       }
       .tl { width: 11px; height: 11px; border-radius: 50%; }
       .tl.r { background: #e06c66; } .tl.y { background: #e0b34d; } .tl.g { background: #6fc6a3; }
-      .demo-title { margin-left: 0.6rem; color: var(--sub); font-size: 0.78rem; font-family: 'JetBrains Mono Variable', monospace; }
+      /* Centred on the bar itself, not in the flex run, so the traffic lights
+         and the live-demo hint can't push it off centre. */
+      .demo-title {
+        position: absolute; left: 50%; transform: translateX(-50%);
+        color: var(--sub); font-size: 0.78rem; font-family: 'JetBrains Mono Variable', monospace;
+        pointer-events: none;
+      }
       .demo-hint { margin-left: auto; color: var(--accent); font-size: 0.72rem; animation: pulse 2.4s infinite; }
       @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.45; } }
 
-      .demo-body { display: flex; min-height: 380px; }
+      /* The app's own window is about 1.72:1 (2258x1310 in the captures), but
+         matching that exactly pushes the demo past the fold. 380px was a 3.5:1
+         letterbox that looked nothing like running bohay; this lands between
+         the two, tracking the viewport so it stays sane on a narrow column. */
+      .demo-body { display: flex; min-height: min(48vw, 560px); }
       .demo-side {
         width: 190px; flex-shrink: 0; border-right: 1px solid var(--line);
         background: var(--bg2); padding: 0.8rem 0.55rem; display: flex; flex-direction: column; gap: 2px;
       }
+      /* The real app divides sidebar height between its docks, so AGENTS sits
+         around the midpoint rather than tucked under WORKSPACES. Two equal
+         flex children reproduce that. */
+      .side-dock { flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 2px; }
+
+      /* ── Mission Control view ──────────────────────────────────────────── */
+      .mc { padding: 0.5rem 0.7rem; font-size: 0.72rem; overflow: hidden; }
+      .mc-row {
+        display: grid; grid-template-columns: 5.4rem 4.2rem 2.6rem 3.4rem 3.2rem 3rem minmax(0, 1fr);
+        gap: 0.5rem; align-items: center; width: 100%; text-align: left;
+        padding: 0.26rem 0.35rem; border: 0; border-radius: 5px;
+        background: none; color: var(--sub); font: inherit; cursor: pointer;
+      }
+      .mc-row:hover { background: var(--surface); color: var(--text); }
+      .mc-head, .mc-head:hover {
+        color: var(--overlay1); text-transform: uppercase; letter-spacing: 0.08em;
+        font-size: 0.6rem; cursor: default; background: none;
+      }
+      .mc-row .dot { display: inline-block; margin-right: 0.35rem; }
+      .c-warn { color: var(--coral); }
+      .mc-bar { display: flex; align-items: center; gap: 0.5rem; margin-top: 0.6rem; padding: 0 0.35rem; }
+      .mcb { flex: 1; height: 7px; border-radius: 3px; background: var(--surface); overflow: hidden; }
+      .mcb i { display: block; height: 100%; background: var(--accent); }
+
+      /* ── Right sidebar: a rail you click to open, as in the app ────────── */
+      /* Collapsed, the sidebar is not a rail: there is no divider and no panel,
+         just the chevron sitting at the top edge — the app puts it in the tab
+         bar when the side is hidden, and only draws the border once the panel
+         is actually there. */
+      .demo-right {
+        flex-shrink: 0; display: flex; align-items: flex-start;
+        width: 1.9rem; border-left: 0; background: none;
+        transition: width 0.22s ease, background 0.22s ease;
+      }
+      .demo-right[data-open='true'] {
+        width: 200px; border-left: 1px solid var(--line); background: var(--bg2);
+      }
+      .rs-toggle {
+        flex: none; width: 1.9rem; border: 0; background: none; cursor: pointer;
+        color: var(--overlay1); font-size: 0.8rem; line-height: 1;
+        padding: 0.7rem 0 0; text-align: center;
+      }
+      .rs-toggle:hover { color: var(--accent); }
+      .rs-chev { display: inline-block; transition: transform 0.22s ease; }
+      .demo-right[data-open='true'] .rs-chev { transform: rotate(180deg); }
+      .rs-body {
+        flex: 1; min-width: 0; overflow: hidden; padding: 0.7rem 0.5rem 0 0;
+        opacity: 0; transition: opacity 0.18s ease;
+      }
+      .demo-right[data-open='true'] .rs-body { opacity: 1; }
+      .rs-head { display: flex; justify-content: space-between; padding-inline: 0.3rem; }
+      .rs-proj { text-transform: none; letter-spacing: 0; font-weight: 400; }
+
+      .ftree { display: flex; flex-direction: column; gap: 1px; font-size: 0.72rem; white-space: nowrap; }
+      .ftr {
+        display: flex; align-items: center; gap: 0.3rem;
+        padding: 0.1rem 0.3rem; border-radius: 4px; color: var(--sub);
+      }
+      .ftr:hover { background: var(--surface); color: var(--text); }
+      .ftr i { font-style: normal; color: var(--overlay1); width: 0.7rem; }
+      .ftr.in { padding-left: 0.95rem; }
+      .ftr.in2 { padding-left: 1.6rem; }
+      /* A file marker, tinted by git status — the app's own cue. */
+      .ftr .fg { width: 4px; height: 0.8rem; border-radius: 2px; background: var(--line); flex: none; }
+      .ftr .fg.m { background: var(--amber); }
+      .ftr .fg.a { background: var(--green); }
+      .ftr em {
+        margin-left: auto; font-style: normal; font-size: 0.6rem;
+        color: var(--overlay1); padding-left: 0.4rem;
+      }
+
       .side-brand {
         display: flex; align-items: center; gap: 0.4rem;
         padding: 0.15rem 0.5rem 0.6rem; border-bottom: 1px solid var(--surface); margin-bottom: 0.3rem;
@@ -1282,8 +1513,13 @@ const ogImage = 'https://bohay.dev/og.png';
       .demo-status .pill { background: var(--accent); color: var(--bg);  padding: 0 0.4rem; font-weight: 700; }
       .demo-status .sep { color: var(--overlay0); }
       @media (max-width: 700px) {
-        .demo-side { display: none; }
+        /* Both sidebars go: on a phone the panes need every column. */
+        .demo-side, .demo-right { display: none; }
         .demo-panes { flex-direction: column; }
+        /* The Mission Control table drops its least useful columns rather than
+           scrolling sideways out of the frame. */
+        .mc-row { grid-template-columns: 4.6rem 3.6rem 2.4rem minmax(0, 1fr); }
+        .mc-row > :nth-child(n + 5) { display: none; }
       }
 
       .problem { text-align: center; }
@@ -1293,123 +1529,174 @@ const ogImage = 'https://bohay.dev/og.png';
       .problem .turn { color: var(--text); font-size: 1rem; max-width: 40rem; margin: 1.6rem auto 0; }
 
       .agents-strip h2 { text-align: center; font-size: 1.45rem; margin-bottom: 2rem; }
-      .features h2 { text-align: center; font-size: 1.45rem; margin-bottom: 0.6rem; letter-spacing: -0.035em; }
-      .feat-sub { text-align: center; color: var(--sub); max-width: 44rem; margin: 0 auto 2.6rem; font-size: 0.85rem; line-height: 1.8; }
+      /* ── Feature showcase ────────────────────────────────────────────────
+         A tab rail plus one stage holding real screenshots of the app. The
+         shots are window captures with a black matte baked in, so `.framed`
+         scales and offsets them inside an overflow-hidden box to trim it —
+         otherwise the page draws a second border around the first one. */
+      /* The nav is sticky at top:0 (~3.4rem tall), so an anchored jump would
+         drop the heading underneath it. */
+      #features { scroll-margin-top: 4.5rem; }
+      .feat-head { text-align: center; margin-bottom: 2rem; }
+      .eyebrow {
+        display: inline-block; font-family: var(--bh-display); font-size: 0.66rem;
+        letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent);
+        margin-bottom: 0.7rem;
+      }
+      .features h2 { font-size: 1.45rem; margin-bottom: 0.6rem; letter-spacing: -0.035em; }
+      .feat-sub { color: var(--sub); max-width: 42rem; margin: 0 auto; font-size: 0.85rem; line-height: 1.8; }
 
-      /* Bento grid: wide "featured" cards (s4) set diagonally, with s2/s3
-         fillers. Every row MUST sum to exactly 6 columns or the grid leaves
-         holes. Current rows: 4+2 / 2+4 / 4+2 / 3+3. */
-      .features .grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 0.85rem; }
-      .card {
-        position: relative; overflow: hidden;
-        display: flex; flex-direction: column; align-items: flex-start; gap: 0.5rem;
-        background: none;
-        border: 1px solid var(--line);
-        padding: 1.4rem 1.45rem;
-        transition: border-color 0.18s;
+      /* Feature list: one row per feature, copy left and a mock right — the
+         same shape as the orchestration section below. Mocks are built from
+         divs rather than screenshots: lighter, always current, and they say
+         more per pixel at this size. */
+      .flist { display: grid; }
+      /* Three columns: the kicker set vertically as a piece of type, the copy,
+         then a mock at about two thirds its old width — the mocks read fine
+         small, and the extra room goes to the words. */
+      .frow {
+        display: grid;
+        grid-template-columns: 4.4rem minmax(0, 1fr) minmax(0, 0.56fr);
+        gap: 0 2.6rem; align-items: center; padding: 2.6rem 0;
       }
-      .card.s2 { grid-column: span 2; }
-      .card.s3 { grid-column: span 3; }
-      .card.s4 { grid-column: span 4; }
-      .card:hover { border-color: rgb(from var(--accent) r g b / 0.5); }
-      .card-ic {
-        display: flex; align-items: center;
-        font-size: 0.95rem; color: var(--accent); margin-bottom: 0.15rem;
-        background: none; border: 0;
+      .frow + .frow { border-top: 1px solid var(--line); }
+      .frow:first-child { padding-top: 0.6rem; }
+      .frow:last-child { padding-bottom: 0.6rem; }
+
+      /* Bottom-to-top: `vertical-rl` runs top-to-bottom, so rotate it. Large
+         and tracked out, at low opacity — it reads as a rule down the side of
+         the row rather than a label competing with the heading. */
+      .fr-k {
+        writing-mode: vertical-rl; transform: rotate(180deg);
+        justify-self: center; align-self: center;
+        font-family: var(--bh-display); font-size: 2.7rem; font-weight: 700;
+        letter-spacing: 0.02em; line-height: 1; text-transform: uppercase;
+        color: rgb(from var(--accent) r g b / 0.3);
+        user-select: none; white-space: nowrap;
+      }
+      /* Outlined, not filled. Behind `@supports` because the stroke is what
+         makes the glyphs visible — without it `color: transparent` would leave
+         the word invisible rather than merely unstyled. */
+      @supports (-webkit-text-stroke: 1px currentColor) {
+        .fr-k {
+          color: transparent;
+          -webkit-text-stroke: 1px rgb(from var(--accent) r g b / 0.55);
+        }
+      }
+      /* Cap the measure at about two thirds of the column: the leftover becomes
+         breathing room before the mock, and 780px of 15px Inter was a ~97
+         character line, far past a comfortable read. */
+      .fr-text { max-width: 33rem; }
+      .fr-text h3 { font-size: 1.25rem; font-weight: 600; letter-spacing: -0.03em; margin: 0 0 0.7rem; }
+      .fr-text p { color: var(--sub); font-size: 0.85rem; line-height: 1.85; margin: 0; }
+      .fr-text code {
+        font-size: 0.92em; color: var(--sub2);
+        background: var(--bg2); border: 1px solid var(--line); border-radius: 4px; padding: 0 0.25em;
+      }
+      .fc-go { display: inline-block; margin-top: 1rem; font-family: var(--bh-display); font-size: 0.72rem; color: var(--accent); }
+      .fc-go:hover { text-decoration: underline; }
+
+      /* The mock: a small, honest replica of the real surface. */
+      .fm {
+        background: var(--bg2); border: 1px solid var(--line);
+        font-family: 'JetBrains Mono Variable', monospace; font-size: 0.7rem;
+        padding: 0.6rem 0.7rem; display: flex; flex-direction: column; gap: 2px;
+        color: var(--sub); overflow: hidden;
+      }
+      .fm-head {
+        display: flex; align-items: center; justify-content: space-between; gap: 0.5rem;
+        color: var(--overlay1); font-size: 0.62rem; letter-spacing: 0.08em; text-transform: uppercase;
+        padding-bottom: 0.35rem; margin-bottom: 0.2rem; border-bottom: 1px solid var(--line);
+      }
+      .fm-head em { font-style: normal; text-transform: none; letter-spacing: 0; color: var(--sub); }
+      .fm-seg { display: flex; gap: 2px; text-transform: none; letter-spacing: 0; }
+      .fm-seg i { font-style: normal; padding: 0 0.32rem; border-radius: 3px; }
+      .fm-seg i.on { background: var(--accent); color: var(--bg); }
+
+      .fm-row { display: flex; align-items: center; gap: 0.45rem; padding: 0.13rem 0.1rem; white-space: nowrap; min-width: 0; }
+      .fm-row b { color: var(--text); font-weight: 500; }
+      .fm-row em { font-style: normal; color: var(--overlay1); margin-left: auto; }
+      .fm-row i { font-style: normal; }
+      .fm-row i.ok { color: var(--accent); }
+      .fm-row i.hot { color: var(--coral); }
+      .fm-row i.hd { color: var(--overlay1); font-size: 0.58rem; text-transform: uppercase; letter-spacing: 0.06em; }
+      /* The Mission Control table needs real columns, not a flex run. */
+      .fm-row.cols {
+        display: grid; grid-template-columns: 5.4rem 4.4rem 2.8rem 3.2rem minmax(0, 1fr);
+        gap: 0.5rem;
+      }
+      .fm-row.cols em { margin-left: 0; }
+      .fm-row.cols > span { display: flex; align-items: center; gap: 0.35rem; }
+      .fm-row.mono b { color: var(--amber); margin-right: 0.15rem; }
+      .fm-row.tree.in { padding-left: 0.85rem; }
+      .fm-row.tree.in2 { padding-left: 1.6rem; }
+      .fm-row.tree i { color: var(--overlay1); width: 0.7rem; }
+      .fm-row .g { width: 3px; height: 0.75rem; border-radius: 2px; background: var(--line); flex: none; }
+      .fm-row .g.m { background: var(--amber); }
+      .fm-row .g.a { background: var(--green); }
+
+      .fm .d { width: 6px; height: 6px; border-radius: 50%; flex: none; background: var(--overlay0); }
+      .fm .d.run { background: var(--accent); }
+      .fm .d.blk { background: var(--coral); }
+      .fm .d.done { background: var(--green); }
+
+      .fm-tabs { display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.15rem 0 0.25rem; color: var(--overlay1); }
+      .fm-tabs i { font-style: normal; }
+      .fm-tabs i.on { color: var(--text); }
+      .fm-cmd { color: var(--sub2); padding: 0.2rem 0; }
+      /* A replica of the pane context menu (`render_popup` in ui/menu.rs): a
+         flat list, one highlighted row, a divider, and the destructive item
+         tinted like the app tints it. */
+      .fm-menu { display: flex; flex-direction: column; gap: 1px; padding: 0.15rem 0; }
+      .mi {
+        padding: 0.22rem 0.5rem; border-radius: 4px; color: var(--sub);
+        display: flex; align-items: center; white-space: nowrap;
+      }
+      .mi i { font-style: normal; margin-left: auto; color: var(--overlay1); }
+      .mi.on { background: var(--accent); color: var(--bg); font-weight: 500; }
+      .mi.danger { color: var(--coral); }
+      .mi.sep {
+        padding: 0; margin: 0.25rem 0.5rem; height: 1px;
+        background: var(--line); border-radius: 0;
+      }
+      /* The notch mock wears the panel's own shape: rounded only at the bottom,
+         with the camera pill above it, so it reads as something that dropped
+         out of the top of a screen rather than another card. */
+      .fm.notch {
+        border-top: 0; border-radius: 0 0 12px 12px; position: relative;
+        padding-top: 1.5rem; margin-top: 0.6rem;
+      }
+      .fm-notch {
+        position: absolute; top: 0.45rem; left: 50%; transform: translateX(-50%);
+        width: 3.6rem; height: 0.5rem; border-radius: 999px; background: var(--bg);
+        border: 1px solid var(--line); border-top: 0;
+      }
+      .fm.notch .fm-cmd { font-size: 0.62rem; color: var(--accent); word-break: break-all; }
+      .fm-foot {
+        margin-top: 0.3rem; padding-top: 0.35rem; border-top: 1px solid var(--line);
+        color: var(--overlay1); font-size: 0.62rem;
       }
 
-      .card h3 { font-size: 0.95rem; font-weight: 600; letter-spacing: -0.02em; margin: 0; }
-      .card p { color: var(--sub); font-size: 0.82rem; line-height: 1.8; margin: 0; }
-      .card-go {
-        margin-top: auto; padding-top: 0.5rem; color: var(--accent); font-size: 0.8rem; font-weight: 600;
-        font-family: 'IBM Plex Mono', monospace;
-        opacity: 0; transform: translateX(-5px); transition: opacity 0.22s, transform 0.22s;
-      }
-      .card-go::after { content: ' →'; }
-      .card:hover .card-go { opacity: 1; transform: translateX(0); }
+      .also { margin-top: 1.6rem; text-align: center; color: var(--sub); font-size: 0.8rem; }
+      .also a { color: var(--sub2); text-decoration: underline; text-underline-offset: 3px; }
+      .also a:hover { color: var(--accent); }
 
-      /* Featured card 1: live status chips (pulse on hover). */
-      .fx-strip { display: flex; flex-wrap: wrap; gap: 0.45rem; margin-top: 0.55rem; }
-      .fx-chip {
-        display: inline-flex; align-items: center; gap: 0.42rem;
-        font: 0.72rem 'JetBrains Mono Variable', monospace; color: var(--sub);
-        background: var(--bg2); border: 1px solid var(--line);  padding: 0.32rem 0.72rem;
-      }
-      .fx-chip i { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-      .fx-chip.blocked i { background: #ff9e0a; }
-      .fx-chip.working i { background: var(--accent); }
-      .fx-chip.done i { background: var(--green); }
-      .fx-chip.idle i { background: var(--overlay0); }
-      .card:hover .fx-chip.blocked i { animation: pulse 1s infinite; }
-      .card:hover .fx-chip.working i { animation: pulse 1.6s infinite; }
-
-      /* Featured card 2: a mini task board. */
-      .fx-tasks { display: flex; flex-direction: column; gap: 0.38rem; margin-top: 0.55rem; align-self: stretch; }
-      .fx-task {
-        display: flex; align-items: center; gap: 0.55rem;
-        font: 0.76rem 'JetBrains Mono Variable', monospace; color: var(--text);
-        background: var(--bg2); border: 1px solid var(--line);  padding: 0.42rem 0.72rem;
-      }
-      .fx-td { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
-      .fx-td.done { background: var(--green); } .fx-td.run { background: var(--accent); } .fx-td.q { background: var(--overlay0); }
-      .fx-tag { margin-left: auto; font-size: 0.62rem; font-weight: 600; padding: 0.12rem 0.5rem;  }
-      .fx-tag.done { color: var(--green); background: rgb(48 209 89 / 0.14); }
-      .fx-tag.run { color: var(--accent); background: rgb(from var(--accent) r g b / 0.14); }
-      .fx-tag.q { color: var(--overlay1); background: rgb(154 154 162 / 0.13); }
-
-      /* Featured card 3: a mini file tree (git tinted) + the "open with" chips. */
-      .fx-tree { display: flex; flex-direction: column; gap: 0.34rem; margin-top: 0.55rem; align-self: stretch; }
-      .fx-tr {
-        display: flex; align-items: center; gap: 0.55rem;
-        font: 0.76rem 'JetBrains Mono Variable', monospace; color: var(--text);
-        background: var(--bg2); border: 1px solid var(--line);  padding: 0.4rem 0.72rem;
-      }
-      .fx-tr.in { margin-left: 1.15rem; }
-      .fx-git { margin-left: auto; font-size: 0.62rem; font-weight: 600; padding: 0.12rem 0.5rem;  }
-      .fx-git.m { color: #ff9e0a; background: rgb(255 158 10 / 0.14); }
-      .fx-git.a { color: var(--green); background: rgb(48 209 89 / 0.14); }
-      .fx-open { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.5rem; }
-      .fx-open span {
-        font: 0.71rem 'JetBrains Mono Variable', monospace; color: var(--sub);
-        background: var(--bg2); border: 1px solid var(--line);  padding: 0.3rem 0.68rem;
-      }
-      .card:hover .fx-open span:nth-child(2) { color: var(--accent); border-color: rgb(from var(--accent) r g b / 0.4); }
-
-      @media (max-width: 980px) {
-        .features .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-        .card.s2, .card.s3 { grid-column: span 1; }
-        .card.s4 { grid-column: span 2; }
-        /* An odd number of half cards would leave a trailing hole: let the last
-           one run full width so the grid still ends flush. */
-        .card.s3:last-child { grid-column: span 2; }
-      }
-      @media (max-width: 560px) {
-        .features .grid { grid-template-columns: minmax(0, 1fr); }
-        /* Pin every card to the single explicit column (`1 / -1`) rather than
-           `span 1`: a leftover `span 4`/`span 2` would otherwise make the grid
-           grow implicit columns and stack cards on top of each other, and with
-           `overflow: hidden` those columns collapse to a sliver. */
-        .card.s2, .card.s3, .card.s4 { grid-column: 1 / -1; }
-        /* Roomy desktop padding leaves little space for the content itself on a
-           phone, and the card clips (`overflow: hidden`) rather than growing. */
-        .card { padding: 1.15rem 1.1rem; }
-        .fx-tr.in { margin-left: 0.6rem; }
-      }
-
-      /* The inner status rows are single-line flex: a dot, a label, and a tag
-         pushed right with `margin-left: auto`. On a narrow card the label has
-         nowhere to go, so the tag was pushed past the clipped edge. Letting the
-         rows wrap drops the tag onto its own line instead of losing it. */
-      .fx-task, .fx-tr { flex-wrap: wrap; row-gap: 0.2rem; }
-      .fx-task > span, .fx-tr > span { min-width: 0; }
-
-      /* Touch devices never fire `:hover`, so every card's call to action stayed
-         invisible on a phone: `.card-go` is `opacity: 0` until hover, and each
-         card is a link whose label is the only cue about where it goes. Show it
-         unconditionally wherever hover is unavailable. */
-      @media (hover: none) {
-        .card-go { opacity: 1; transform: none; }
-        .card:hover { border-color: var(--line); }
+      @media (max-width: 900px) {
+        .hero { text-align: center; }
+        .hero-top { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
+        .hero .sub { margin-inline: auto; }
+        .hero-art { order: -1; justify-self: center; max-width: 15rem; }
+        .frow { grid-template-columns: minmax(0, 1fr); gap: 1.4rem; padding: 2rem 0; }
+        /* No room for a vertical rule of type on a phone. */
+        .fr-k {
+          writing-mode: horizontal-tb; transform: none; justify-self: start;
+          font-size: 0.68rem; letter-spacing: 0.18em;
+          color: var(--accent); -webkit-text-stroke: 0;
+        }
+        .fr-text h3 { font-size: 1.1rem; }
+        /* Columns do not fit a phone; fall back to the flex run. */
+        .fm-row.cols { display: flex; }
+        .fm-row.cols .hd, .fm-row.cols em + em { display: none; }
       }
 
       .orch { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; align-items: center; }
@@ -1462,17 +1749,24 @@ const ogImage = 'https://bohay.dev/og.png';
 
       /* "Works with" · a tidy 5-by-2 grid of agent tiles. Each brand mark sits
          on a matching rounded backdrop so the mismatched logos read uniformly. */
+      /* Columns sized to their content and the whole grid centred. With seven
+         equal `1fr` columns each cell was ~70px wider than the tile inside it,
+         and because tiles are left-aligned (so the marks line up) all that slack
+         collected on the right. */
       .agent-grid {
-        display: grid; grid-template-columns: repeat(7, 1fr); gap: 0.5rem 0.8rem;
-        max-width: 100%; margin: 0;
+        display: grid; grid-template-columns: repeat(7, max-content);
+        gap: 0.4rem 1.9rem; justify-content: center; margin: 0;
       }
+      /* Left-aligned, with a fixed mark column: centring the row instead put
+         every icon at a different x, because the names are different widths. */
       .atile {
         position: relative;
-        display: flex; flex-direction: column; align-items: center; gap: 0.6rem;
-        padding: 1.5rem 0.5rem 1.2rem; background: none; border: 0;
+        display: flex; flex-direction: row; align-items: center; justify-content: flex-start;
+        gap: 0.6rem; padding: 0.9rem 0.6rem; background: none; border: 0;
       }
       
       .aicon {
+        flex: none; width: 34px; height: 34px;
         display: flex; align-items: center; justify-content: center;
         background: none; border: 0;
         font-size: 34px; color: var(--sub2);
@@ -1502,14 +1796,19 @@ const ogImage = 'https://bohay.dev/og.png';
          three into one solid blob. */
       .ic-kiro svg path[fill='#9046FF'] { display: none; }
       .ic-kiro svg path[fill='#000'] { fill: var(--bg); }
-      .aname { color: var(--sub); font-size: 0.75rem; text-align: center; letter-spacing: -0.01em; }
+      .aname { color: var(--sub); font-size: 0.75rem; text-align: left; letter-spacing: -0.01em; white-space: nowrap; }
       .atile:hover .aname { color: var(--text); }
-      .atile.hook::after {
-        content: ''; position: absolute; top: 1.15rem; right: calc(50% - 34px);
-        width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+      /* Marks an agent bohay ships a session hook for. Sits on the mark itself,
+         as a badge on its top-right corner — anchored to the tile it drifted out
+         past the name and read as belonging to the next tile along. */
+      .atile.hook .aicon { position: relative; }
+      .atile.hook .aicon::after {
+        content: ''; position: absolute; top: -1px; right: -1px;
+        width: 6px; height: 6px; border-radius: 50%; background: var(--accent);
+        box-shadow: 0 0 0 2px var(--bg);
       }
-      @media (max-width: 720px) { .agent-grid { grid-template-columns: repeat(3, 1fr); } }
-      @media (max-width: 440px) { .agent-grid { grid-template-columns: repeat(2, 1fr); } }
+      @media (max-width: 720px) { .agent-grid { grid-template-columns: repeat(3, max-content); gap: 0.4rem 1.2rem; } }
+      @media (max-width: 440px) { .agent-grid { grid-template-columns: repeat(2, max-content); } }
       .agents-strip .note {
         text-align: center; color: var(--sub); margin: 2rem auto 0;
         max-width: 44rem; font-size: 0.82rem; line-height: 1.8;
@@ -1518,255 +1817,59 @@ const ogImage = 'https://bohay.dev/og.png';
       .agents-strip .note a { color: var(--accent); }
       .hookdot { color: var(--accent); }
 
-      .cask { display: inline-block; background: var(--bg2); border: 1px solid var(--line);  padding: 0.5rem 0.8rem; font-size: 0.8rem; color: var(--accent); }
 
-      /* ── the bohay-notch macOS showcase (matches bohay-notch/) ── */
-      .macshow { text-align: center; }
-      .ms-title { font-size: clamp(1.7rem, 4vw, 2.1rem); margin-bottom: 0.8rem; }
-      .ms-sub { color: var(--sub); max-width: 44rem; margin: 0 auto 2.6rem; font-size: 0.85rem; line-height: 1.8; }
-      .ms-sub strong { color: var(--text); }
-      .ms-sub b { color: var(--accent); font-weight: 600; }
-
-      .mac { --amber: #ff9e0a; --grn: var(--accent); --done: #30d159; max-width: 860px; margin: 0 auto; }
-      .screen {
-        position: relative; aspect-ratio: 16 / 10; border-radius: 20px;  overflow: hidden;
-        background: var(--bg);
-      }
-      .menubar {
-        display: flex; justify-content: space-between; align-items: center;
-        height: 26px; padding: 0 0.9rem; font-size: 0.7rem; color: rgb(255 255 255 / 0.55);
-        background: rgb(0 0 0 / 0.35); border-bottom: 1px solid rgb(255 255 255 / 0.05);
-      }
-      .mb-l { display: flex; align-items: center; gap: 0.55rem; }
-      .mb-l b { color: rgb(255 255 255 / 0.85); font-weight: 600; }
-      .mb-mi { color: rgb(255 255 255 / 0.4); }
-      .mb-logo { width: 9px; height: 9px; border-radius: 2px; background: var(--accent); }
-      .mb-r { font-family: 'JetBrains Mono Variable', monospace; font-size: 0.66rem; }
-      .desk {
-        position: absolute; inset: 26px 0 0; padding: 2.6rem 1.6rem 1.6rem;
-        background:
-          radial-gradient(120% 95% at 10% 6%, rgb(255 126 182 / 0.85), transparent 42%),
-          radial-gradient(120% 95% at 92% 10%, rgb(123 108 255 / 0.85), transparent 46%),
-          radial-gradient(130% 100% at 82% 96%, rgb(34 211 170 / 0.8), transparent 48%),
-          radial-gradient(120% 110% at 14% 100%, rgb(255 179 71 / 0.7), transparent 46%),
-          linear-gradient(155deg, #3a2a63 0%, #1e2b52 46%, #123a3a 100%);
-        display: flex; align-items: flex-end; justify-content: center;
-      }
-      .desk::after {
-        content: ''; position: absolute; inset: 0; pointer-events: none;
-        background: radial-gradient(140% 120% at 50% 0%, transparent 55%, rgb(0 0 0 / 0.35));
-      }
-      .termwin {
-        position: relative; z-index: 1;
-        width: 100%; max-width: 610px; height: 84%; display: flex; flex-direction: column;
-        background: rgb(14 14 19 / 0.96);
-        border: 1px solid rgb(255 255 255 / 0.12); border-radius: 10px;
-        overflow: hidden; transition: box-shadow 0.2s;
-      }
-      .tw-bar { display: flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.7rem; border-bottom: 1px solid rgb(255 255 255 / 0.06); }
-      .tw-title { margin-left: 0.5rem; font: 0.68rem 'JetBrains Mono Variable', monospace; color: rgb(255 255 255 / 0.6); }
-      .tw-body { flex: 1; display: flex; min-height: 0; }
-      .tw-side { width: 106px; flex-shrink: 0; border-right: 1px solid rgb(255 255 255 / 0.06); padding: 0.5rem 0.3rem; }
-      .tw-slabel { font-size: 0.56rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; color: rgb(255 255 255 / 0.35); padding: 0.15rem 0.4rem 0.4rem; }
-      .tw-agent {
-        display: flex; align-items: center; gap: 0.4rem; width: 100%;
-        background: none; border: 0; cursor: pointer; text-align: left; color: rgb(255 255 255 / 0.7);
-        padding: 0.3rem 0.4rem;  font: 0.72rem 'JetBrains Mono Variable', monospace;
-      }
-      .tw-agent:hover { background: rgb(255 255 255 / 0.05); color: #fff; }
-      .tw-agent.on { background: rgb(from var(--accent) r g b / 0.16); color: var(--accent); }
-      .tsd { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-      .tsd.working { background: var(--grn); } .tsd.blocked { background: var(--amber); animation: pulse 1s infinite; }
-      .tsd.done { background: var(--done); } .tsd.idle { background: var(--overlay0); }
-      .tw-pane { flex: 1; padding: 0.6rem 0.85rem; font: 0.72rem/1.9 'JetBrains Mono Variable', monospace; overflow: hidden; }
-      .tw-pane .tline { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); animation: rise 0.25s ease-out; }
-      .jtoast {
-        position: absolute; bottom: 1rem; left: 50%; transform: translateX(-50%) translateY(6px);
-        background: rgb(from var(--accent) r g b / 0.14); color: var(--accent); border: 1px solid rgb(from var(--accent) r g b / 0.3);
-        border-radius: 999px; padding: 0.28rem 0.9rem; font: 0.72rem 'JetBrains Mono Variable', monospace;
-        opacity: 0; pointer-events: none; transition: opacity 0.2s, transform 0.2s; z-index: 8;
-      }
-      .jtoast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
-
-      /* capability buttons */
-      .caps { display: flex; gap: 0.6rem; justify-content: center; flex-wrap: wrap; max-width: 860px; margin: 1.8rem auto 0; }
-      .cap {
-        display: flex; flex-direction: column; align-items: flex-start; gap: 0.1rem;
-        background: var(--bg2); border: 1px solid var(--line);
-        padding: 0.6rem 1rem; cursor: pointer; text-align: left; min-width: 158px;
-        transition: border-color 0.15s, background 0.15s, transform 0.15s;
-      }
-      .cap:hover { border-color: rgb(from var(--accent) r g b / 0.45); transform: translateY(-2px); }
-      .cap.on { border-color: var(--accent); background: var(--surface); }
-      .cap b { font-family: 'IBM Plex Mono', monospace; font-size: 0.92rem; color: var(--text); }
-      .cap.on b { color: var(--accent); }
-      .cap span { font-size: 0.72rem; color: var(--sub); }
-
-      .ms-foot { margin-top: 1.9rem; display: flex; flex-direction: column; align-items: center; gap: 0.6rem; }
-      .ms-req { font-size: 0.8rem; color: var(--sub); }
-      .ms-req a { color: var(--accent); }
-
-      /* The island · one black element, top-anchored, that grows on open. */
-      .island {
-        position: absolute; top: 0; left: 50%; transform: translateX(-50%);
-        width: 132px; height: 30px; background: #000; border-radius: 0 0 11px 11px;
-        border: 0.5px solid rgb(255 255 255 / 0.08); border-top: 0;
-         z-index: 20; overflow: hidden;
-        transition: width 0.34s cubic-bezier(0.22, 1, 0.36, 1), height 0.34s cubic-bezier(0.22, 1, 0.36, 1);
-      }
-      /* Height is set from content by JS (sizeIsland) so the panel hugs each
-         view · no dead space below the shorter approve card. */
-      .island.open { width: 372px; border-radius: 0 0 22px 22px; }
-      .ncamera {
-        position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
-        width: 7px; height: 7px; border-radius: 50%;
-        background: #050505; z-index: 5;
-      }
-      .island :is(.nmodel, .nproj, .nhead, .ncost, .nctx-n, .nopt, .ncard-q, .ncard-ctx, .fstat, .ftot-l) {
-        font-family: 'Inter Variable', system-ui, sans-serif;
-      }
-
-      /* collapsed pill content · absolute so it never adds to the panel's
-         measured height. */
-      .ncollapsed {
-        position: absolute; top: 0; left: 0; right: 0; z-index: 2;
-        display: flex; align-items: center; justify-content: space-between;
-        height: 30px; padding: 0 11px; opacity: 1; transition: opacity 0.12s;
-      }
-      .island.open .ncollapsed { opacity: 0; pointer-events: none; }
-      .ncol-l { display: flex; align-items: center; gap: 5px; }
-      .sumdot { width: 6px; height: 6px; border-radius: 50%; }
-      .sumdot.blocked { background: var(--amber); animation: pulse 1s infinite; }
-      .sumdot.working { background: var(--grn); animation: pulse 1.6s infinite; }
-      .ncol-l b { font-size: 12px; font-weight: 600; color: #fff; }
-      .ncol-r .ndisc { width: 16px; height: 16px; }
-
-      /* expanded panel · in normal flow so its height drives the island. The
-         top pad clears the notch bar; the bottom pad matches the real app. */
-      .npanel {
-        position: relative; padding: 34px 0 11px; opacity: 0;
-        transition: opacity 0.2s 0.06s;
-      }
-      .island.open .npanel { opacity: 1; }
-      .nview[hidden] { display: none; }
-
-      .nhead {
-        display: flex; align-items: center; gap: 6px; padding: 2px 16px 4px;
-      }
-      .nhead-t { font-size: 10px; font-weight: 700; letter-spacing: 1.6px; color: rgb(255 255 255 / 0.55); }
-      .nhead b { font-size: 10px; font-weight: 600; color: rgb(255 255 255 / 0.55); }
-      .ndot { width: 5px; height: 5px; border-radius: 50%; }
-      .ndot.green { background: var(--accent); }
-      .ndot.done { background: var(--done); }
-      .ndot.idle { background: #7a7a82; }
-      .nspacer { flex: 1; }
-
-      .nrows { padding: 0 6px; }
-      .nrow {
-        display: flex; align-items: center; gap: 8px; width: 100%; padding: 5px 10px;
-        background: none; border: 0; border-radius: 7px; text-align: left; cursor: pointer;
-        transition: background 0.12s;
-      }
-      .nrow:hover { background: rgb(255 255 255 / 0.05); }
-      .ndisc {
-        width: 18px; height: 18px; flex-shrink: 0; color: #fff;
-        display: flex; align-items: center; justify-content: center;
-      }
-      .ndisc svg { width: 100%; height: 100%; display: block; }
-      .ndisc svg path { fill: currentColor; }
-      .nmodel { font-size: 12px; font-weight: 600; color: #fff; white-space: nowrap; }
-      .nproj { font-size: 11px; color: rgb(255 255 255 / 0.55); white-space: nowrap; }
-      .nctx { display: flex; align-items: center; gap: 3px; }
-      .nctx-bar { width: 26px; height: 3.5px; border-radius: 2px; background: rgb(255 255 255 / 0.12); overflow: hidden; }
-      .nctx-bar i { display: block; height: 100%; border-radius: 2px; }
-      .nctx-bar i.grn { background: var(--grn); }
-      .nctx-bar i.amber { background: #ff9e0a; }
-      .nctx-bar i.red { background: #f26b61; }
-      .nctx-n { font-size: 8px; font-weight: 600; color: rgb(255 255 255 / 0.55); font-family: 'JetBrains Mono Variable', monospace; }
-      .ncost { font-size: 10px; color: rgb(255 255 255 / 0.55); font-family: 'JetBrains Mono Variable', monospace; }
-      .npill {
-        font-size: 9px; font-weight: 600; padding: 2px 6px; border-radius: 999px; white-space: nowrap;
-      }
-      .npill.blocked { color: var(--amber); background: rgb(255 158 10 / 0.15); }
-      .npill.working { color: var(--grn); background: rgb(from var(--accent) r g b / 0.15); }
-      .npill.done { color: var(--done); background: rgb(48 209 89 / 0.15); }
-      .npill.idle { color: var(--overlay1); background: rgb(154 154 162 / 0.13); }
-
-      .nfoot {
-        display: flex; align-items: center; gap: 12px; padding: 8px 16px 0;
-      }
-      .fstat { display: flex; align-items: center; gap: 4px; font-size: 10px; color: rgb(255 255 255 / 0.55); }
-      .fstat b { color: #fff; font-weight: 600; }
-      .ftotal { font-size: 10px; font-weight: 600; color: #fff; font-family: 'JetBrains Mono Variable', monospace; }
-      .ftot-l { font-size: 9px; color: rgb(255 255 255 / 0.55); margin-left: 3px; }
-
-      /* permission card · merged approve/answer view (real PermissionCardView) */
-      #nview-approve { padding: 0 16px; }
-      .ncard-head { display: flex; align-items: center; gap: 7px; padding-bottom: 8px; }
-      .ncard-head b { font-size: 12px; font-weight: 600; color: #fff; }
-      .ncard-hand { font-size: 12px; }
-      .ncard-open { color: rgb(255 255 255 / 0.55); font-size: 12px; }
-      .ncard-ctx { font-size: 10.5px; color: rgb(255 255 255 / 0.5); margin-bottom: 5px; }
-      .ncard-q { font-size: 12.5px; font-weight: 600; color: #fff; line-height: 1.35; margin-bottom: 9px; }
-      .ncard-q b { color: var(--accent); font-weight: 600; }
-      .ncard-opts { display: flex; flex-direction: column; gap: 5px; }
-      .nopt {
-        display: flex; align-items: center; gap: 9px; width: 100%; text-align: left;
-        padding: 7px 10px; border: 0; border-radius: 8px; cursor: pointer;
-        background: rgb(255 255 255 / 0.06); color: #fff; font-size: 12px;
-      }
-      .nnum { font-family: 'JetBrains Mono Variable', monospace; font-size: 11px; font-weight: 700; width: 14px; color: rgb(255 255 255 / 0.55); }
-      .nopt-l { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-      .nkey { font-size: 9px; color: rgb(255 255 255 / 0.5); }
-      .nopt.allow { background: rgb(from var(--accent) r g b / 0.16); }
-      .nopt.allow .nnum { color: var(--accent); }
-      .nopt.allow:hover { background: rgb(from var(--accent) r g b / 0.26); }
-      .nopt.deny { background: rgb(209 56 51 / 0.16); }
-      .nopt.deny .nnum { color: #f26b61; }
-      .nopt.deny:hover { background: rgb(209 56 51 / 0.26); }
-      .nopt:not(.allow):not(.deny):hover { background: rgb(255 255 255 / 0.11); }
-
-      /* Repo call to action */
+      /* ── closing call to action ──────────────────────────────────────── */
+      /* Two columns across the frame: copy left, the mark right. Restores the
+         card styles lost when the notch showcase's CSS block was removed. */
       .cta-card {
-        position: relative; overflow: hidden; text-align: center;
-        max-width: 720px; margin: 0 auto;
-        background: none;
+        display: grid; grid-template-columns: minmax(0, 0.5fr) minmax(0, 1fr);
+        gap: 3rem; align-items: center;
         border: 1px solid var(--line);
-        padding: 3.2rem 2rem 2.8rem;
+        /* No bottom padding: the mark runs to the card's lower edge. */
+        padding: 2.6rem var(--gut) 0;
       }
-      /* Sits directly above the licence badge, centred, as the card's opener. */
-      .cta-art {
-        display: block; margin: 0 auto 1.4rem; width: 200px; height: auto;
-        border-radius: 12px;
-      }
+      .cta-copy { min-width: 0; padding-bottom: 2.6rem; }
       .cta-badge {
-        display: inline-block; font: 0.72rem 'IBM Plex Mono', monospace; color: var(--accent);
-        background: rgb(from var(--accent) r g b / 0.1); border: 1px solid rgb(from var(--accent) r g b / 0.25);
-        padding: 0.3rem 0.85rem;  margin-bottom: 1.3rem;
+        display: inline-block; font-family: var(--bh-display); font-size: 0.62rem;
+        letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent);
+        margin-bottom: 0.9rem;
       }
-      .cta-card h2 { font-size: clamp(1.35rem, 3vw, 1.7rem); letter-spacing: -0.035em; margin: 0 0 0.9rem; }
-      .cta-card p { color: var(--sub); max-width: 40rem; margin: 0 auto; font-size: 1.03rem; line-height: 1.62; }
-      .cta-actions { display: flex; gap: 0.8rem; justify-content: center; flex-wrap: wrap; margin-top: 1.9rem; }
-      .cta-actions .btn { display: inline-flex; align-items: center; gap: 0.55rem; padding: 0.72rem 1.5rem; font-size: 0.98rem; transition: border-color 0.15s, filter 0.15s, transform 0.15s; }
+      .cta-card h2 { font-size: clamp(1.4rem, 3vw, 2rem); letter-spacing: -0.035em; margin: 0 0 0.9rem; }
+      .cta-card p { color: var(--sub); max-width: 40rem; margin: 0; font-size: 0.95rem; line-height: 1.8; }
+      .cta-actions { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-top: 1.7rem; }
+      .cta-actions .btn {
+        display: inline-flex; align-items: center; gap: 0.55rem;
+        padding: 0.72rem 1.5rem; font-size: 0.92rem;
+        transition: border-color 0.15s, filter 0.15s, transform 0.15s;
+      }
       .cta-actions .btn:hover { transform: translateY(-2px); }
       .cta-ic { width: 18px; height: 18px; flex-shrink: 0; }
-      .cta-mini {
-        display: flex; gap: 0.7rem; justify-content: center; align-items: center; flex-wrap: wrap;
-        margin-top: 1.7rem; font-size: 0.85rem; color: var(--sub);
-      }
-      .cta-repo-path {
-        font: 0.78rem 'JetBrains Mono Variable', monospace; color: var(--text);
-        background: var(--bg2); border: 1px solid var(--line);
-        padding: 0.2rem 0.6rem;
-      }
-      .cta-mini a { color: var(--sub); }
-      .cta-mini a:hover { color: var(--accent); }
-      .cta-mini .sep { color: var(--overlay0); }
 
-      footer { border-top: 1px solid var(--line); margin-top: 2rem; }
+      /* Same treatment as the hero mark: the art is a mask, so one asset takes
+         the palette on every theme. */
+      .cta-art {
+        /* Bottom-aligned and flush: `align-self: end` puts its lower edge on the
+           card's, and the card drops its bottom padding to meet it. */
+        aspect-ratio: 1; width: 100%; max-width: 26rem;
+        justify-self: start; align-self: end;
+        background: var(--overlay1);
+        -webkit-mask: var(--art) center / contain no-repeat;
+        mask: var(--art) center / contain no-repeat;
+      }
+
+      @media (max-width: 900px) {
+        .cta-card { grid-template-columns: minmax(0, 1fr); gap: 1.6rem; text-align: center; padding-bottom: 0; }
+        .cta-copy { padding-bottom: 2.2rem; }
+        .cta-actions { justify-content: center; }
+        .cta-card p { margin-inline: auto; }
+        .cta-art { order: -1; justify-self: center; max-width: 11rem; }
+      }
+
+
+      footer { border-top: 1px solid var(--line); margin-top: 0; }
       .foot-inner {
-        max-width: 1060px; margin: 0 auto; padding: 2rem 1.5rem;
-        display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
+        max-width: 1440px; margin: 0 auto; padding: 2rem var(--gut);
+        display: flex; justify-content: flex-start; align-items: center; gap: 2.2rem; flex-wrap: wrap;
       }
       .foot-brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; }
       .foot-brand .dim { font-weight: 400; font-size: 0.85rem; }
@@ -1775,11 +1878,11 @@ const ogImage = 'https://bohay.dev/og.png';
 
       @media (max-width: 900px) {
         .orch, .notch { grid-template-columns: 1fr; }
-        section, header.hero { padding: 3rem 1.25rem; }
-        .agent-grid { grid-template-columns: repeat(4, 1fr); }
+        section, header.hero { padding: 3rem var(--gut); }
+        .agent-grid { grid-template-columns: repeat(4, max-content); gap: 0.4rem 1.4rem; }
       }
       @media (max-width: 480px) {
-        .agent-grid { grid-template-columns: repeat(2, 1fr); }
+        .agent-grid { grid-template-columns: repeat(2, max-content); }
         .nav-links a[href$='orchestration/'] { display: none; }
       }
 

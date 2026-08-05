@@ -80,6 +80,7 @@ export default defineConfig({
             { label: 'Browsing & Opening Files', slug: 'docs/guides/files' },
             { label: 'Worktrees', slug: 'docs/guides/worktrees' },
             { label: 'Remote Sessions', slug: 'docs/guides/remote' },
+            { label: 'The macOS Notch App', slug: 'docs/guides/notch' },
             { label: 'Scrollback & Copy', slug: 'docs/guides/scrollback' },
             { label: 'Settings & Theming', slug: 'docs/guides/settings' },
             { label: 'Scripting bohay', slug: 'docs/guides/scripting' },

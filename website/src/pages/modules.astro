@@ -234,6 +234,8 @@ const examples = [
       </div>
     </nav>
 
+    <div class="page-frame">
+
     <header class="page-hero">
       <div class="glow" aria-hidden="true"></div>
       <span class="eyebrow">Modules</span>
@@ -446,6 +448,8 @@ const examples = [
       <a class="btn" href="/docs/extend/using-modules/">Read the full trust model →</a>
     </section>
 
+    </div>
+
     <footer>
       <div class="foot-inner">
         <div class="foot-brand">
@@ -565,7 +569,7 @@ const examples = [
       html { scroll-behavior: smooth; }
       body {
         background: var(--bg); color: var(--text);
-        font: 13.5px/1.75 'JetBrains Mono Variable', ui-monospace, 'SF Mono', Menlo, monospace;
+        font: 15px/1.75 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
       }
       a { color: inherit; text-decoration: none; }
       h2 { font-size: 1.45rem; letter-spacing: -0.035em; }
@@ -574,7 +578,22 @@ const examples = [
         font-family: 'IBM Plex Mono', ui-monospace, 'JetBrains Mono Variable', monospace;
         line-height: 1.14; letter-spacing: -0.045em;
       }
-      section, header.page-hero { max-width: 1080px; margin: 0 auto; padding: 4rem 1.5rem; }
+      /* Same shell as the landing page: hairline rules down the content's
+         edges, sections running the frame's full width and dividing with a
+         rule, and the nav/footer outside so their horizontal rules reach the
+         viewport edges. */
+      :root { --gut: 2.6rem; }
+      @media (max-width: 900px) { :root { --gut: 1.6rem; } }
+      @media (max-width: 560px) { :root { --gut: 1.15rem; } }
+      .page-frame {
+        max-width: 1440px; margin: 0 auto; background: var(--bg); position: relative;
+        border-inline: 1px solid var(--line);
+      }
+      .page-frame > section:last-child { border-bottom: 0; }
+      section, header.page-hero {
+        max-width: none; margin: 0; padding: 4rem var(--gut);
+        border-bottom: 1px solid var(--line);
+      }
       .dim { color: var(--sub); }
       ::selection { background: var(--sel); color: var(--text); }
       code { font-family: 'JetBrains Mono Variable', ui-monospace, monospace; }
@@ -586,7 +605,7 @@ const examples = [
       }
       .nav-inner {
         display: flex; justify-content: space-between; align-items: center;
-        max-width: 1080px; margin: 0 auto; padding: 0.85rem 1.5rem;
+        max-width: 1440px; margin: 0 auto; padding: 0.85rem var(--gut);
       }
       .brand { display: flex; align-items: center; gap: 0.6rem; font-weight: 700; font-size: 1.45rem; letter-spacing: -0.05em; color: var(--text); }
       .mark { display: block; flex-shrink: 0; }
@@ -800,14 +819,17 @@ const examples = [
       }
 
       /* trust */
-      .trust { max-width: 800px; text-align: center; padding-top: 2rem; }
+      /* Centred in the frame. It kept its own cap from when the section was
+         itself capped at 1080px and centred; now sections run the full frame
+         width, so without an auto margin it hugged the left edge. */
+      .trust { max-width: 54rem; margin-inline: auto; text-align: center; padding-top: 2rem; }
       .trust h2 { font-size: 1.5rem; margin-bottom: 0.9rem; }
       .trust p { color: var(--sub); font-size: 0.97rem; margin-bottom: 1.4rem; }
 
       /* footer */
-      footer { border-top: 1px solid var(--line); margin-top: 2rem; }
+      footer { border-top: 1px solid var(--line); margin-top: 0; }
       .foot-inner {
-        max-width: 1080px; margin: 0 auto; padding: 2rem 1.5rem;
+        max-width: 1440px; margin: 0 auto; padding: 2rem var(--gut);
         display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap;
       }
       .foot-brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; }
