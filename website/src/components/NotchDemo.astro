@@ -197,7 +197,9 @@ const NOTCH_AGENTS = [
       }
       /* Height is set from content by JS (sizeIsland) so the panel hugs each
          view · no dead space below the shorter approve card. */
-      .island.open { width: 372px; border-radius: 0 0 22px 22px; }
+      /* Capped to the screen it sits in: `.screen` clips overflow, so a flat
+         372px would be trimmed on both sides once the mock is narrower. */
+      .island.open { width: min(372px, 92%); border-radius: 0 0 22px 22px; }
       .ncamera {
         position: absolute; top: 8px; left: 50%; transform: translateX(-50%);
         width: 7px; height: 7px; border-radius: 50%;
@@ -336,6 +338,17 @@ const NOTCH_AGENTS = [
         margin-top: 1.7rem; font-size: 0.85rem; color: var(--sub);
       }
 
+      /* This is a fixed-proportion replica: its panel is 372px and its labels
+         are 9-12px, so squeezing it past a point stops it being legible.
+         Below that, keep the geometry and scroll instead. */
+      @media (max-width: 640px) {
+        .macshow { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 0.5rem; }
+        .mac, .caps { min-width: 520px; }
+      }
+      @media (max-width: 560px) {
+        .cap { min-width: 0; flex: 1 1 9rem; }
+        .ms-foot { flex-direction: column; gap: 0.5rem; align-items: flex-start; }
+      }
 </style>
 
 <script>

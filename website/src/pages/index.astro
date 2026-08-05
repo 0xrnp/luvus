@@ -449,7 +449,7 @@ const ogImage = 'https://bohay.dev/og.png';
           <span class="fr-k">Fork</span>
           <div class="fr-text">
             <h3>Branch a session without losing it</h3>
-            <p>Right-click a pane and choose <strong>Fork to new pane</strong>. The agent's session is branched into a fresh pane beside it, carrying the whole conversation so far, while the original keeps running untouched. Try an approach without gambling the context you have already built. Also on <code>⌃Space f</code>, and offered only for agents that can really fork.</p>
+            <p>Right-click a pane and choose <strong>Fork to new pane</strong>. The session branches into a pane beside it, carrying the whole conversation, while the original keeps running. Try an approach without gambling the context you built. Also <code>⌃Space f</code>.</p>
             <a class="fc-go" href="/docs/guides/agents/#session-resume--the-flagship">Forking a session →</a>
           </div>
           <div class="fm menu" aria-hidden="true">
@@ -480,6 +480,23 @@ const ogImage = 'https://bohay.dev/og.png';
             <div class="fm-row"><span class="d run"></span>attached<b>devbox</b><em>3 panes</em></div>
             <div class="fm-row"><span class="d done"></span>frame diff<b>~22 B</b><em>per keystroke</em></div>
             <div class="fm-foot">the server keeps running when you detach</div>
+          </div>
+        </article>
+
+        <article class="frow">
+          <span class="fr-k">Mobile</span>
+          <div class="fr-text">
+            <h3>Your session, from a phone</h3>
+            <p>SSH in from any terminal app (Termius, Blink, Mosh) and run <code>bohay</code>. Under 50 columns it goes compact on its own: sidebars away, one pane full screen, and a <code>≡</code> switcher built for thumbs. It is the same session your laptop left running.</p>
+            <a class="fc-go" href="/docs/guides/remote/">Working remotely →</a>
+          </div>
+          <div class="fm phone" aria-hidden="true">
+            <div class="fm-head"><span>≡ sudos</span><em>compact</em></div>
+            <div class="fm-tap"><span class="d run"></span><b>claude</b><em>sudos · core</em></div>
+            <div class="fm-tap"><span class="d blk"></span><b>copilot</b><em>webapp · main</em></div>
+            <div class="fm-tap"><span class="d done"></span><b>codex</b><em>sudos · notes</em></div>
+            <div class="fm-tap dim"><span class="c-dim">＋</span><b>new node</b></div>
+            <div class="fm-foot">tap a row to jump · ⤢ makes a pane full screen</div>
           </div>
         </article>
 
@@ -516,10 +533,10 @@ const ogImage = 'https://bohay.dev/og.png';
         <p>
           Add tasks with dependencies to the <code>◇ orch</code> board. Each
           started task gets an <strong>isolated git worktree</strong> and its own
-          pane; <strong>path leases</strong> stop overlapping edits from even
-          being assigned; a <strong>quality gate</strong> (your test command)
-          must pass before a task counts as done; and finished branches merge
-          through a dedicated worktree,<strong>your checkout is never
+          pane. <strong>Path leases</strong> stop overlapping edits from even
+          being assigned. A <strong>quality gate</strong> (your test command)
+          must pass before a task counts as done, and finished branches merge
+          through a dedicated worktree, so <strong>your checkout is never
           touched</strong>.
         </p>
         <a class="btn primary" href="/docs/guides/orchestration/">Read the orchestration guide →</a>
@@ -1167,6 +1184,14 @@ const ogImage = 'https://bohay.dev/og.png';
          their own — much more room than a 1080px column, and the lines give
          the extra width something to be measured against. */
       :root { --gut: 2.6rem; }
+      /* Touch: no hover, and fingers are not cursors. Reveal what hover would
+         otherwise show, and give the demo's small controls a real tap target. */
+      @media (hover: none) {
+        .fc-go { opacity: 1; transform: none; }
+        .demo-tabs .tab, .gtab, .fchip, .ws, .agent, .mc-row { min-height: 2rem; }
+        .rs-toggle { min-width: 2.4rem; }
+      }
+
       @media (max-width: 900px) { :root { --gut: 1.6rem; } }
       @media (max-width: 560px) { :root { --gut: 1.15rem; } }
       /* Vertical rules bracket the *content* only. The nav and footer sit
@@ -1303,7 +1328,7 @@ const ogImage = 'https://bohay.dev/og.png';
          matching that exactly pushes the demo past the fold. 380px was a 3.5:1
          letterbox that looked nothing like running bohay; this lands between
          the two, tracking the viewport so it stays sane on a narrow column. */
-      .demo-body { display: flex; min-height: min(48vw, 560px); }
+      .demo-body { display: flex; min-height: clamp(330px, 48vw, 560px); }
       .demo-side {
         width: 190px; flex-shrink: 0; border-right: 1px solid var(--line);
         background: var(--bg2); padding: 0.8rem 0.55rem; display: flex; flex-direction: column; gap: 2px;
@@ -1644,6 +1669,18 @@ const ogImage = 'https://bohay.dev/og.png';
       .fm-tabs i { font-style: normal; }
       .fm-tabs i.on { color: var(--text); }
       .fm-cmd { color: var(--sub2); padding: 0.2rem 0; }
+      /* The compact-mode mock: portrait-ish, with the switcher's two-line,
+         finger-sized rows rather than the dense desktop lists. */
+      .fm.phone { max-width: 15rem; margin-inline: auto; }
+      .fm-tap {
+        display: flex; align-items: center; gap: 0.5rem;
+        padding: 0.42rem 0.5rem; border-radius: 4px;
+        white-space: nowrap; min-width: 0;
+      }
+      .fm-tap + .fm-tap { border-top: 1px solid var(--line); border-radius: 0; }
+      .fm-tap b { color: var(--text); font-weight: 500; }
+      .fm-tap em { font-style: normal; color: var(--overlay1); margin-left: auto; font-size: 0.62rem; }
+      .fm-tap.dim b { color: var(--sub); }
       /* A replica of the pane context menu (`render_popup` in ui/menu.rs): a
          flat list, one highlighted row, a divider, and the destructive item
          tinted like the app tints it. */
@@ -1686,6 +1723,9 @@ const ogImage = 'https://bohay.dev/og.png';
         .hero-top { grid-template-columns: minmax(0, 1fr); gap: 2rem; }
         .hero .sub { margin-inline: auto; }
         .hero-art { order: -1; justify-self: center; max-width: 15rem; }
+        /* Stacked, the demo follows the install lines directly; on desktop the
+           hero mark sat between them. */
+        .demo { margin-top: 2.2rem; }
         .frow { grid-template-columns: minmax(0, 1fr); gap: 1.4rem; padding: 2rem 0; }
         /* No room for a vertical rule of type on a phone. */
         .fr-k {

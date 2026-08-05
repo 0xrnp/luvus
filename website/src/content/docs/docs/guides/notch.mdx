@@ -26,7 +26,7 @@ An agent that is *working* needs nothing from you. An agent that is **blocked**
 needs you now, and the cost of not noticing is the whole point: it sits there,
 burning nothing, until you happen to look.
 
-bohay already solves this inside the terminal — the agents sidebar, the `⠶ ctrl`
+bohay already solves this inside the terminal: the agents sidebar, the `⠶ ctrl`
 tab, an optional chime. But all of those assume the terminal is on screen. The
 notch app covers the case where it is not: you are in a browser, a design tool,
 a meeting. The panel stays above every app and every Space, so the answer to
@@ -42,7 +42,7 @@ Open it and each agent gets a row:
 
 | Column | Meaning |
 |---|---|
-| Icon | which agent it is — Claude Code, Codex, Copilot, opencode … |
+| Icon | which agent it is: Claude Code, Codex, Copilot, opencode … |
 | Model | the model that session is running |
 | Project | the workspace the agent lives in |
 | Context | how full its context window is, turning red as it nears compaction |
@@ -62,7 +62,7 @@ they change, with no polling on your part.
 **Approve.** When an agent blocks on a permission prompt or a question, the row
 turns into a card: what it is asking, and the answers it will accept. Answer it
 straight from the notch and the agent carries on. This is the feature that earns
-the app — the gap between "an agent asked" and "you answered" is usually the
+the app. The gap between "an agent asked" and "you answered" is usually the
 biggest dead time in a long session.
 
 **Jump.** Click any row to focus that agent's pane in bohay. The terminal comes
@@ -85,7 +85,7 @@ That has a few consequences worth knowing:
   nothing about your agents leaves it.
 
 Because both surfaces read the same event bus, the notch and the sidebar can
-never disagree — there is one source of truth, and the panel is a view of it.
+never disagree: there is one source of truth, and the panel is a view of it.
 
 ## Install
 
@@ -103,7 +103,7 @@ pass that flag, download the `.dmg` and approve the app once in
 
 **Requirements:** macOS 15 or newer, Apple silicon.
 
-The app launches at login as an accessory — no Dock icon, no window in the
+The app launches at login as an accessory, with no Dock icon and no window in the
 switcher.
 
 ## On Macs without a notch
@@ -112,7 +112,7 @@ The notch is the camera housing, and no app can paint inside it. What the panel
 actually does is sit flush beneath it, filled black with rounded lower corners
 so the two read as one shape.
 
-On a Mac with no notch — an Intel machine, or an external display — there is
+On a Mac with no notch (an Intel machine, or an external display) there is
 nothing to fuse with, so the same panel renders as a free-standing rounded pill
 anchored to the top centre of the screen. Same content, same behaviour, just a
 different anchor.
@@ -126,12 +126,12 @@ Worth stating plainly:
 - **It is not a second bohay.** No panes, no layout, no git. It answers "who
   needs me?" and gets you to them.
 - **Cost and context figures come from the agents' own session files**, so they
-  are as complete as what each agent records — the same data
+  are as complete as what each agent records, the same data
   [Mission Control](/docs/guides/agents/) shows.
 
 ## See also
 
-- [Working with Agents](/docs/guides/agents/) — detection, Mission Control, and
+- [Working with Agents](/docs/guides/agents/): detection, Mission Control, and
   the sidebar the panel mirrors
-- [Socket API](/docs/reference/api/) — `events.subscribe` and `agent.list`, the
+- [Socket API](/docs/reference/api/): `events.subscribe` and `agent.list`, the
   two calls the app is built on

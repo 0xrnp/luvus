@@ -236,6 +236,33 @@ impl Theme {
         }
     }
 
+    /// "Sky" — a light **paper** palette: a soft, faintly cool off-white
+    /// background with slate ink and a sky-blue accent, for light terminals.
+    /// Surfaces run lightest-first, like `latte` and `gruvbox_light`.
+    pub fn sky() -> Self {
+        let rgb = |r, g, b| Color::Rgb(r, g, b);
+        Theme {
+            crust: rgb(0xf5, 0xf8, 0xfc),  // paper — page background
+            mantle: rgb(0xeb, 0xf1, 0xf9), // pane background
+            base: rgb(0xe1, 0xea, 0xf5),   // sidebar
+            surface0: rgb(0xd6, 0xe1, 0xf0),
+            surface1: rgb(0xc4, 0xd3, 0xe8),
+            overlay0: rgb(0x93, 0xa4, 0xbd),
+            overlay1: rgb(0x74, 0x84, 0x9e),
+            subtext0: rgb(0x56, 0x65, 0x79),
+            subtext1: rgb(0x42, 0x50, 0x5f),
+            text: rgb(0x2f, 0x3a, 0x48),   // slate ink
+            accent: rgb(0x24, 0x77, 0xc7), // sky blue, dark enough for the paper
+            sel_bg: rgb(0xcb, 0xe2, 0xf7), // light sky selection
+            border: rgb(0xc0, 0xcd, 0xe0),
+            border_focus: rgb(0x6a, 0x7a, 0x92),
+            green: rgb(0x3f, 0x8f, 0x56), // idle
+            mint: rgb(0x1c, 0x8f, 0x88),  // done
+            amber: rgb(0xc0, 0x7d, 0x12), // working
+            coral: rgb(0xcc, 0x3b, 0x52), // blocked
+        }
+    }
+
     /// "Ocean" — a deep cmd/PowerShell blue with a bright cyan accent.
     pub fn ocean() -> Self {
         let rgb = |r, g, b| Color::Rgb(r, g, b);
@@ -444,6 +471,7 @@ pub const THEMES: &[&str] = &[
     "ocean",
     "dracula",
     "nord",
+    "sky",
     "catppuccin-mocha",
     "catppuccin-macchiato",
     "catppuccin-frappe",
@@ -487,6 +515,7 @@ pub fn by_name(name: &str) -> Theme {
         "gruvbox-light" | "gruvboxlight" => Theme::gruvbox_light(),
         "sunset" => Theme::sunset(),
         "catppuccin-latte" | "latte" => Theme::latte(),
+        "sky" => Theme::sky(),
         "mono" => Theme::mono(),
         _ => Theme::noir(),
     }
@@ -508,6 +537,7 @@ pub fn describe(name: &str) -> &'static str {
         "gruvbox-light" | "gruvboxlight" => "Gruvbox on cream, burnt orange",
         "sunset" => "neon synthwave, hot-pink",
         "catppuccin-latte" | "latte" => "light Catppuccin, warm",
+        "sky" => "light paper, sky-blue accent",
         "mono" => "grayscale, no accent color",
         _ => "near-black, fluo-green accent",
     }
