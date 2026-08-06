@@ -15,7 +15,7 @@ import Logo from '../components/Logo.astro';
 const GITHUB = 'https://github.com/RizRiyz/bohay';
 const title = 'Compare bohay vs Herdr, tmux, and Zellij';
 const description =
-  'How bohay compares to Herdr, tmux, and Zellij for running AI coding agents: live agent status, reboot-proof session resume, a built-in git tab, multi-agent orchestration, and a macOS notch app.';
+  'How bohay compares to Herdr, tmux, and Zellij for running AI coding agents: live agent status, token and cost tracking, reboot-proof session resume, session forking, a built-in git tab, multi-agent orchestration, and a macOS notch app.';
 const ogImage = 'https://bohay.dev/og.png';
 
 // Comparison cells. Each cell is { s: 'yes' | 'part' | 'no', t?: note }.
@@ -25,14 +25,26 @@ const part = (t) => ({ s: 'part', t });
 const ICON = { yes: '✓', part: '◐', no: '–' };
 
 // Columns, left to right: bohay, Herdr, tmux, Zellij.
+//
+// Competitor cells are taken from each project's own documentation, checked
+// 2026-08-06: herdr.dev/docs (v0.8.0 — agents, session state, configuration,
+// CLI reference), zellij.dev (features, session resurrection, Strider), and
+// tmux's manual. Where a project does not document a capability the cell is a
+// dash, not a claim that it is impossible. Re-check before each release: Herdr
+// ships often and its site currently teases unreleased work.
 const GROUPS = [
   {
     name: 'Built for AI coding agents',
     rows: [
       { f: 'Live agent status: blocked, working, done, idle', cells: [yes, yes, no, no] },
-      { f: "Reloads the agent's own conversation after a reboot", cells: [yes, part('detach only'), part('detach only'), part('detach only')] },
-      { f: 'Silent desktop ping when an agent needs you', cells: [yes, yes, no, no] },
+      { f: "Reloads the agent's own conversation after a reboot", cells: [yes, yes, part('re-runs the command'), part('re-runs the command')] },
+      { f: 'Sound alert the moment an agent finishes or blocks', cells: [yes, yes, no, no] },
       { f: 'Socket API the agents can drive themselves', cells: [yes, yes, part('scriptable'), part('plugins')] },
+      { f: 'Tokens spent and cost per session, totalled per project', cells: [yes, no, no, no] },
+      { f: 'Context-window headroom, warning before it compacts', cells: [yes, no, no, no] },
+      { f: 'Answer a blocked agent without leaving the dashboard', cells: [yes, no, no, no] },
+      { f: "Fork an agent's session into a new pane, keeping its context", cells: [yes, no, no, no] },
+      { f: 'The real command a pane is running, from the OS', cells: [yes, yes, part('manual ps'), no] },
     ],
   },
   {
@@ -40,13 +52,15 @@ const GROUPS = [
     rows: [
       { f: 'Run several agents at once', cells: [yes, yes, yes, yes] },
       { f: 'Coordination board: task order, file locks, merge after tests pass', cells: [yes, no, no, no] },
-      { f: 'Git worktrees as first-class panes', cells: [yes, part('add-on flow'), no, no] },
+      { f: 'Git worktrees as first-class panes', cells: [yes, yes, no, no] },
     ],
   },
   {
     name: 'Git and code',
     rows: [
       { f: 'Built-in git tab: branches, pull requests, issues, commits', cells: [yes, part('diff review'), no, no] },
+      { f: 'File tree tinted by git status, with a live file viewer', cells: [yes, no, no, part('file browser')] },
+      { f: 'Open a file in your own editor from the tree', cells: [yes, no, no, part('via filepicker')] },
     ],
   },
   {
@@ -54,11 +68,17 @@ const GROUPS = [
     rows: [
       { f: 'Mouse-native split and resize', cells: [yes, yes, part('needs config'), yes] },
       { f: 'Native macOS notch companion app', cells: [yes, no, no, no] },
+      { f: 'Right-click menus on panes, tabs, folders, agents and files', cells: [yes, part('split and switch'), no, no] },
+      { f: 'Compact phone mode with a touch switcher over SSH', cells: [yes, no, no, no] },
+      { f: 'Sidebar panels you can move, resize or turn off', cells: [yes, no, no, part('plugins')] },
       { f: 'Runs in your terminal as a single binary', cells: [yes, yes, yes, yes] },
       { f: 'Panes survive detach and reattach', cells: [yes, yes, yes, yes] },
       { f: 'Remote attach over plain SSH', cells: [yes, yes, yes, yes] },
       { f: 'Extensions or plugins', cells: [yes, yes, part('via TPM'), yes] },
-      { f: 'Pick your UI language (8 built in)', cells: [yes, no, no, no] },
+      { f: 'Plugin marketplace with a trust preview before install', cells: [part('search by topic'), yes, no, no] },
+      { f: 'Choose how alerts arrive: in-app, terminal, or system', cells: [part('sound only'), yes, no, no] },
+      { f: 'Windows support', cells: [part('beta'), part('beta'), no, part('beta')] },
+      { f: 'Pick your UI language (8 built in)', cells: [yes, part('3 languages'), no, no] },
     ],
   },
 ];
@@ -96,7 +116,7 @@ const LANDSCAPE = [
     cat: 'AI terminals & runners',
     tools: 'cmux · Warp',
     what: 'A terminal with AI built in, or a lightweight runner for a handful of agent sessions.',
-    fit: 'A full multiplexer that coordinates many external agents at once, with live status, reboot-proof resume, a git tab, and a Mac notch app on top.',
+    fit: 'A full multiplexer that coordinates many external agents at once, with live status, what each session costs, reboot-proof resume, a git tab, and a Mac notch app on top.',
   },
 ];
 ---
