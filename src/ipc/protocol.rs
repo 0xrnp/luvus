@@ -41,6 +41,11 @@ pub enum ServerMessage {
     /// Set the client's system clipboard (OSC 52) to this text — sent when a
     /// mouse selection finishes, so drag-to-select auto-copies.
     Clipboard(String),
+    /// Open this URL in the client's browser (docs/58 — Ctrl+click a link in a
+    /// pane). Client-side for the same reason the clipboard is: with `--remote`
+    /// the server is on another machine, and the browser you want is the one in
+    /// front of you.
+    OpenUrl(String),
     /// Tell the client to detach (server keeps running).
     Detach,
     ServerShutdown {

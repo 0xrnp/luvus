@@ -16,6 +16,7 @@ mod ids;
 mod integration;
 mod ipc;
 mod layout;
+mod links;
 mod mission;
 mod module;
 mod orch;
@@ -703,6 +704,9 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         if last_spin.elapsed() >= Duration::from_millis(100) && app.any_working() {
             app.spinner = app.spinner.wrapping_add(1);
             last_spin = Instant::now();
+        }
+        if let Some(url) = app.pending_open_url.take() {
+            crate::platform::open_url(&url);
         }
         if let Some(text) = app.pending_clipboard.take() {
             emit_clipboard(&text);

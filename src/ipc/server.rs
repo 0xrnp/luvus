@@ -202,6 +202,9 @@ pub fn run() -> Result<()> {
             broadcast(&mut clients, ServerMessage::Sound);
         }
         // A finished mouse selection copies to the client's clipboard (OSC 52).
+        if let Some(url) = app.pending_open_url.take() {
+            broadcast(&mut clients, ServerMessage::OpenUrl(url));
+        }
         if let Some(text) = app.pending_clipboard.take() {
             broadcast(&mut clients, ServerMessage::Clipboard(text));
         }

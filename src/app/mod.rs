@@ -529,6 +529,11 @@ pub struct PaneMenu {
     pub move_open: bool,
     /// Submenu row rects (target + rect), filled by the renderer for hit-testing.
     pub tab_rects: Vec<(MoveTarget, Rect)>,
+    /// What was under the right-click, if anything (docs/58). Snapshotted with the
+    /// rest of the menu because the pane keeps printing while it is open, so
+    /// re-reading the grid on click could open a different target than the one the
+    /// row was drawn for.
+    pub link: Option<LinkTarget>,
     /// Whether this pane runs a fork-capable agent, snapshotted at open. Gates
     /// whether the "Fork to new pane" row is shown (docs/23).
     pub can_fork: bool,
@@ -548,6 +553,12 @@ pub enum MoveTarget {
 pub enum PaneMenuItem {
     SplitVertical,
     SplitHorizontal,
+    /// "Open Link" — open the URL that was under the right-click (docs/58). Only
+    /// offered when there actually was one, so the row is never a dead end.
+    OpenLink,
+    /// "Open File" — open the file path that was under the right-click, in bohay
+    /// rather than the OS (docs/58). Offered only for a path that exists.
+    OpenFile,
     /// "Fork to new pane" — branch this pane's agent session into a new pane to
     /// the right, preserving the original's context (docs/23). Shown only for
     /// fork-capable agents.
@@ -569,6 +580,8 @@ impl PaneMenuItem {
         PaneMenuItem::SplitVertical,
         PaneMenuItem::SplitHorizontal,
         PaneMenuItem::ForkPane,
+        PaneMenuItem::OpenLink,
+        PaneMenuItem::OpenFile,
         PaneMenuItem::RunningCmd,
         PaneMenuItem::MoveToTab,
         PaneMenuItem::Divider,
@@ -757,6 +770,43 @@ impl PaneStatus {
             blocked_hint: None,
         }
     }
+}
+
+/// What a `Ctrl`+click will actually do (docs/58) — resolved, so a target only
+/// exists if it is real: a URL that passed the scheme whitelist, or a path that
+/// was found on disk relative to the pane's working directory.
+#[derive(Debug, Clone, PartialEq)]
+pub enum LinkTarget {
+    /// Hand to the client's browser.
+    Url(String),
+    /// Open in bohay's own viewer or editor, exactly like a FILES click (docs/38),
+    /// jumping to `line` when the reference carried one.
+    File { path: PathBuf, line: Option<u32> },
+}
+
+/// The link currently under the mouse, whose grid it belongs to, and what it
+/// resolved to (docs/58).
+///
+/// `link.spans` are **grid** coordinates, the same space
+/// `VtEngine::for_each_cell` reports, so the renderer tests a cell directly with
+/// no arithmetic per frame.
+#[derive(Debug, Clone)]
+pub struct HoverLink {
+    pub pane: PaneId,
+    pub link: crate::links::Link,
+    pub target: LinkTarget,
+}
+
+/// A `Ctrl`+press that landed on a link, held until its release.
+///
+/// The same gesture dragged is the RESIZE-5 divider grab, so the two are told
+/// apart by movement: leave the press cell and the resize takes over, release on
+/// it and the link opens.
+#[derive(Debug, Clone)]
+pub struct LinkPress {
+    pub target: LinkTarget,
+    /// Screen cell of the press.
+    pub at: (u16, u16),
 }
 
 /// A drag text-selection inside a pane. Coordinates are **terminal** cells; the
@@ -988,6 +1038,20 @@ pub struct App {
     /// Text to copy to the client's system clipboard (via OSC 52) — set when a
     /// selection finishes, drained + broadcast by the loop.
     pub pending_clipboard: Option<String>,
+    /// A URL to open in the client's browser (docs/58) — set by a Ctrl+click on a
+    /// link in a pane, drained + broadcast by the loop like `pending_clipboard`.
+    pub pending_open_url: Option<String>,
+    /// The cell `hover_link` was resolved for, so holding `Ctrl` while resting on a
+    /// cell does not rescan. Cleared when `Ctrl` is released, so pointing at a
+    /// link *first* and pressing `Ctrl` after still lights it up.
+    pub link_scan_at: Option<(u16, u16)>,
+    /// The link under the mouse, recomputed only when the hovered cell changes so
+    /// nothing scans the grid per frame. Rendered underlined by `ui/panes.rs`.
+    pub hover_link: Option<HoverLink>,
+    /// A `Ctrl`+press that landed on a link. Held until release, because the same
+    /// gesture dragged is the RESIZE-5 divider grab: moving off the cell hands
+    /// the press over to the resize, releasing on it opens the link.
+    pub link_press: Option<LinkPress>,
     /// A transient toast (text, expiry) shown bottom-center — e.g. "Copied".
     pub toast: Option<(String, Instant)>,
     /// Downsample RGB → 256-color (for the local path on non-truecolor terms).
@@ -1278,6 +1342,10 @@ impl App {
             selection: None,
             mouse_grab: None,
             pending_clipboard: None,
+            pending_open_url: None,
+            link_scan_at: None,
+            hover_link: None,
+            link_press: None,
             toast: None,
             downsample: false,
             last_cwd_at: Instant::now(),
@@ -1666,6 +1734,10 @@ impl App {
             selection: None,
             mouse_grab: None,
             pending_clipboard: None,
+            pending_open_url: None,
+            link_scan_at: None,
+            hover_link: None,
+            link_press: None,
             toast: None,
             downsample: false,
             last_cwd_at: Instant::now(),
@@ -2381,11 +2453,18 @@ impl App {
             .as_ref()
             .is_some_and(|m| !m.move_targets.is_empty());
         let can_fork = self.pane_menu.as_ref().is_some_and(|m| m.can_fork);
+        let (has_url, has_file) = match self.pane_menu.as_ref().and_then(|m| m.link.as_ref()) {
+            Some(LinkTarget::Url(_)) => (true, false),
+            Some(LinkTarget::File { .. }) => (false, true),
+            None => (false, false),
+        };
         let mut items: Vec<PaneMenuItem> = PaneMenuItem::ALL
             .iter()
             .copied()
             .filter(|it| has_move || *it != PaneMenuItem::MoveToTab)
             .filter(|it| can_fork || *it != PaneMenuItem::ForkPane)
+            .filter(|it| has_url || *it != PaneMenuItem::OpenLink)
+            .filter(|it| has_file || *it != PaneMenuItem::OpenFile)
             .collect();
         let extras = self
             .pane_menu
@@ -2587,6 +2666,7 @@ impl App {
             .status
             .get(&pane)
             .is_some_and(|st| crate::agent::can_fork(&st.agent));
+        let link = self.link_at_screen(col, row).map(|h| h.target);
         self.pane_menu = Some(PaneMenu {
             pane,
             anchor: (col, row),
@@ -2596,6 +2676,7 @@ impl App {
             move_open: false,
             tab_rects: Vec::new(),
             can_fork,
+            link,
         });
     }
 
@@ -2714,10 +2795,10 @@ impl App {
 
     /// Run a pane context-menu action on its target pane, then close the menu.
     pub fn pane_menu_action(&mut self, item: PaneMenuItem) {
-        let Some((pane, actions)) = self
+        let Some((pane, actions, link)) = self
             .pane_menu
             .as_ref()
-            .map(|m| (m.pane, m.module_actions.clone()))
+            .map(|m| (m.pane, m.module_actions.clone(), m.link.clone()))
         else {
             return;
         };
@@ -2737,6 +2818,11 @@ impl App {
             PaneMenuItem::SplitHorizontal => self.split(Axis::Row), // stacked
             PaneMenuItem::ForkPane => {
                 self.fork_pane(pane);
+            }
+            PaneMenuItem::OpenLink | PaneMenuItem::OpenFile => {
+                if let Some(t) = link {
+                    self.activate_link(t);
+                }
             }
             PaneMenuItem::RunningCmd => self.open_cmd_inspect(pane),
             // Handled in `pane_menu_click` (opens a submenu, keeps the menu open);

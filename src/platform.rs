@@ -492,6 +492,63 @@ extern "system" {
     fn timeEndPeriod(u_period: u32) -> u32;
 }
 
+/// Is `url` safe to hand to the OS URL handler (docs/58)?
+///
+/// **Only `http` and `https`.** The text comes from whatever is running in a
+/// pane, so a click ends at the system handler for whatever scheme it names, and
+/// the interesting schemes there are all the dangerous ones. This is a
+/// whitelist, not a blacklist, so a scheme nobody thought of is refused rather
+/// than allowed.
+///
+/// Also rejects anything with a control character or whitespace: a URL is one
+/// argv entry, and a newline in it has no legitimate reason to be there.
+pub fn is_openable_url(url: &str) -> bool {
+    let rest = match url.split_once("://") {
+        Some(("http", rest)) | Some(("https", rest)) => rest,
+        _ => return false,
+    };
+    !rest.is_empty()
+        && !rest.starts_with('/')
+        && !url.chars().any(|c| c.is_control() || c.is_whitespace())
+}
+
+/// Hand `url` to the OS URL handler: `open` (macOS), `xdg-open` and friends
+/// (Linux), `rundll32` (Windows).
+///
+/// Passed as a **separate argv entry**, never interpolated into a shell command,
+/// so a URL containing shell metacharacters is inert. Callers must have cleared
+/// it through [`is_openable_url`] first. Detached and never waited on, so a
+/// browser cold-start cannot stall the event loop.
+pub fn open_url(url: &str) {
+    use std::process::{Command, Stdio};
+    if !is_openable_url(url) {
+        return;
+    }
+    let openers: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
+        &[("open", &[])]
+    } else if cfg!(target_os = "windows") {
+        // `rundll32 url.dll,FileProtocolHandler` avoids `cmd /C start`, whose
+        // first quoted argument is swallowed as a window title and which would
+        // put the URL through the shell.
+        &[("rundll32", &["url.dll,FileProtocolHandler"])]
+    } else {
+        &[("xdg-open", &[]), ("gio", &["open"]), ("wslview", &[])]
+    };
+    for (cmd, args) in openers {
+        if Command::new(cmd)
+            .args(*args)
+            .arg(url)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .is_ok()
+        {
+            return;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
@@ -610,6 +667,43 @@ mod tests {
             Path::new("/work/App"),
             Path::new("/work/app")
         ));
+    }
+
+    /// The whitelist is the security boundary for docs/58: this text comes from
+    /// whatever is running in a pane, and a click ends at the OS handler for
+    /// whatever scheme it names. Anything but http/https must be refused.
+    #[test]
+    fn only_http_and_https_urls_are_openable() {
+        for ok in [
+            "https://bohay.dev",
+            "http://localhost:3000/x?y=1#z",
+            "https://user:pw@example.com/a(b)",
+        ] {
+            assert!(super::is_openable_url(ok), "{ok:?} should open");
+        }
+        for bad in [
+            // Scheme handlers that run code or reach the filesystem.
+            "file:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,<script>x</script>",
+            "vscode://file/etc/passwd",
+            "smb://host/share",
+            "ssh://host",
+            // Not a URL at all.
+            "bohay.dev",
+            "https://",
+            "https:///no-host",
+            "",
+            // Case tricks: the check is on the exact scheme, not a prefix match.
+            "HTTPS://bohay.dev",
+            "xhttps://bohay.dev",
+            // Whitespace and control characters have no business in one argv entry.
+            "https://a b.dev",
+            "https://a\nb.dev",
+            "https://a\u{7}b.dev",
+        ] {
+            assert!(!super::is_openable_url(bad), "{bad:?} must be refused");
+        }
     }
 
     #[cfg(windows)]

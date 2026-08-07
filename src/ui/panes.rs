@@ -215,6 +215,14 @@ fn draw_one_pane(
     let downsample = app.downsample;
     // A mouse text-selection in this pane highlights its cells.
     let sel = app.selection.filter(|s| s.pane == id);
+    // The link under a `Ctrl`-held cursor (docs/58). Borrowed, not cloned: this
+    // is the render path, and the spans are recomputed only when the hovered
+    // cell changes anyway.
+    let hover_link = app
+        .hover_link
+        .as_ref()
+        .filter(|h| h.pane == id)
+        .map(|h| &h.link);
     let mut scrolled = 0usize;
     let cursor_pos = match pane.engine.lock() {
         Ok(engine) => {
@@ -248,6 +256,14 @@ fn draw_one_pane(
                     // Highlight the cell if it's inside the mouse selection.
                     if sel.is_some_and(|s| s.contains(x, y)) {
                         style = style.bg(t.sel_bg);
+                    }
+                    // Underline the `Ctrl`-hovered link, so it reads as clickable
+                    // before you commit to the click. Applied after the selection
+                    // so a link inside selected text keeps both.
+                    if hover_link.is_some_and(|l| l.covers(col, row)) {
+                        style = style
+                            .fg(t.accent)
+                            .add_modifier(ratatui::style::Modifier::UNDERLINED);
                     }
                     // ratatui panics if a control char reaches the buffer; the VT
                     // grid can hold stray C0/C1 bytes, so render those blank. `sym`

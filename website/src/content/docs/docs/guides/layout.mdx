@@ -28,7 +28,9 @@ directory. The focused pane's frame is brighter.
 Three ways, whichever fits your hands:
 
 - **Drag a divider.** Hover the border between two panes (it brightens) and drag.
-- **Ctrl+drag** anywhere inside a pane to nudge its edges.
+- **Ctrl+drag** anywhere inside a pane to nudge its edges. (`Ctrl`+*click* on a
+  URL or a file path opens it instead, see
+  [Opening links and files](#opening-links-and-files).)
 - **Keyboard resize mode:** `Ctrl+Space r`, then the arrow keys grow/shrink the
   focused pane. `Esc` or `Enter` leaves the mode.
 
@@ -107,6 +109,69 @@ one to reopen it). See [Working with Agents](/docs/guides/agents/).
 
 Drag across any pane to select, and releasing **auto-copies** to your clipboard. Full
 details, plus scrollback, are in [Scrollback & Copy](/docs/guides/scrollback/).
+
+## Opening links and files
+
+Agents print references all day: the PR they opened, the doc they read, the file
+they just changed, the test that failed at line 42.
+
+**Hold `Ctrl`** and whatever is under your cursor underlines. **`Ctrl`+click**
+follows it. If you would rather not hold a modifier, **right-click** and pick
+**Open Link** or **Open File**.
+
+| Under the cursor | What a `Ctrl`+click does |
+|---|---|
+| `https://bohay.dev/docs` | opens in your browser |
+| `bohay.dev/docs` | same, with `https://` filled in |
+| `localhost:3000` | opens your dev server, over `http` |
+| `src/main.rs` | opens in a bohay tab, like clicking it in FILES |
+| `src/main.rs:42` | opens in a tab, scrolled to line 42 |
+
+### Files
+
+A file path opens **in bohay**, not in some other app. It goes through exactly the
+same path as clicking the file in the FILES tree, so it respects your
+**Settings → General → Open files with** choice: the built-in read-only viewer by
+default, or your terminal editor if you set one.
+
+**A path only underlines if the file is really there.** Paths are resolved against
+that pane's working directory, so `src/main.rs` means what it means to the shell
+you are looking at. Text that merely looks like a path stays inert, and so do
+directories. That means a link you can see is always a link that works.
+
+Compiler and test output usually prints `file:line`, and that whole reference is
+one link. The line number is honoured by the built-in viewer. A terminal editor
+opens the file at the top instead, since the flag for jumping to a line is
+different for every editor.
+
+### Links
+
+You do not need the `https://`. A bare `bohay.dev` or `google.com/search` works,
+and `localhost:3000` opens your dev server over plain `http`.
+
+Bare domains are matched conservatively, so ordinary text does not turn into links:
+the name has to be lower case, end in a TLD bohay knows, and `localhost` needs a
+port on it. If a domain of yours is not recognised, writing the `https://` always
+works.
+
+One consequence worth knowing: **a filename can also be a domain.** `.rs` is
+Serbia, `.md` is Moldova. So `main.rs` is ambiguous, and bohay settles it by
+looking at the disk: if the file is there, it opens the file. If not, and the name
+is a real domain, it opens the site. If neither, nothing happens.
+
+Only `http` and `https` URLs open. Everything else is ignored on purpose: the text
+comes from whatever is running in the pane, and a click would end up at whatever
+your system has registered for that scheme.
+
+Two more details:
+
+- **A URL that wrapped onto the next line still opens as one link.** This is the
+  part your terminal cannot do for you, because it only sees the finished screen.
+- **The browser that opens is on the machine you are sitting at**, even when you
+  attached to a remote server with `--remote`.
+
+`Ctrl`+*drag* still resizes panes as it always did. The two never collide, because
+a link only opens when you release without moving.
 
 ## Detaching
 

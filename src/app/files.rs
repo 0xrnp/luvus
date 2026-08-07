@@ -158,13 +158,34 @@ impl App {
             self.load_pending_dirs();
         } else if target == OpenTarget::Tab {
             // A plain click honors the configured default (read-only or an editor).
-            match self.file_open_editor() {
-                Some(cmd) => self.open_file_in_editor(row.path, &cmd),
-                None => self.open_file_view(row.path, OpenTarget::Tab),
-            }
+            self.open_file_at(row.path, None);
         } else {
             // Shift+click (Pane) / preview always opens the native read-only view.
             self.open_file_view(row.path, target);
+        }
+    }
+
+    /// Open `path` in a new tab the way a plain FILES click does (docs/38): the
+    /// configured default, read-only viewer or a terminal editor. Shared by the
+    /// FILES tree and by `Ctrl`+clicking a path printed in a pane (docs/58).
+    ///
+    /// `line` scrolls the built-in viewer to that line. It survives the async read
+    /// because `FileView::apply` keeps `scroll` and clamps it to the file's length.
+    /// A configured *editor* opens at the top: the flag for "start at line N"
+    /// differs per editor, and guessing it wrong is worse than not jumping.
+    pub fn open_file_at(&mut self, path: PathBuf, line: Option<u32>) {
+        match self.file_open_editor() {
+            Some(cmd) => self.open_file_in_editor(path, &cmd),
+            None => {
+                self.open_file_view(path.clone(), OpenTarget::Tab);
+                if let Some(l) = line {
+                    if let Some(id) = self.view_showing(&path) {
+                        if let Some(crate::app::ViewKind::File(v)) = self.views.get_mut(&id) {
+                            v.scroll = l.saturating_sub(1) as usize;
+                        }
+                    }
+                }
+            }
         }
     }
 

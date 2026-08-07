@@ -124,6 +124,7 @@ where
             Ok(ServerMessage::Notify(msg)) => crate::emit_notification(&msg),
             Ok(ServerMessage::Sound) => crate::emit_sound(),
             Ok(ServerMessage::Clipboard(text)) => crate::emit_clipboard(&text),
+            Ok(ServerMessage::OpenUrl(url)) => crate::platform::open_url(&url),
             Ok(ServerMessage::Detach) | Ok(ServerMessage::ServerShutdown { .. }) => break,
             Ok(_) => {}
             Err(_) => break, // server gone

@@ -448,10 +448,21 @@ impl App {
                 if self.begin_resize(m.column, m.row) {
                     return;
                 }
-                if m.modifiers.contains(KeyModifiers::CONTROL)
-                    && self.begin_resize_nearest(m.column, m.row)
-                {
-                    return;
+                if m.modifiers.contains(KeyModifiers::CONTROL) {
+                    // A link under the cursor claims the press, but only
+                    // provisionally: `Ctrl`+drag is the RESIZE-5 divider grab, so
+                    // which gesture this was is decided by whether it moves (see
+                    // the Drag and Up arms below).
+                    if let Some(h) = self.link_at_screen(m.column, m.row) {
+                        self.link_press = Some(LinkPress {
+                            target: h.target,
+                            at: (m.column, m.row),
+                        });
+                        return;
+                    }
+                    if self.begin_resize_nearest(m.column, m.row) {
+                        return;
+                    }
                 }
                 // A pane app that tracks the mouse (a TUI agent like Claude
                 // Code) gets the click itself — that's how clicking a collapsed
@@ -480,6 +491,19 @@ impl App {
                 return;
             }
             MouseEventKind::Drag(MouseButton::Left) | MouseEventKind::Drag(MouseButton::Middle) => {
+                // A `Ctrl`+press that began on a link turns into a divider grab
+                // the moment it moves; a link only opens on a release that never
+                // left its cell.
+                if let Some(p) = self.link_press.take() {
+                    if (m.column, m.row) == p.at {
+                        self.link_press = Some(p);
+                        return;
+                    }
+                    if self.begin_resize_nearest(p.at.0, p.at.1) {
+                        self.update_resize(m.column, m.row);
+                    }
+                    return;
+                }
                 if self.sidebar_resize.is_some() {
                     self.update_sidebar_resize(m.column, m.row);
                     return;
@@ -507,6 +531,12 @@ impl App {
                 return;
             }
             MouseEventKind::Up(MouseButton::Left) | MouseEventKind::Up(MouseButton::Middle) => {
+                if let Some(p) = self.link_press.take() {
+                    if (m.column, m.row) == p.at {
+                        self.activate_link(p.target);
+                    }
+                    return;
+                }
                 if self.sidebar_resize.is_some() {
                     self.end_sidebar_resize();
                     return;
@@ -533,6 +563,22 @@ impl App {
                 return;
             }
             MouseEventKind::Moved => {
+                // Links light up only while `Ctrl` is held, which is both the
+                // gesture's own affordance and what keeps this off the hot path:
+                // ordinary mouse motion never scans a grid and never takes the
+                // engine lock (the PTY reader holds that during output bursts).
+                if m.modifiers.contains(KeyModifiers::CONTROL) {
+                    // Guarded on the cell *this* resolved for, not on `hover`:
+                    // pointing at a link and only then pressing `Ctrl` is the
+                    // natural gesture, and it never moves the mouse.
+                    if self.link_scan_at != Some((m.column, m.row)) {
+                        self.link_scan_at = Some((m.column, m.row));
+                        self.hover_link = self.link_at_screen(m.column, m.row);
+                    }
+                } else if self.link_scan_at.is_some() {
+                    self.link_scan_at = None;
+                    self.hover_link = None;
+                }
                 // Hover motion goes only to an any-motion (1003) app under the
                 // cursor. Deliberately *not* counted as user input for
                 // detection: hover isn't typing, and marking it would mask the
@@ -1197,6 +1243,81 @@ impl App {
         self.cmd_inspect = None;
     }
 
+    /// The link under screen cell (`col`, `row`), **resolved**, if the cursor is
+    /// over a pane and what it found is real.
+    ///
+    /// Takes the pane's VT engine lock, so it runs only on a deliberate gesture
+    /// (`Ctrl` held, or a `Ctrl`+press) and never on plain mouse motion.
+    pub fn link_at_screen(&self, col: u16, row: u16) -> Option<HoverLink> {
+        let (pane, content) = self.pane_content_at(col, row)?;
+        let rows = {
+            let engine = self.panes.get(&pane)?.engine.lock().ok()?;
+            engine.visible_rows()
+        };
+        let link = crate::links::link_at(&rows, col - content.x, row - content.y)?;
+        let target = match &link.hit {
+            crate::links::Hit::Url(u) => {
+                crate::platform::is_openable_url(u).then(|| LinkTarget::Url(u.clone()))?
+            }
+            // A file on disk wins over a domain, which is what settles the genuine
+            // ambiguity: `main.rs` and `README.md` are also valid domains (`.rs`
+            // is Serbia, `.md` Moldova), so in a repo they open as files and
+            // elsewhere they simply stay inert.
+            crate::links::Hit::Path { raw, text, line } => {
+                match self.resolve_pane_path(pane, text) {
+                    Some(path) => LinkTarget::File { path, line: *line },
+                    None => {
+                        let url = crate::links::domain_url(crate::links::as_domain(raw)?);
+                        crate::platform::is_openable_url(&url).then_some(LinkTarget::Url(url))?
+                    }
+                }
+            }
+        };
+        Some(HoverLink { pane, link, target })
+    }
+
+    /// Resolve a path written in pane `id`'s grid against that pane's working
+    /// directory, accepting it only if it names a real **file**.
+    ///
+    /// The existence check is what makes paths trustworthy to click: prose that
+    /// merely looks path-shaped never lights up, and a directory never opens
+    /// (`src` stays inert while `src/main.rs` does not).
+    fn resolve_pane_path(&self, id: PaneId, text: &str) -> Option<PathBuf> {
+        let p = match text.strip_prefix("~/") {
+            Some(rest) => crate::platform::home_dir()?.join(rest),
+            None => PathBuf::from(text),
+        };
+        let p = if p.is_absolute() {
+            p
+        } else {
+            self.panes.get(&id)?.cwd.join(p)
+        };
+        p.is_file().then_some(p)
+    }
+
+    /// Act on a resolved link (docs/58): a URL goes to the client's browser, a
+    /// file opens in bohay itself.
+    pub fn activate_link(&mut self, target: LinkTarget) {
+        match target {
+            LinkTarget::Url(url) => self.open_url(url),
+            LinkTarget::File { path, line } => self.open_file_at(path, line),
+        }
+    }
+
+    /// Queue `url` to open in the *client's* browser (docs/58) and confirm with a
+    /// toast, so a click that lands on a stale cell is visibly a no-op rather
+    /// than a silent one.
+    ///
+    /// Re-checks the scheme here as well as at the spawn: this is reachable from
+    /// the context menu and the socket, not only from the click path.
+    pub fn open_url(&mut self, url: String) {
+        if !crate::platform::is_openable_url(&url) {
+            return;
+        }
+        self.show_toast(crate::ui::truncate(&url, 60));
+        self.pending_open_url = Some(url);
+    }
+
     pub fn show_toast(&mut self, text: impl Into<String>) {
         self.toast = Some((text.into(), Instant::now() + Duration::from_millis(1400)));
     }
@@ -1768,5 +1889,393 @@ mod tests {
             mouse_wheel_seq(false, 500, 500, false),
             vec![0x1b, b'[', b'M', 32 + 65, 255, 255]
         );
+    }
+}
+
+#[cfg(test)]
+mod link_click_tests {
+    use super::*;
+    use crate::app::App;
+    use ratatui::backend::TestBackend;
+    use ratatui::crossterm::event::{KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use ratatui::Terminal;
+
+    const URL: &str = "https://bohay.dev/docs";
+
+    /// An app with one pane whose grid holds [`URL`], plus the screen cells that
+    /// sit on it and on the prose beside it.
+    struct Fixture {
+        app: App,
+        term: Terminal<TestBackend>,
+        pane: crate::ids::PaneId,
+        on_link: (u16, u16),
+        off_link: (u16, u16),
+    }
+
+    fn fixture() -> Fixture {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let pane = app.layout().focus;
+        app.panes
+            .get(&pane)
+            .unwrap()
+            .engine
+            .lock()
+            .unwrap()
+            .advance(format!("\x1b[H\x1b[2Jsee {URL} ok\r\n").as_bytes());
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let content = app
+            .pane_content_rects
+            .iter()
+            .find(|(p, _)| *p == pane)
+            .map(|(_, r)| *r)
+            .expect("pane content rect");
+        Fixture {
+            app,
+            term,
+            pane,
+            // "see " is 4 cells, so the URL starts at grid column 4.
+            on_link: (content.x + 6, content.y),
+            off_link: (content.x + 1, content.y),
+        }
+    }
+
+    fn mouse(kind: MouseEventKind, at: (u16, u16), mods: KeyModifiers) -> crate::event::AppEvent {
+        crate::event::AppEvent::Mouse(MouseEvent {
+            kind,
+            column: at.0,
+            row: at.1,
+            modifiers: mods,
+        })
+    }
+
+    /// The feature: `Ctrl`+click a URL in a pane and it goes to the client to be
+    /// opened. Nothing is spawned here, only queued, which is what lets a remote
+    /// attach open the browser in front of *you*.
+    #[test]
+    fn ctrl_click_on_a_link_queues_it_for_the_client() {
+        let _env = crate::persist::test_env("link-click");
+        let Fixture {
+            mut app, on_link, ..
+        } = fixture();
+        app.handle_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            on_link,
+            KeyModifiers::CONTROL,
+        ));
+        assert!(app.pending_open_url.is_none(), "not opened on press");
+        app.handle_event(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            on_link,
+            KeyModifiers::CONTROL,
+        ));
+        assert_eq!(app.pending_open_url.as_deref(), Some(URL));
+    }
+
+    /// The gesture it shares a modifier with must survive: `Ctrl`+*drag* is the
+    /// RESIZE-5 divider grab, so moving off the press cell cancels the link.
+    #[test]
+    fn ctrl_drag_from_a_link_resizes_instead_of_opening() {
+        let _env = crate::persist::test_env("link-drag");
+        let Fixture {
+            mut app, on_link, ..
+        } = fixture();
+        app.handle_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            on_link,
+            KeyModifiers::CONTROL,
+        ));
+        app.handle_event(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            (on_link.0 + 6, on_link.1 + 3),
+            KeyModifiers::CONTROL,
+        ));
+        // Asserted here, not after the release: the release takes `link_press`
+        // either way, so checking it afterwards would pass even if the drag had
+        // never handed the gesture over.
+        assert!(
+            app.link_press.is_none(),
+            "moving off the press cell gives the gesture to the resize"
+        );
+        app.handle_event(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            (on_link.0 + 6, on_link.1 + 3),
+            KeyModifiers::CONTROL,
+        ));
+        assert!(
+            app.pending_open_url.is_none(),
+            "a drag is a resize, never a link open"
+        );
+    }
+
+    /// A plain click must stay a plain click: agent output is full of URLs, and
+    /// reaching for a text selection cannot open a browser.
+    #[test]
+    fn a_click_without_ctrl_never_opens_anything() {
+        let _env = crate::persist::test_env("link-plain");
+        let Fixture {
+            mut app, on_link, ..
+        } = fixture();
+        app.handle_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            on_link,
+            KeyModifiers::NONE,
+        ));
+        app.handle_event(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            on_link,
+            KeyModifiers::NONE,
+        ));
+        assert!(app.pending_open_url.is_none());
+    }
+
+    /// `Ctrl`+click on ordinary text is still the divider grab, not a no-op that
+    /// swallowed the gesture.
+    #[test]
+    fn ctrl_click_beside_a_link_opens_nothing() {
+        let _env = crate::persist::test_env("link-miss");
+        let Fixture {
+            mut app, off_link, ..
+        } = fixture();
+        app.handle_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            off_link,
+            KeyModifiers::CONTROL,
+        ));
+        app.handle_event(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            off_link,
+            KeyModifiers::CONTROL,
+        ));
+        assert!(app.pending_open_url.is_none());
+        assert!(app.link_press.is_none());
+    }
+
+    /// Holding `Ctrl` lights the link up; letting go puts it out. Motion without
+    /// the modifier must not scan at all, which is what keeps this off the hot
+    /// path.
+    #[test]
+    fn ctrl_hover_underlines_the_link_and_plain_hover_clears_it() {
+        let _env = crate::persist::test_env("link-hover");
+        let Fixture {
+            mut app,
+            mut term,
+            on_link,
+            off_link,
+            ..
+        } = fixture();
+
+        app.handle_event(mouse(MouseEventKind::Moved, on_link, KeyModifiers::NONE));
+        assert!(app.hover_link.is_none(), "plain hover scans nothing");
+
+        app.handle_event(mouse(MouseEventKind::Moved, on_link, KeyModifiers::CONTROL));
+        let hl = app.hover_link.as_ref().expect("ctrl hover found the link");
+        assert_eq!(hl.target, LinkTarget::Url(URL.to_string()));
+
+        // It is actually drawn underlined, not merely recorded.
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let cell = term.backend().buffer().cell(on_link).unwrap().clone();
+        assert!(
+            cell.modifier.contains(ratatui::style::Modifier::UNDERLINED),
+            "the hovered link renders underlined"
+        );
+
+        // Moving off the link, still holding Ctrl, drops it.
+        app.handle_event(mouse(
+            MouseEventKind::Moved,
+            off_link,
+            KeyModifiers::CONTROL,
+        ));
+        assert!(app.hover_link.is_none());
+    }
+
+    /// A fixture whose pane grid holds `text`, plus the screen cell sitting on
+    /// the token that starts at `at` characters in.
+    fn fixture_showing(text: &str, at: u16) -> (App, Terminal<TestBackend>, (u16, u16)) {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let pane = app.layout().focus;
+        app.panes
+            .get(&pane)
+            .unwrap()
+            .engine
+            .lock()
+            .unwrap()
+            .advance(format!("\x1b[H\x1b[2J{text}\r\n").as_bytes());
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let content = app
+            .pane_content_rects
+            .iter()
+            .find(|(p, _)| *p == pane)
+            .map(|(_, r)| *r)
+            .expect("pane content rect");
+        (app, term, (content.x + at, content.y))
+    }
+
+    /// A path an agent printed opens **in bohay**, in a new tab, not at the OS.
+    /// Tests run from the repo root, so `Cargo.toml` is a real relative path from
+    /// the pane's working directory.
+    #[test]
+    fn ctrl_click_on_a_file_path_opens_it_in_a_tab() {
+        let _env = crate::persist::test_env("link-file");
+        let (mut app, _t, at) = fixture_showing("edit Cargo.toml now", 7);
+        let tabs = app.ws().tabs.len();
+
+        app.handle_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            at,
+            KeyModifiers::CONTROL,
+        ));
+        app.handle_event(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            at,
+            KeyModifiers::CONTROL,
+        ));
+
+        assert!(
+            app.pending_open_url.is_none(),
+            "a file never goes to the browser"
+        );
+        assert_eq!(app.ws().tabs.len(), tabs + 1, "opened in a new tab");
+        let id = app.layout().focus;
+        match app.views.get(&id) {
+            Some(crate::app::ViewKind::File(v)) => {
+                assert!(v.path.ends_with("Cargo.toml"), "showing {:?}", v.path)
+            }
+            _ => panic!("the new tab holds a file view"),
+        }
+    }
+
+    /// `src/main.rs:42` is one reference: the whole thing underlines, the path
+    /// resolves without the suffix, and the viewer lands on that line.
+    #[test]
+    fn a_line_suffix_scrolls_the_viewer_to_that_line() {
+        let _env = crate::persist::test_env("link-line");
+        let (mut app, _t, at) = fixture_showing("at src/main.rs:42:7 boom", 5);
+
+        let h = app.link_at_screen(at.0, at.1).expect("resolved");
+        assert!(
+            matches!(&h.target, LinkTarget::File { line: Some(42), .. }),
+            "got {:?}",
+            h.target
+        );
+        // The underline covers the whole reference including `:42:7`, not just the
+        // path. `covers` is in *grid* coordinates: the token runs cols 3..=18.
+        assert!(h.link.covers(3, 0), "underline starts at the path");
+        assert!(h.link.covers(18, 0), "underline reaches the end of :42:7");
+        assert!(!h.link.covers(19, 0), "and stops there");
+
+        app.activate_link(h.target);
+        let id = app.layout().focus;
+        match app.views.get(&id) {
+            Some(crate::app::ViewKind::File(v)) => assert_eq!(v.scroll, 41),
+            _ => panic!("a file view opened"),
+        }
+    }
+
+    /// The existence check is what makes paths safe to click: text that merely
+    /// looks like a path must not light up, and a directory is not a file.
+    #[test]
+    fn only_paths_that_exist_as_files_resolve() {
+        let _env = crate::persist::test_env("link-real");
+        for (text, at) in [("see nope/missing.rs ok", 4), ("see src ok", 4)] {
+            let (app, _t, cell) = fixture_showing(text, at);
+            assert!(
+                app.link_at_screen(cell.0, cell.1).is_none(),
+                "{text:?} must not resolve"
+            );
+        }
+    }
+
+    /// A bare domain is as clickable as a written-out URL, and gets `https://`.
+    #[test]
+    fn ctrl_click_on_a_bare_domain_opens_it_over_https() {
+        let _env = crate::persist::test_env("link-domain");
+        let (mut app, _t, at) = fixture_showing("visit bohay.dev/docs now", 8);
+        app.handle_event(mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            at,
+            KeyModifiers::CONTROL,
+        ));
+        app.handle_event(mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            at,
+            KeyModifiers::CONTROL,
+        ));
+        assert_eq!(
+            app.pending_open_url.as_deref(),
+            Some("https://bohay.dev/docs")
+        );
+    }
+
+    /// A dev server URL is the other half of what agents print, and it is `http`.
+    #[test]
+    fn a_localhost_port_opens_over_plain_http() {
+        let _env = crate::persist::test_env("link-local");
+        let (app, _t, at) = fixture_showing("Server running at localhost:3000", 20);
+        assert_eq!(
+            app.link_at_screen(at.0, at.1).map(|h| h.target),
+            Some(LinkTarget::Url("http://localhost:3000".into()))
+        );
+    }
+
+    /// The genuine ambiguity: `.rs` is Serbia and `.md` is Moldova, so a source
+    /// filename is also a valid domain. A file that exists wins; the identical
+    /// token resolves to a domain only when there is no such file.
+    #[test]
+    fn an_existing_file_beats_a_domain_of_the_same_name() {
+        let _env = crate::persist::test_env("link-ambig");
+
+        // `Cargo.toml` is really there (tests run from the repo root).
+        let (app, _t, at) = fixture_showing("see Cargo.toml here", 6);
+        match app.link_at_screen(at.0, at.1).map(|h| h.target) {
+            Some(LinkTarget::File { path, .. }) => assert!(path.ends_with("Cargo.toml")),
+            other => panic!("an existing file must win, got {other:?}"),
+        }
+
+        // Same shape, no such file, and `.dev` is a domain — so it is a link.
+        let (app, _t, at) = fixture_showing("see bohay.dev here", 6);
+        assert_eq!(
+            app.link_at_screen(at.0, at.1).map(|h| h.target),
+            Some(LinkTarget::Url("https://bohay.dev".into()))
+        );
+
+        // Same shape again, no such file and no known TLD — inert either way.
+        let (app, _t, at) = fixture_showing("see absent.txt here", 6);
+        assert_eq!(app.link_at_screen(at.0, at.1).map(|h| h.target), None);
+    }
+
+    /// The right-click row is the discoverable path, and it must carry the URL
+    /// that was under the *click*, not whatever the grid says later.
+    #[test]
+    fn the_context_menu_offers_open_link_only_over_a_link() {
+        let _env = crate::persist::test_env("link-menu");
+        let Fixture {
+            mut app,
+            pane: id,
+            on_link,
+            off_link,
+            ..
+        } = fixture();
+
+        app.open_pane_menu(id, off_link.0, off_link.1);
+        assert!(
+            !app.pane_menu_items().contains(&PaneMenuItem::OpenLink),
+            "no row when the click missed a link"
+        );
+
+        app.open_pane_menu(id, on_link.0, on_link.1);
+        assert_eq!(
+            app.pane_menu.as_ref().unwrap().link,
+            Some(LinkTarget::Url(URL.to_string())),
+            "the URL is snapshotted at open"
+        );
+        assert!(app.pane_menu_items().contains(&PaneMenuItem::OpenLink));
+        app.pane_menu_action(PaneMenuItem::OpenLink);
+        assert_eq!(app.pending_open_url.as_deref(), Some(URL));
     }
 }
