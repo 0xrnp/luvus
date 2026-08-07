@@ -1204,6 +1204,16 @@ pub struct App {
     pub version_rect: Option<Rect>,
     /// The changelog modal's close button, for mouse hit-testing.
     pub changelog_close_rect: Option<Rect>,
+    /// Clickable links on the changelog modal's **visible** rows: commit and PR
+    /// refs from the notes, plus the "read it all on bohay.dev" row at the end.
+    /// Rebuilt each frame from the rows actually on screen, so scrolling a link
+    /// out of view takes its click target with it.
+    pub changelog_link_rects: Vec<(Rect, String)>,
+    /// Cached display rows for the changelog modal, keyed by `(body width, theme
+    /// name)`. Flattening the notes into wrapped, styled rows allocates, and the
+    /// modal redraws every frame — so it is built once per open and reused until
+    /// the modal is resized or the theme changes under it.
+    pub changelog_rows: Option<(u16, String, Vec<crate::ui::changelog::Row>)>,
     // Settings modal hit-test geometry (populated by render when the modal is open).
     pub settings_icon_rect: Option<Rect>,
     pub settings_close_rect: Option<Rect>,
@@ -1430,6 +1440,8 @@ impl App {
             right_sidebar_toggle_rect: None,
             version_rect: None,
             changelog_close_rect: None,
+            changelog_link_rects: Vec::new(),
+            changelog_rows: None,
             settings_icon_rect: None,
             settings_close_rect: None,
             settings_modal_rect: None,
@@ -1822,6 +1834,8 @@ impl App {
             right_sidebar_toggle_rect: None,
             version_rect: None,
             changelog_close_rect: None,
+            changelog_link_rects: Vec::new(),
+            changelog_rows: None,
             settings_icon_rect: None,
             settings_close_rect: None,
             settings_modal_rect: None,

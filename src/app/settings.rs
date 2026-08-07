@@ -194,6 +194,7 @@ impl App {
     pub fn open_changelog(&mut self) {
         self.changelog_open = true;
         self.changelog_scroll = 0;
+        self.changelog_rows = None; // rebuilt on the next draw
     }
 
     /// Number of selectable control rows in `tab` (for cursor clamping + render).

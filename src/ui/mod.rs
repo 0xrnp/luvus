@@ -54,7 +54,7 @@ impl<'a> RenderTarget<'a> {
 
 mod board;
 mod borders;
-mod changelog;
+pub(crate) mod changelog;
 mod cmdinfo;
 mod files;
 mod git;

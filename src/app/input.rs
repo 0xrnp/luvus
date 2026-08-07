@@ -203,7 +203,8 @@ impl App {
             return;
         }
         // The changelog modal owns the mouse: the wheel scrolls it, a left click
-        // dismisses it (there is nothing to click inside but the ✕).
+        // dismisses it — except on the footer link, which opens the full changelog
+        // on the website first (the modal only shows the recent releases).
         if self.changelog_open {
             match m.kind {
                 MouseEventKind::ScrollUp => {
@@ -212,7 +213,20 @@ impl App {
                 MouseEventKind::ScrollDown => {
                     self.changelog_scroll = self.changelog_scroll.saturating_add(2)
                 }
-                MouseEventKind::Down(MouseButton::Left) => self.changelog_open = false,
+                MouseEventKind::Down(MouseButton::Left) => {
+                    // A click on a commit/PR reference (or the website row at the
+                    // end) opens it and **leaves the modal up**, so several can be
+                    // followed in a row. Anything else dismisses, as before.
+                    let hit = self
+                        .changelog_link_rects
+                        .iter()
+                        .find(|(r, _)| m.row == r.y && m.column >= r.x && m.column < r.right())
+                        .map(|(_, url)| url.clone());
+                    match hit {
+                        Some(url) => self.open_url(url),
+                        None => self.changelog_open = false,
+                    }
+                }
                 _ => {}
             }
             return;

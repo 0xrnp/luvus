@@ -21,3 +21,5 @@ website/public/install.ps1
 # Python bytecode from example modules
 __pycache__/
 *.pyc
+
+examples/modules/pixtui/
