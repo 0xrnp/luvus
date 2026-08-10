@@ -22,7 +22,7 @@
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "bohay";
-  version = "0.9.7";
+  version = "0.10.0";
 
   # Required for new by-name packages (nixpkgs-vet NPV-166).
   __structuredAttrs = true;
