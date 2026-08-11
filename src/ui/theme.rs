@@ -55,6 +55,33 @@ impl Theme {
         }
     }
 
+    /// Quattro Rally — Catppuccin Macchiato's soft dark base under a rally-gold
+    /// accent, plus olive and red state colors. After the omarchy "quattro"
+    /// palette (Audi Quattro rally livery: gold on dark, red flourishes).
+    pub fn quattro_rally() -> Self {
+        let rgb = |r, g, b| Color::Rgb(r, g, b);
+        Theme {
+            crust: rgb(0x18, 0x19, 0x26),  // Macchiato crust
+            mantle: rgb(0x1e, 0x20, 0x30), // pane background (Macchiato mantle)
+            base: rgb(0x24, 0x27, 0x3a),   // sidebar (Macchiato base)
+            surface0: rgb(0x36, 0x3a, 0x4f),
+            surface1: rgb(0x49, 0x4d, 0x64),
+            overlay0: rgb(0x6e, 0x73, 0x8d),
+            overlay1: rgb(0x80, 0x87, 0xa2),
+            subtext0: rgb(0xa5, 0xad, 0xcb),
+            subtext1: rgb(0xb8, 0xc0, 0xe0),
+            text: rgb(0xca, 0xd3, 0xf5),   // white (Catppuccin Macchiato text)
+            accent: rgb(0xdb, 0xc6, 0x6f), // rally gold — brand, focus, selected
+            sel_bg: rgb(0x3a, 0x34, 0x16), // dark gold selection
+            border: rgb(0x49, 0x4d, 0x64),
+            border_focus: rgb(0x80, 0x87, 0xa2),
+            green: rgb(0x94, 0xa1, 0x43), // moss / olive (idle)
+            mint: rgb(0xb8, 0xcf, 0x6a),  // yellow-green (done)
+            amber: rgb(0xe0, 0xa1, 0x54), // amber (working)
+            coral: rgb(0xcf, 0x5a, 0x44), // rally red (blocked)
+        }
+    }
+
     /// A near-black grayscale variant — no color, just contrast.
     pub fn mono() -> Self {
         let g = |v| Color::Rgb(v, v, v);
@@ -476,6 +503,7 @@ pub const THEMES: &[&str] = &[
     "catppuccin-macchiato",
     "catppuccin-frappe",
     "gruvbox",
+    "quattro-rally",
     "sunset",
     "homebrew",
     "grass",
@@ -513,6 +541,7 @@ pub fn by_name(name: &str) -> Theme {
         "catppuccin-frappe" | "frappe" => Theme::frappe(),
         "gruvbox" => Theme::gruvbox(),
         "gruvbox-light" | "gruvboxlight" => Theme::gruvbox_light(),
+        "quattro-rally" => Theme::quattro_rally(),
         "sunset" => Theme::sunset(),
         "catppuccin-latte" | "latte" => Theme::latte(),
         "sky" => Theme::sky(),
@@ -535,6 +564,7 @@ pub fn describe(name: &str) -> &'static str {
         "catppuccin-frappe" | "frappe" => "lightest dark Catppuccin",
         "gruvbox" => "retro warm dark, yellow accent",
         "gruvbox-light" | "gruvboxlight" => "Gruvbox on cream, burnt orange",
+        "quattro-rally" => "soft dark, rally-gold accent",
         "sunset" => "neon synthwave, hot-pink",
         "catppuccin-latte" | "latte" => "light Catppuccin, warm",
         "sky" => "light paper, sky-blue accent",
