@@ -62,6 +62,8 @@ bohay agent name codex --pane <id>       # `pane name` is a synonym; grammar [a-
 
 A target for `agent send`, `agent keys`, and `agent read` is a name, a pane id, or an agent kind (`claude`, `codex`, ...) when only one of that kind is running. If two agents share a kind, address them by name or pane id. When the user refers to an agent by what it is working on, read `bohay agent list` and match on `cwd` or `workspace_name`.
 
+**The `$mention` shorthand.** When the user (or another agent) writes `$name` or `$<pane-id>` in a prompt, read it as an instruction to delegate the rest of that line to that agent or pane. bohay reserves `$` for this because `@` is already your own file-mention key. So `$codex add tests to src/parse.rs` means run `bohay agent send codex "add tests to src/parse.rs"`, `$lead ...` addresses the agent named lead, and `$7 ...` addresses pane 7. If the name is unknown, run `bohay agent list` to resolve it or ask which pane is meant.
+
 **4. Hand off the task. Do NOT wait — that is the default.** Send with `agent send` and **no** `--wait`. It returns immediately, so you are not blocked. Name yourself first so the worker can report back, and tell it to do so:
 
 ```bash
