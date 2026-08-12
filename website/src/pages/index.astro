@@ -239,6 +239,7 @@ const ogImage = 'https://bohay.dev/og.png';
               <button class="tab" data-tab="git">2 ⎇ git</button>
               <button class="tab" data-tab="orch">3 ◇ orch</button>
               <button class="tab" data-tab="ctrl">4 ⠶ ctrl</button>
+              <button class="tab" data-tab="talk">5 ⇄ talk</button>
               <span class="tab plus">+</span>
             </div>
 
@@ -257,6 +258,30 @@ const ogImage = 'https://bohay.dev/og.png';
                 <div class="pane" id="pane-copilot" data-agent="copilot">
                   <div class="pane-title" id="copilot-title"><span class="pt-dot blocked"></span>copilot · ~/webapp</div>
                   <div class="pane-body" id="copilot-body"></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Agents talking to each other: a job handed down the line with
+                 `$name` and reported back to where it started. Four real panes in
+                 a 2x2, so it reads as the app rather than a diagram. -->
+            <div class="demo-view" id="view-talk" hidden>
+              <div class="demo-panes quad">
+                <div class="pane focused" id="pane-talk-1">
+                  <div class="pane-title" id="talk-1-title"><span class="pt-dot working"></span>claude · ~/sudos</div>
+                  <div class="pane-body" id="talk-1"></div>
+                </div>
+                <div class="pane" id="pane-talk-2">
+                  <div class="pane-title" id="talk-2-title"><span class="pt-dot idle"></span>codex · ~/sudos</div>
+                  <div class="pane-body" id="talk-2"></div>
+                </div>
+                <div class="pane" id="pane-talk-3">
+                  <div class="pane-title" id="talk-3-title"><span class="pt-dot idle"></span>gemini · ~/sudos</div>
+                  <div class="pane-body" id="talk-3"></div>
+                </div>
+                <div class="pane" id="pane-talk-4">
+                  <div class="pane-title" id="talk-4-title"><span class="pt-dot idle"></span>copilot · ~/sudos</div>
+                  <div class="pane-body" id="talk-4"></div>
                 </div>
               </div>
             </div>
@@ -906,12 +931,16 @@ const ogImage = 'https://bohay.dev/og.png';
         main: () => mainHint(),
         git: () => 'the git tab: click the sections · commits · flow · branches · PRs',
         orch: () => 'the orchestration board · click a task to select it',
+        ctrl: () => 'Mission Control · every agent in one list · click a row to jump',
+        talk: () => 'agents talking · $name hands the rest of the line to that agent',
       };
       let activeTab = 'main';
 
       function setStatusHint() {
         const note = $('status-note');
-        if (note) note.textContent = STATUS_HINTS[activeTab]();
+        // Fall back rather than throw: a tab without a hint used to call
+        // `undefined()` and take the rest of the click handler with it.
+        if (note) note.textContent = (STATUS_HINTS[activeTab] ?? mainHint)();
       }
       function showGit(section: string) {
         const body = $('gbody');
@@ -930,9 +959,71 @@ const ogImage = 'https://bohay.dev/og.png';
           r.addEventListener('click', () => renderOrch(Number(r.getAttribute('data-row'))))
         );
       }
+      /* One job handed down the line and reported back: claude briefs codex,
+         codex hands the tests to gemini, gemini hands the docs to copilot, and
+         copilot reports the whole thing back to claude. Every hop is a `$name`.
+
+         `p` is the pane, `wait` the pause *after* the line lands. Paced to be
+         read rather than skimmed, with a long beat at the end before it loops. */
+      type TalkStep = { p: 1 | 2 | 3 | 4; html: string; wait: number; dot?: string };
+      const M = (n: string) => `<span class="mention">$${n}</span>`;
+      const TALK_STEPS: TalkStep[] = [
+        { p: 1, html: `<span class="c-dim">❯</span> ship the new parser end to end`, wait: 1100 },
+        { p: 1, html: `<span class="c-dim">⏺</span> Splitting this three ways.`, wait: 1300 },
+        { p: 1, html: `<span class="c-dim">❯</span> ${M('codex')} implement <span class="c-acc">src/parse.rs</span>`, wait: 900 },
+        { p: 1, html: `<span class="c-mint">→ sent to codex</span> <span class="c-dim">· not waiting</span>`, wait: 1400, dot: 'done' },
+
+        { p: 2, html: `<span class="c-acc">⇄</span> from <span class="c-acc">claude</span>: implement src/parse.rs`, wait: 1200, dot: 'working' },
+        { p: 2, html: `<span class="c-grn">✓</span> Edit <span class="c-acc">src/parse.rs</span> <span class="c-dim">(+214 -6)</span>`, wait: 1500 },
+        { p: 2, html: `<span class="c-dim">❯</span> ${M('gemini')} write tests for the parser`, wait: 900 },
+        { p: 2, html: `<span class="c-mint">→ sent to gemini</span>`, wait: 1400, dot: 'done' },
+
+        { p: 3, html: `<span class="c-acc">⇄</span> from <span class="c-acc">codex</span>: write tests for the parser`, wait: 1200, dot: 'working' },
+        { p: 3, html: `<span class="c-grn">✓</span> Added <span class="c-acc">31 cases</span> <span class="c-dim">(+402 -0)</span>`, wait: 1300 },
+        { p: 3, html: `<span class="c-grn">✓</span> cargo test: <span class="c-grn">174 passed</span>`, wait: 1500 },
+        { p: 3, html: `<span class="c-dim">❯</span> ${M('copilot')} document the parser API`, wait: 900 },
+        { p: 3, html: `<span class="c-mint">→ sent to copilot</span>`, wait: 1400, dot: 'done' },
+
+        { p: 4, html: `<span class="c-acc">⇄</span> from <span class="c-acc">gemini</span>: document the parser API`, wait: 1200, dot: 'working' },
+        { p: 4, html: `<span class="c-grn">✓</span> Edit <span class="c-acc">docs/parser.md</span>`, wait: 1400 },
+        { p: 4, html: `<span class="c-dim">❯</span> ${M('claude')} parser + tests + docs are done`, wait: 900 },
+        { p: 4, html: `<span class="c-mint">→ reported back to claude</span>`, wait: 1500, dot: 'done' },
+
+        { p: 1, html: `<span class="c-acc">⇄</span> from <span class="c-acc">copilot</span>: parser + tests + docs are done`, wait: 1300, dot: 'working' },
+        { p: 1, html: `<span class="c-grn">✓</span> 3 agents <span class="c-dim">·</span> 174 tests <span class="c-dim">·</span> one prompt`, wait: 3800, dot: 'done' },
+      ];
+      let talkTimer = 0;
+      function talkDot(p: number, status: string) {
+        $(`talk-${p}-title`)?.querySelector('.pt-dot')
+          ?.setAttribute('class', `pt-dot ${status}`);
+      }
+      /* Focus follows the baton, so it is always obvious which pane is speaking. */
+      function talkFocus(p: number) {
+        for (let i = 1; i <= 4; i++) $(`pane-talk-${i}`)?.classList.toggle('focused', i === p);
+      }
+      function talkStep(i: number) {
+        if (activeTab !== 'talk') return; // never animate a hidden tab
+        if (i === 0) {
+          for (let p = 1; p <= 4; p++) {
+            const b = $(`talk-${p}`);
+            if (b) b.innerHTML = '';
+            talkDot(p, p === 1 ? 'working' : 'idle');
+          }
+        }
+        const st = TALK_STEPS[i];
+        push(`talk-${st.p}`, st.html, 6);
+        talkFocus(st.p);
+        if (st.dot) talkDot(st.p, st.dot);
+        talkTimer = window.setTimeout(() => talkStep((i + 1) % TALK_STEPS.length), st.wait);
+      }
+
       function switchTab(tab: string) {
         activeTab = tab;
-        ['main', 'git', 'orch', 'ctrl'].forEach((t) => {
+        // The talk demo runs on a timer, so it starts and stops with its tab
+        // rather than ticking forever behind a hidden panel.
+        window.clearTimeout(talkTimer);
+        if (tab === 'talk') talkStep(0);
+        ['main', 'git', 'orch', 'ctrl', 'talk'].forEach((t) => {
           const v = $(`view-${t}`);
           if (v) (v as HTMLElement).hidden = t !== tab;
         });
@@ -1200,12 +1291,102 @@ const ogImage = 'https://bohay.dev/og.png';
         max-width: 1440px; margin: 0 auto; background: var(--bg); position: relative;
         border-inline: 1px solid var(--line);
       }
-      /* The footer's own top rule closes the page, so the last section would
-         otherwise draw a second, shorter line just above it. */
-      .page-frame > section:last-child { border-bottom: 0; }
+      /* ── Ben-Day dot field ────────────────────────────────────────────────
+         A halftone screen, like comic newsprint, on the two sections that are
+         *backdrop* rather than content: the hero and the closing call to action.
+         Deliberately not the whole page. Behind the feature list and the
+         orchestration section it reads as texture inside a card, which is noise;
+         behind an opening and a closing it reads as a lit surface.
+
+         **Registration.** Both lattices share one pitch, and the second sits
+         exactly half a tile off on *both* axes. Together they form the 45-degree
+         staggered screen a real halftone uses. (Two different pitches would beat
+         against each other into a moire instead, which is what makes a dot
+         background look like a mistake.)
+
+         **The pulse.** The two lattices breathe on *close but unequal* cycles, so
+         they slowly beat against each other: sometimes both bright, and the
+         screen is dense and high contrast; sometimes opposed, and the dots appear
+         to shimmer diagonally between the two registrations; sometimes both low,
+         and it settles back. That drift is where the contrast comes from. Locking
+         them to exact antiphase was the first attempt and it is worse: the total
+         ink stays constant, so nothing ever swells, and the fixed period reads as
+         a metronome. Unequal cycles make the field evolve over ~50s without ever
+         repeating in an obvious way.
+
+         **Cost.** No DOM, two pseudo-elements per section, and `opacity` is the
+         only animated property, so the compositor never repaints or relayouts.
+         The mask is static. Writing "a lot of dots" as real elements would be the
+         obvious approach and also the slowest.
+
+         Tune from the variables below rather than by editing the gradients. */
+      :root {
+        --dot-pitch: 20px;   /* one pitch for both lattices; they must register */
+        --dot-r: 1.1px;      /* dot radius */
+        --dot-alpha: 0.2;    /* ink strength, before the pulse */
+        /* Deliberately not multiples of each other: coprime-ish cycles beat
+           slowly instead of locking into a visible rhythm. */
+        --dot-cycle-a: 9s;
+        --dot-cycle-b: 11s;
+      }
+      .hero::before, .hero::after,
+      .cta-repo::before, .cta-repo::after {
+        content: ''; position: absolute; inset: 0; z-index: -1;
+        pointer-events: none;
+        /* The accent, so the screen carries the active theme rather than being a
+           fixed grey that fights half the palettes. */
+        background-image: radial-gradient(
+          circle at center,
+          rgb(from var(--accent) r g b / var(--dot-alpha)) var(--dot-r),
+          transparent calc(var(--dot-r) + 0.7px)
+        );
+        background-size: var(--dot-pitch) var(--dot-pitch);
+        animation: bh-dot-pulse var(--dot-cycle-a) cubic-bezier(0.45, 0, 0.55, 1) infinite;
+      }
+      /* Half a tile across and down: the offset that makes the pair a screen.
+         Its own cycle length is what sets up the beat. */
+      .hero::after, .cta-repo::after {
+        background-position: calc(var(--dot-pitch) / 2) calc(var(--dot-pitch) / 2);
+        animation-duration: var(--dot-cycle-b);
+        animation-delay: calc(var(--dot-cycle-b) / -3);
+      }
+      /* Depth, and the reason the screen stops at the content: each section fades
+         its dots out towards the middle, where the copy and the mock sit, and
+         keeps them at the edges. Static, so it costs nothing per frame. */
+      .hero::before, .hero::after {
+        -webkit-mask-image: radial-gradient(120% 85% at 50% 40%, transparent 34%, #000 100%);
+        mask-image: radial-gradient(120% 85% at 50% 40%, transparent 34%, #000 100%);
+      }
+      .cta-repo::before, .cta-repo::after {
+        -webkit-mask-image: radial-gradient(110% 130% at 50% 50%, transparent 42%, #000 100%);
+        mask-image: radial-gradient(110% 130% at 50% 50%, transparent 42%, #000 100%);
+      }
+      /* Nothing needs lifting above the screen: `z-index: -1` puts it behind every
+         child, and the section's own `isolation: isolate` keeps it from sliding
+         behind the page background. Enumerating the children that must sit above
+         it was the first attempt, and it missed `.demo` in the hero, so the dots
+         drew straight over the mock.
+
+         `.demo` and `.cta-card` paint their own backgrounds, so the screen stops
+         at their edges rather than showing through them. */
+      /* The floor is well above zero: at the bottom of the beat the screen should
+         soften, never blink out. */
+      @keyframes bh-dot-pulse {
+        0%, 100% { opacity: 1; }
+        50%      { opacity: 0.22; }
+      }
+      /* A pulsing background is exactly what this setting is for. Both lattices
+         hold at full strength, so the screen stays complete, just still. */
+      @media (prefers-reduced-motion: reduce) {
+        .hero::before, .hero::after,
+        .cta-repo::before, .cta-repo::after { animation: none; opacity: 1; }
+      }
       section, header.hero {
         max-width: none; margin: 0; padding: 5.5rem var(--gut);
         border-bottom: 1px solid var(--line);
+        /* Each section is its own stacking context, so the dot field on the hero
+           and the call to action cannot reach past its own section. */
+        position: relative; isolation: isolate;
       }
       .accent { color: var(--accent); }
       .dim { color: var(--sub); }
@@ -1502,9 +1683,17 @@ const ogImage = 'https://bohay.dev/og.png';
       .demo-panes { flex: 1; display: flex; gap: 0; min-height: 0; }
       .pane {
         flex: 1; display: flex; flex-direction: column; min-width: 0; cursor: pointer;
-        border: 1px solid transparent;  margin: 0.5rem;
+        /* Every pane is framed, the focused one brighter, which is what bohay
+           itself does (`border` vs `border_focus`). A transparent default left
+           unfocused panes with no edge at all. */
+        border: 1px solid var(--line); margin: 0.5rem;
       }
       .pane.focused { border-color: rgb(from var(--accent) r g b / 0.45); }
+      /* Four panes talking: a 2x2 grid rather than one long row. */
+      .demo-panes.quad {
+        display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr;
+      }
+      .demo-panes.quad .pane { min-height: 0; }
       .pane-title {
         display: flex; align-items: center; gap: 0.45rem;
         color: var(--sub); font-size: 0.7rem; padding: 0.4rem 0.7rem;
@@ -1520,6 +1709,12 @@ const ogImage = 'https://bohay.dev/og.png';
       @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; } }
       .c-dim { color: var(--overlay1); } .c-acc { color: var(--accent); }
       .c-grn { color: var(--mint); } .c-mint { color: var(--mint); }
+      /* The `$name` token, so the shorthand is the thing your eye lands on. */
+      .mention {
+        color: var(--accent); font-weight: 600;
+        background: rgb(from var(--accent) r g b / 0.14);
+        padding: 0 0.25rem; border-radius: 2px;
+      }
       .perm { border: 1px solid rgb(from var(--coral) r g b / 0.35); background: rgb(from var(--coral) r g b / 0.10);  padding: 0.7rem 0.85rem; margin-top: 0.4rem; }
       .perm-q { color: var(--text); margin-bottom: 0.55rem; }
       .perm-btn {
@@ -1540,6 +1735,7 @@ const ogImage = 'https://bohay.dev/og.png';
         /* Both sidebars go: on a phone the panes need every column. */
         .demo-side, .demo-right { display: none; }
         .demo-panes { flex-direction: column; }
+        .demo-panes.quad { grid-template-columns: 1fr; grid-template-rows: repeat(4, 1fr); }
         /* The Mission Control table drops its least useful columns rather than
            scrolling sideways out of the frame. */
         .mc-row { grid-template-columns: 4.6rem 3.6rem 2.4rem minmax(0, 1fr); }
