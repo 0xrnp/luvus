@@ -105,6 +105,9 @@
   /* Display face — the wordmark, headings and labels. Tight tracking is what
      keeps a monospace heading from looking like plain terminal output. */
   --bh-display: 'IBM Plex Mono', ui-monospace, 'JetBrains Mono Variable', monospace;
+  /* The wordmark, and only the wordmark. Orbit ships a single 400 weight, so the
+     brand is never asked for a bold it does not have. */
+  --bh-brand: 'Orbit', var(--bh-display);
   /* A wash of the accent, for the few places that lift off the page. */
   --bh-glow: rgb(from var(--accent) r g b / 0.07);
   --bh-tint: rgb(from var(--accent) r g b / 0.14);
@@ -234,10 +237,15 @@ body {
    rather than floating at the head of a wide gap. */
 a.site-title,
 a.site-title span {
-  font-family: var(--bh-display);
-  font-weight: 700;
-  font-size: 1.45rem;
-  line-height: 1;
+  font-family: var(--bh-brand);
+  font-weight: 400;
+  font-size: 1.7rem;
+  /* `normal`, not `1`. A line-height of 1 is tighter than a font's own ascent +
+     descent, so the glyphs overflow their line box; with the `overflow: hidden`
+     below that showed as the wordmark's bottom half being sliced off. `normal`
+     asks the face for the box it actually needs, which also centres the glyph
+     properly inside it. */
+  line-height: normal;
   letter-spacing: -0.05em;
   color: var(--text);
 }
@@ -245,13 +253,24 @@ a.site-title span {
    override replaces — so the layout is stated here in full. */
 a.site-title {
   align-items: center;
-  gap: 0.6rem;
+  /* Tight, so the word sits against the mark. `color` here drives both: the mark
+     is drawn in `currentColor`, so the pair can never be two different whites. */
+  color: var(--text);
+  gap: 0.35rem;
   text-decoration: none;
   white-space: nowrap;
   min-width: 0;
 }
 a.site-title span {
-  overflow: hidden;
+  /* Orbit's deep descender puts its optical centre below the box centre that
+     flexbox aligns on, so the word reads low beside the mark. A transform, so
+     nothing reflows and the header keeps its height. */
+  transform: translateY(var(--brand-nudge, -0.06em));
+  /* No `overflow: hidden` here. Starlight clips the title so a long one cannot
+     push the header around, but ours is one short word and clipping is what cut
+     the descender. `white-space: nowrap` on the anchor still keeps it on one
+     line. */
+  display: block;
 }
 /* Rounded like an app icon: the artwork is a full-bleed square, so the corners
    have to be cut or it reads as a cropped screenshot. The percentage keeps the

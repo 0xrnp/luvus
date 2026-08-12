@@ -9,7 +9,7 @@ export default defineConfig({
   site: 'https://bohay.dev',
   integrations: [
     starlight({
-      title: 'bohay',
+      title: 'Bohay',
       description:
         'Mission control for your AI coding agents. Run Claude Code, Copilot, Codex, and opencode side by side, with a live view of every agent, session resume, and multi-agent orchestration.',
       // No `logo` option: Starlight would ship the full-resolution artwork to
@@ -44,6 +44,8 @@ export default defineConfig({
         '@fontsource/ibm-plex-mono/500.css',
         '@fontsource/ibm-plex-mono/600.css',
         '@fontsource/ibm-plex-mono/700.css',
+        // Orbit for the wordmark only. One weight, one place: the brand.
+        '@fontsource/orbit/400.css',
         // bohay's shipped palettes (generated from src/ui/theme.rs) followed by
         // the brand layer that maps their tokens onto Starlight's variables.
         './src/styles/themes.css',

@@ -29,7 +29,7 @@ export const THEMES: { id: string; label: string; note: string }[] = [
 ];
 
 /** The palette the site opens with for a first-time visitor. */
-export const DEFAULT_THEME = 'nord';
+export const DEFAULT_THEME = 'quattro-rally';
 
 /**
  * The palettes whose surfaces are light. bohay's registry has no light/dark

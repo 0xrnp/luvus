@@ -2,7 +2,7 @@
 
 <div align="center">
 
-<img src="assets/logo.png" alt="bohay logo" width="250" />
+<img src="assets/logo.png" alt="Bohay logo" width="220" />
 
 **Next-Gen mission control for your AI agents.**
 

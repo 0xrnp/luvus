@@ -1,16 +1,15 @@
 ---
-// The bohay mark, as a raster. Drop-in for the old `assets/logo.svg` import —
-// same `width`/`height`/`class` props — so every call site across the landing
-// pages keeps working, and the docs get the same mark through Starlight's
-// `logo` config.
+// The Bohay mark. Every call site across the landing pages and the docs goes
+// through here, so the artwork changes in one place.
 //
-// The artwork is a full-bleed square, so it is rounded like an app icon; square
-// corners read as a cropped image. Rendered at 2× for the density the marks are
-// actually displayed at (16–34px), which is small enough that the extra file
-// costs nothing.
-import { Image } from 'astro:assets';
-import logo from '../assets/logo.png';
-
+// A plain <img> pointing at the vector in public/, not `astro:assets`. This used
+// to wrap `<Image>` for one reason: the source was a 1286x1286 illustration and
+// something had to stop Starlight shipping the whole thing to draw a 34px mark.
+// The mark is now a 2 KB SVG, so it is already smaller than any raster the
+// optimiser would emit, and it stays sharp at every size it is used at here
+// (16px in the demo tab strip up to 34px in a header) with one request.
+//
+// Same props as before (`width` / `height` / `class`), so no call site changed.
 interface Props {
   width?: number;
   height?: number;
@@ -21,20 +20,24 @@ interface Props {
 const { width = 32, height, class: className, ...rest } = Astro.props;
 ---
 
-<Image
-  src={logo}
+<img
+  src="/logo.svg"
   width={width}
   height={height ?? width}
-  densities={[2]}
   alt=""
   loading="eager"
+  decoding="async"
   class:list={['bh-mark', className]}
   {...rest}
 />
 
 <style>
   .bh-mark {
+    /* The artwork is a full-bleed tile, so the corners have to be cut or it
+       reads as a cropped screenshot. A percentage keeps the curve proportional
+       at every size the mark is used at. */
     border-radius: 22%;
     object-fit: cover;
+    display: block;
   }
 </style>

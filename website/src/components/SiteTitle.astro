@@ -7,12 +7,34 @@
 // in astro.config.mjs.
 //
 // Sizing and type live with the rest of the header in styles/custom.css.
-import Logo from './Logo.astro';
+//
+// TRIAL: the luvus mark, from the same shared source the landing navs use, so
+// the two headers cannot drift apart. Revert by restoring
+// `import Logo from './Logo.astro'` and `<Logo width={34} />`.
+import { NAV_MARK } from '../lib/mark';
 
 const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
 ---
 
 <a href={siteTitleHref} class="site-title sl-flex">
-  <Logo width={34} aria-hidden="true" />
+  <span class="site-mark" aria-hidden="true" set:html={NAV_MARK}></span>
   <span translate="no">{siteTitle}</span>
 </a>
+
+<style is:global>
+  .site-title .site-mark {
+    display: block;
+    flex-shrink: 0;
+    /* Sized *from* the header, not independently of it. Starlight's bar is
+       `--sl-nav-height` with `0.75rem` of padding each side, so this is exactly
+       the space available: 40px on desktop, 32px on mobile. A fixed 42px
+       overflowed both and pushed the whole header taller. */
+    width: calc(var(--sl-nav-height) - 1.5rem);
+    height: calc(var(--sl-nav-height) - 1.5rem);
+  }
+  .site-title .site-mark svg {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+</style>

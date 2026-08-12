@@ -1,7 +1,8 @@
 // Generates public/og.png (1200×630), the social card for bohay.dev.
 //
-// Static asset, rendered here so it stays in step with the brand: the new logo
-// (src/assets/logo.png, rounded like an app icon and sized prominently), the
+// Static asset, rendered here so it stays in step with the brand: the logo
+// (public/logo.png, the white tile, rounded like an app icon and sized
+// prominently), the
 // noir palette (src/styles/themes.css :root), and JetBrains Mono (the site's
 // mono face; must be installed for fontconfig — `fc-list | grep -i jetbrains` —
 // with a `monospace` fallback so a machine without it still renders sanely).
@@ -79,7 +80,7 @@ const svg = `
 
   <!-- wordmark (logo composited by sharp at 76×76 at x=64,y=60 → centre y=98) -->
   <text x="160" y="98" font-family="${FONT}" font-size="38" font-weight="700"
-        fill="${C.text}" dominant-baseline="central">bohay</text>
+        fill="${C.text}" dominant-baseline="central">Bohay</text>
   <text x="${W - 64}" y="98" font-family="${FONT}" font-size="28" font-weight="600"
         fill="${C.accent}" text-anchor="end" dominant-baseline="central">bohay.dev</text>
 
@@ -104,7 +105,7 @@ const radius = Math.round(LOGO * 0.22);
 const mask = Buffer.from(
   `<svg width="${LOGO}" height="${LOGO}"><rect width="${LOGO}" height="${LOGO}" rx="${radius}" ry="${radius}"/></svg>`,
 );
-const logo = await sharp(join(root, 'src/assets/logo.png'))
+const logo = await sharp(join(root, 'public/logo.png'))
   .resize(LOGO, LOGO, { fit: 'cover' })
   .composite([{ input: mask, blend: 'dest-in' }])
   .png()
