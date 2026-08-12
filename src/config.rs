@@ -44,6 +44,20 @@ pub struct Config {
     /// never self-updates (installed via cargo/brew/etc).
     #[serde(default = "yes")]
     pub check_updates: bool,
+    /// Replay the CLI options an agent pane was launched with when resuming it
+    /// after a restart (docs/62): a pane started as
+    /// `claude --permission-mode … --model …` comes back with those options
+    /// instead of a bare `claude --resume <id>`.
+    ///
+    /// One switch for the feature. The *options* are already per agent — each
+    /// pane replays only what its own agent was launched with — so this is just
+    /// whether that happens at all.
+    ///
+    /// **Off by default**: a remembered option outlives the session it was set
+    /// for, and some of them widen what the agent may do without asking
+    /// (`--permission-mode bypassPermissions`), so switching it on is deliberate.
+    #[serde(default)]
+    pub resume_launch_flags: bool,
     /// Auto-install the bundled agent skill on startup so agents can delegate to
     /// each other out of the box (docs): the full skill for Claude Code, and a
     /// short pointer in the global `AGENTS.md` for Codex and opencode. Each is
@@ -215,7 +229,7 @@ pub struct NotifyConfig {
 }
 
 fn default_theme() -> String {
-    "noir".to_string()
+    "quattro-rally".to_string()
 }
 fn default_lang() -> String {
     "en".to_string()
@@ -253,6 +267,7 @@ impl Default for Config {
             layout: LayoutConfig::default(),
             notifications: NotifyConfig::default(),
             check_updates: true,
+            resume_launch_flags: false,
             install_agent_skill: true,
             keybindings: std::collections::HashMap::new(),
             mission_pricing: std::collections::HashMap::new(),
@@ -355,12 +370,12 @@ mod tests {
     #[test]
     fn defaults_and_roundtrip() {
         let c = Config::default();
-        assert_eq!(c.theme, "noir");
+        assert_eq!(c.theme, "quattro-rally");
         assert!(c.layout.show_titles);
         assert_eq!(c.layout.col_gap, 1);
         // Empty object → all defaults (forward/back compat).
         let from_empty: Config = serde_json::from_str("{}").unwrap();
-        assert_eq!(from_empty.theme, "noir");
+        assert_eq!(from_empty.theme, "quattro-rally");
         assert_eq!(from_empty.sidebar_width, SIDEBAR_WIDTH_DEFAULT);
         // Round-trip preserves values.
         // Scrollback defaults to tmux's 2 000 and is clamped to sane bounds.

@@ -73,12 +73,16 @@ impl Theme {
             text: rgb(0xca, 0xd3, 0xf5), // white (Catppuccin Macchiato text)
             accent: rgb(0xdb, 0xc6, 0x6f), // rally gold — brand, focus, selected
             sel_bg: rgb(0x3a, 0x34, 0x16), // dark gold selection
-            border: rgb(0x49, 0x4d, 0x64),
-            border_focus: rgb(0x80, 0x87, 0xa2),
-            green: rgb(0x94, 0xa1, 0x43), // moss / olive (idle)
-            mint: rgb(0xb8, 0xcf, 0x6a),  // yellow-green (done)
-            amber: rgb(0xe0, 0xa1, 0x54), // amber (working)
-            coral: rgb(0xcf, 0x5a, 0x44), // rally red (blocked)
+            // Gold frames, like matrix/ember tint theirs to their accent rather
+            // than inheriting a neutral grey. Same hue as the accent (~47°) at the
+            // same *luminance* the Macchiato greys had, so the unfocused/focused
+            // step reads exactly as before — only the colour changed.
+            border: rgb(0x5a, 0x51, 0x30), // dim gold (unfocused pane frame)
+            border_focus: rgb(0x9a, 0x8a, 0x50), // bright gold (focused pane frame)
+            green: rgb(0x94, 0xa1, 0x43),  // moss / olive (idle)
+            mint: rgb(0xb8, 0xcf, 0x6a),   // yellow-green (done)
+            amber: rgb(0xe0, 0xa1, 0x54),  // amber (working)
+            coral: rgb(0xcf, 0x5a, 0x44),  // rally red (blocked)
         }
     }
 
@@ -494,6 +498,8 @@ impl Theme {
 
 /// Built-in palette names, in display order (first is the default).
 pub const THEMES: &[&str] = &[
+    // The default leads the list, so Settings -> Theme opens on it.
+    "quattro-rally",
     "noir",
     "ocean",
     "dracula",
@@ -503,7 +509,6 @@ pub const THEMES: &[&str] = &[
     "catppuccin-macchiato",
     "catppuccin-frappe",
     "gruvbox",
-    "quattro-rally",
     "sunset",
     "homebrew",
     "grass",
@@ -546,7 +551,9 @@ pub fn by_name(name: &str) -> Theme {
         "catppuccin-latte" | "latte" => Theme::latte(),
         "sky" => Theme::sky(),
         "mono" => Theme::mono(),
-        _ => Theme::noir(),
+        "noir" => Theme::noir(),
+        // Anything unrecognised falls back to the default palette.
+        _ => Theme::quattro_rally(),
     }
 }
 
