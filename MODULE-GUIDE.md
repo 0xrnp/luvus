@@ -7,6 +7,16 @@ the complete guide: manifest reference, right-click menus, settings, docks,
 panes, environment variables, the context blob, calling back into bohay,
 distribution, and troubleshooting.
 
+**Building with an AI agent?** Point your coding agent at the module-authoring
+skill and it will know the manifest and socket API: [`skills/bohay-module/SKILL.md`](skills/bohay-module/SKILL.md).
+Install it with:
+
+```sh
+mkdir -p ~/.claude/skills/bohay-module
+curl -fsSL https://raw.githubusercontent.com/RizRiyz/bohay/main/skills/bohay-module/SKILL.md \
+  -o ~/.claude/skills/bohay-module/SKILL.md
+```
+
 Quick taste — a module is a directory with a `bohay-module.toml` manifest
 declaring argv commands, in any language, no SDK:
 

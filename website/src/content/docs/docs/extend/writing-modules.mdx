@@ -25,6 +25,25 @@ A module can reach every surface the app has:
 | **Events** | `[[events]]` | Run when agents, panes, tabs, or tasks change |
 | **Startup** | `[[startup]]` | Restore your state when the session comes up |
 
+## Author with your AI agent
+
+If you build modules with a coding agent (Claude Code, or any agent that reads
+skills), bohay ships a **module-authoring skill**. It teaches the agent this whole
+guide: the manifest tables, the `BOHAY_*` environment, the callback methods, and
+the common recipes. With it installed you can just say "add a sidebar dock listing
+my git branches" and the agent already knows the manifest and the socket API.
+
+Install it into your agent's skills folder (the block below has a copy button),
+then start your agent inside your module's directory:
+
+```sh
+mkdir -p ~/.claude/skills/bohay-module
+curl -fsSL https://raw.githubusercontent.com/RizRiyz/bohay/main/skills/bohay-module/SKILL.md \
+  -o ~/.claude/skills/bohay-module/SKILL.md
+```
+
+Prefer to read or copy it by hand? [View the skill on GitHub](https://github.com/RizRiyz/bohay/blob/main/skills/bohay-module/SKILL.md) (use the raw view's copy button).
+
 ## A module in five minutes
 
 ```
