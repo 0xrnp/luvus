@@ -133,6 +133,24 @@ impl App {
                 self.update_available = Some(version);
                 changed // repaint to show the dot only if it's news
             }
+            // The asked-for check always answers, including "nothing new", since a
+            // button that can silently do nothing reads as broken.
+            AppEvent::UpdateChecked(outcome) => {
+                match outcome {
+                    crate::update::CheckOutcome::Newer(v) => {
+                        let msg = format!("{} v{v}", self.catalog.update_available);
+                        self.update_available = Some(v);
+                        self.show_toast(msg);
+                    }
+                    crate::update::CheckOutcome::Current => {
+                        self.show_toast(self.catalog.update_current)
+                    }
+                    crate::update::CheckOutcome::Failed => {
+                        self.show_toast(self.catalog.update_failed)
+                    }
+                }
+                true
+            }
             // Handled by the server loop; never reaches here at runtime.
             AppEvent::ClientConnected { .. } | AppEvent::ClientDetach { .. } => false,
         }
@@ -216,6 +234,17 @@ impl App {
                     self.changelog_scroll = self.changelog_scroll.saturating_add(2)
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
+                    // "Check for updates" asks now and leaves the modal up, so the
+                    // answer lands where it was asked for. Tested before the
+                    // dismiss-on-any-click fallback below, which would otherwise
+                    // swallow it.
+                    if self
+                        .changelog_check_rect
+                        .is_some_and(|r| m.row == r.y && m.column >= r.x && m.column < r.right())
+                    {
+                        crate::update::check_now_reporting(self.app_tx.clone());
+                        return;
+                    }
                     // A click on a commit/PR reference (or the website row at the
                     // end) opens it and **leaves the modal up**, so several can be
                     // followed in a row. Anything else dismisses, as before.

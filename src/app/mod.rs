@@ -1310,6 +1310,9 @@ pub struct App {
     pub version_rect: Option<Rect>,
     /// The changelog modal's close button, for mouse hit-testing.
     pub changelog_close_rect: Option<Rect>,
+    /// The changelog modal's "check for updates" button. `None` when the modal is
+    /// shut, and also when the title row is too narrow to hold it.
+    pub changelog_check_rect: Option<Rect>,
     /// Clickable links on the changelog modal's **visible** rows: commit and PR
     /// refs from the notes, plus the "read it all on bohay.dev" row at the end.
     /// Rebuilt each frame from the rows actually on screen, so scrolling a link
@@ -1557,6 +1560,7 @@ impl App {
             right_sidebar_toggle_rect: None,
             version_rect: None,
             changelog_close_rect: None,
+            changelog_check_rect: None,
             changelog_link_rects: Vec::new(),
             changelog_rows: None,
             settings_icon_rect: None,
@@ -1979,6 +1983,7 @@ impl App {
             right_sidebar_toggle_rect: None,
             version_rect: None,
             changelog_close_rect: None,
+            changelog_check_rect: None,
             changelog_link_rects: Vec::new(),
             changelog_rows: None,
             settings_icon_rect: None,
