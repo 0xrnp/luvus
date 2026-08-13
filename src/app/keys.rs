@@ -684,7 +684,7 @@ impl App {
             Cmd::OpenGit => self.open_git_tab_active(),
             Cmd::OpenBoard => self.open_orch_board(),
             Cmd::OpenSettings => self.open_settings(),
-            Cmd::ToggleSidebar => self.toggle_side(crate::app::Side::Left),
+            Cmd::ToggleSidebar => self.toggle_all_sides(),
             Cmd::ToggleRightSidebar => self.toggle_side(crate::app::Side::Right),
             Cmd::ToggleAgents => self.agents_active_only = !self.agents_active_only,
             Cmd::ToggleFiles => self.toggle_files_dock(),

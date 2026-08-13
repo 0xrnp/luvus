@@ -2019,11 +2019,20 @@ impl App {
         self.save_sidebars();
     }
 
-    /// Show/hide a sidebar (runtime-only, like the original `Ctrl+Space b`; not
-    /// persisted, so a session always starts from the configured layout).
+    /// Show/hide a sidebar (runtime-only; not persisted, so a session always
+    /// starts from the configured layout). The `»`/`«` chevrons use this per side.
     pub fn toggle_side(&mut self, side: Side) {
         let s = self.sidebars.get_mut(side);
         s.visible = !s.visible;
+    }
+
+    /// Show/hide **both** sidebars at once (`Ctrl+Space b`): if either is showing,
+    /// collapse both for a full-width view; otherwise bring both back. Runtime-only
+    /// like [`toggle_side`](Self::toggle_side).
+    pub fn toggle_all_sides(&mut self) {
+        let target = !(self.sidebars.left.visible || self.sidebars.right.visible);
+        self.sidebars.left.visible = target;
+        self.sidebars.right.visible = target;
     }
 
     /// Write the current sidebar layout into `config` and persist it, mirroring
