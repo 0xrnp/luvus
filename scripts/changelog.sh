@@ -69,10 +69,31 @@ polish() {
   local subj="$1" scope body
   scope="$(printf '%s' "$subj" | sed -nE 's/^[a-zA-Z]+\(([^)]+)\)!?:.*/\1/p')"
   body="$(printf '%s' "$subj" | sed -E 's/^[a-zA-Z]+(\([^)]*\))?!?:[[:space:]]*//')"
+  # A squash-merge PR suffix is rendered as a link beside the title, not left
+  # inside the title as plain text.
+  body="$(printf '%s' "$body" | sed -E 's/[[:space:]]+\(#[0-9]+\)$//')"
   # Uppercase the first letter portably: sed's \U is GNU-only (macOS ships BSD
   # sed) and ${var^} needs bash 4 (macOS ships 3.2).
   body="$(printf '%s' "${body%"${body#?}"}" | tr '[:lower:]' '[:upper:]')${body#?}"
-  if [ -n "$scope" ]; then printf '**%s:** %s' "$scope" "$body"; else printf '%s' "$body"; fi
+  if [ -n "$scope" ]; then
+    scope="$(printf '%s' "${scope%"${scope#?}"}" | tr '[:lower:]' '[:upper:]')${scope#?}"
+    printf '**%s:** %s' "$scope" "$body"
+  else
+    printf '%s' "$body"
+  fi
+}
+
+# References follow the description so a reader sees the behavior before metadata.
+# Squash commits carry `(#N)` in their subject; direct commits have no PR link.
+refs() {
+  local subj="$1" hash="$2" pr
+  pr="$(printf '%s' "$subj" | sed -nE 's/.* \(#([0-9]+)\)$/\1/p')"
+  if [ -n "$pr" ]; then
+    printf '[`%s`](https://github.com/%s/commit/%s), [#%s](https://github.com/%s/pull/%s)' \
+      "$hash" "$REPO" "$hash" "$pr" "$REPO" "$pr"
+  else
+    printf '[`%s`](https://github.com/%s/commit/%s)' "$hash" "$REPO" "$hash"
+  fi
 }
 
 # $1 = heading   $2 = ERE of commit types to include
@@ -82,9 +103,9 @@ section() {
     [ -n "$subj" ] || continue
     printf '%s' "$subj" | grep -qiE "^($2)(\(.+\))?!?:" || continue
     printf '%s' "$subj" | grep -qiE "$NOISE" && continue
-    out+="- $(polish "$subj") ([\`${hash}\`](https://github.com/${REPO}/commit/${hash}))"$'\n'
+    out+="- $(polish "$subj") ($(refs "$subj" "$hash"))."$'\n'
   done < <(git log "$RANGE" --no-merges --pretty=tformat:'%s%x09%h')
-  [ -n "$out" ] && printf '### %s\n\n%s\n' "$1" "$out"
+  [ -n "$out" ] && printf '## %s\n\n%s\n' "$1" "$out"
   return 0
 }
 
@@ -94,9 +115,9 @@ other() {
     [ -n "$subj" ] || continue
     printf '%s' "$subj" | grep -qiE "^($KNOWN)(\(.+\))?!?:" && continue
     printf '%s' "$subj" | grep -qiE "$NOISE" && continue
-    out+="- ${subj} ([\`${hash}\`](https://github.com/${REPO}/commit/${hash}))"$'\n'
+    out+="- $(polish "$subj") ($(refs "$subj" "$hash"))."$'\n'
   done < <(git log "$RANGE" --no-merges --pretty=tformat:'%s%x09%h')
-  [ -n "$out" ] && printf '### 📦 Other\n\n%s\n' "$out"
+  [ -n "$out" ] && printf '## Other\n\n%s\n' "$out"
   return 0
 }
 
@@ -110,27 +131,27 @@ notes() {
   #
   # NOTE the hard-wrap warning below — GitHub renders release notes with GFM hard
   # line breaks, so a newline inside a paragraph shows up as a literal <br>.
-  printf '> _Write 2-4 sentences: what this release is about and who should care._\n'
+  printf '> _Write 1-2 short sentences naming the headline changes and compatibility._\n'
   printf '>\n'
-  printf '> _Then expand each bullet below into what it actually does for the reader: the behaviour, why it changed, and anything to watch out for. Drop bullets that are not user-facing._\n'
+  printf '> _Keep each bullet to one direct sentence, drop internal-only work, and delete this note._\n'
   printf '>\n'
   printf '> _Keep every paragraph and bullet on ONE line — do not hard-wrap. GitHub renders release notes with hard line breaks, so a wrapped paragraph shows a break after every line. Delete this note when done._\n\n'
 
-  section '✨ Added' 'feat'
-  section '🔧 Changed' 'change|refactor|perf|style'
-  section '🐛 Fixed' 'fix'
-  section '🧹 Maintenance' 'chore|ci|build|docs|test'
+  section 'Features' 'feat'
+  section 'Improvements' 'change|refactor|perf|style|build|docs'
+  section 'Fixes' 'fix'
   other
 
-  # %aN (not %an) applies .mailmap, so one person's several git names collapse to one.
+  # %aN applies .mailmap, so one person's several git names collapse to one.
   local authors
   authors="$(git log "$RANGE" --no-merges --pretty=tformat:'%aN' | sort -u | sed 's/^/- /')"
-  [ -n "$authors" ] && printf '### Contributors\n\n%s\n\n' "$authors"
+  [ -n "$authors" ] && printf '## Contributors\n\n%s\n\n' "$authors"
 
+  printf '## Full changelog\n\n'
   if [ -n "$PREV" ]; then
-    printf '**Full Changelog**: https://github.com/%s/compare/%s...%s\n' "$REPO" "$PREV" "$NEW"
+    printf 'https://github.com/%s/compare/%s...%s\n' "$REPO" "$PREV" "$NEW"
   else
-    printf '**Full Changelog**: https://github.com/%s/commits/%s\n' "$REPO" "$NEW"
+    printf 'https://github.com/%s/commits/%s\n' "$REPO" "$NEW"
   fi
 }
 

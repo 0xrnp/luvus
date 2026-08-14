@@ -6,6 +6,8 @@ CLAUDE.md
 RELEASING.md
 homebrew-bohay/
 .claude/
+.agents/
+
 # Local-only maintainer identity map (contains email; not for GitHub).
 .mailmap
 bohay-notch/

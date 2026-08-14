@@ -333,9 +333,9 @@ impl App {
             }
             return;
         }
-        // The changelog modal owns the mouse: the wheel scrolls it, a left click
-        // dismisses it — except on the footer link, which opens the full changelog
-        // on the website first (the modal only shows the recent releases).
+        // The changelog modal owns the mouse. Its content is safe to click without
+        // closing; only the close button or a click on the dimmed backdrop dismisses
+        // it. References stay openable and the wheel scrolls the notes.
         if self.changelog_open {
             match m.kind {
                 MouseEventKind::ScrollUp => {
@@ -345,28 +345,36 @@ impl App {
                     self.changelog_scroll = self.changelog_scroll.saturating_add(2)
                 }
                 MouseEventKind::Down(MouseButton::Left) => {
+                    let hit_rect = |r: ratatui::layout::Rect| {
+                        m.row >= r.y
+                            && m.row < r.bottom()
+                            && m.column >= r.x
+                            && m.column < r.right()
+                    };
+                    if self.changelog_close_rect.is_some_and(hit_rect) {
+                        self.changelog_open = false;
+                        return;
+                    }
                     // "Check for updates" asks now and leaves the modal up, so the
-                    // answer lands where it was asked for. Tested before the
-                    // dismiss-on-any-click fallback below, which would otherwise
-                    // swallow it.
-                    if self
-                        .changelog_check_rect
-                        .is_some_and(|r| m.row == r.y && m.column >= r.x && m.column < r.right())
-                    {
+                    // answer lands where it was asked for.
+                    if self.changelog_check_rect.is_some_and(hit_rect) {
                         crate::update::check_now_reporting(self.app_tx.clone());
                         return;
                     }
                     // A click on a commit/PR reference (or the website row at the
                     // end) opens it and **leaves the modal up**, so several can be
-                    // followed in a row. Anything else dismisses, as before.
+                    // followed in a row.
                     let hit = self
                         .changelog_link_rects
                         .iter()
-                        .find(|(r, _)| m.row == r.y && m.column >= r.x && m.column < r.right())
+                        .find(|(r, _)| hit_rect(*r))
                         .map(|(_, url)| url.clone());
                     match hit {
                         Some(url) => self.open_url(url),
-                        None => self.changelog_open = false,
+                        None if !self.changelog_modal_rect.is_some_and(hit_rect) => {
+                            self.changelog_open = false
+                        }
+                        None => {}
                     }
                 }
                 _ => {}

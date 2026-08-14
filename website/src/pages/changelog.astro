@@ -31,6 +31,10 @@ const ogImage = 'https://bohay.dev/og.png';
 // Read `changelog/*.md` from the repo at build time. `?raw` gives the file text;
 // eager so it resolves during the build rather than at runtime.
 const files = import.meta.glob('../../../changelog/*.md', { query: '?raw', import: 'default', eager: true });
+const videoFiles = import.meta.glob('../assets/video/*.mp4', { query: '?url', import: 'default', eager: true });
+const videos = Object.fromEntries(
+  Object.entries(videoFiles).map(([path, url]) => [path.split('/').pop(), url])
+);
 
 // Each file starts with `---\nversion: vX.Y.Z\ndate: YYYY-MM-DD\n---`. Pull those
 // out and hand the rest to the Markdown renderer.
@@ -44,7 +48,25 @@ const parse = (path, text) => {
     }
   }
   const tag = meta.version || (path.split('/').pop() || '').replace(/\.md$/, '');
-  return { tag, date: meta.date || '', body: m ? text.slice(m[0].length) : text };
+  return {
+    tag,
+    date: meta.date || '',
+    body: m ? text.slice(m[0].length) : text,
+    video: meta.video || '',
+    videoTitle: meta.video_title || '',
+    videoCaption: meta.video_caption || '',
+  };
+};
+
+// Releases with media keep their opening summary above the demo, then continue
+// with the normal notes below it. GitHub and the terminal app still receive the
+// same clean Markdown because the media configuration lives in front matter.
+const splitLead = (body) => {
+  const text = body.trim();
+  const boundary = text.search(/\r?\n\r?\n/);
+  return boundary === -1
+    ? { lead: text, rest: '' }
+    : { lead: text.slice(0, boundary), rest: text.slice(boundary).trim() };
 };
 
 // Newest first, comparing version numbers rather than strings so v0.10.0 sorts
@@ -64,13 +86,21 @@ const parsed = Object.entries(files)
   .sort((a, b) => rank(b.tag) - rank(a.tag));
 
 const entries = await Promise.all(
-  parsed.map(async (r) => ({
-    tag: r.tag,
-    date: fmtDate(r.date),
-    url: `${RELEASES}/tag/${r.tag}`,
-    prerelease: false,
-    html: (await md.render(r.body.trim() || '_No release notes._')).code,
-  }))
+  parsed.map(async (r) => {
+    const video = r.video ? videos[r.video] || '' : '';
+    const { lead, rest } = video ? splitLead(r.body) : { lead: '', rest: r.body.trim() };
+    return {
+      tag: r.tag,
+      date: fmtDate(r.date),
+      url: `${RELEASES}/tag/${r.tag}`,
+      prerelease: false,
+      video,
+      videoTitle: r.videoTitle,
+      videoCaption: r.videoCaption,
+      leadHtml: lead ? (await md.render(lead)).code : '',
+      html: (await md.render(rest || (lead ? '' : '_No release notes._'))).code,
+    };
+  })
 );
 ---
 
@@ -183,6 +213,31 @@ const entries = await Promise.all(
                     {e.prerelease && <span class="badge pre">Pre-release</span>}
                     <time class="date">{e.date}</time>
                   </div>
+                  {e.leadHtml && <div class="notes release-lead" set:html={e.leadHtml} />}
+                  {e.video && (
+                    <figure class="release-media">
+                      <video
+                        class="release-video"
+                        data-changelog-video
+                        autoplay
+                        muted
+                        loop
+                        playsinline
+                        controls
+                        preload="metadata"
+                        aria-label={e.videoTitle || `Demo for ${e.tag}`}
+                      >
+                        <source src={e.video} type="video/mp4" />
+                        Your browser cannot play this video. <a href={e.video}>Open the demo</a>.
+                      </video>
+                      {(e.videoTitle || e.videoCaption) && (
+                        <figcaption>
+                          {e.videoTitle && <strong>{e.videoTitle}</strong>}
+                          {e.videoCaption && <span>{e.videoCaption}</span>}
+                        </figcaption>
+                      )}
+                    </figure>
+                  )}
                   <div class="notes" set:html={e.html} />
                 </article>
               </li>
@@ -237,6 +292,16 @@ const entries = await Promise.all(
       </button>
     </div>
     <script>
+      // Autoplay makes short demos immediately useful, but people who request
+      // reduced motion should choose when playback starts.
+      if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        document.querySelectorAll('video[data-changelog-video]').forEach((video) => {
+          if (video instanceof HTMLVideoElement) {
+            video.autoplay = false;
+            video.pause();
+          }
+        });
+      }
     </script>
 
     <style is:global>
@@ -458,6 +523,21 @@ const entries = await Promise.all(
       .notes hr { border: none; border-top: 1px solid var(--line); margin: 1.1rem 0; }
       .notes blockquote {
         border-left: 2px solid var(--line); padding-left: 0.9rem; margin: 0.6rem 0; color: var(--sub);
+      }
+      .release-lead > :last-child { margin-bottom: 1rem; }
+      .release-media { margin: 1rem 0 1.35rem; }
+      .release-video {
+        display: block; width: 100%; height: auto; aspect-ratio: 1426 / 964;
+        background: var(--bg); border: 1px solid var(--line); object-fit: contain;
+      }
+      .release-media figcaption {
+        display: grid; gap: 0.25rem; padding: 0.75rem 0.9rem;
+        border: 1px solid var(--line); border-top: 0;
+        color: var(--sub); font-size: 0.82rem; line-height: 1.55;
+      }
+      .release-media figcaption strong {
+        color: var(--text); font-family: 'IBM Plex Mono', ui-monospace, monospace;
+        font-size: 0.84rem;
       }
 
       /* footer */

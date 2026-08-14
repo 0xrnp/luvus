@@ -80,10 +80,9 @@ fn parse(text: &str, stem: &str) -> (String, String, String) {
     (version, date, body)
 }
 
-/// Trim the note body for the in-app modal (docs): the modal shows the changelog
-/// itself, not credits, so drop the `Contributors` section and the trailing bare
-/// `Full Changelog` compare link. The website reads the raw files separately, so
-/// it still shows both.
+/// Trim the note body for the in-app modal (docs). Contributors remain visible
+/// in every output; only the trailing `Full changelog` section is removed because
+/// the modal already appends its own link to bohay.dev.
 fn clean_body(body: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
     let mut skipping = false;
@@ -91,11 +90,8 @@ fn clean_body(body: &str) -> String {
         let t = line.trim_start();
         if let Some(h) = t.strip_prefix('#') {
             // A heading ends any skipped section and may start a new one.
-            skipping = h
-                .trim_start_matches('#')
-                .trim()
-                .to_lowercase()
-                .contains("contributor");
+            let heading = h.trim_start_matches('#').trim().to_lowercase();
+            skipping = heading == "full changelog";
             if skipping {
                 continue;
             }

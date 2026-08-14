@@ -1314,6 +1314,9 @@ pub struct App {
     pub right_sidebar_toggle_rect: Option<Rect>,
     /// The sidebar version number, clickable to open the changelog modal.
     pub version_rect: Option<Rect>,
+    /// Bounds of the changelog popup. Used to distinguish harmless clicks in
+    /// its content from clicks on the dimmed backdrop that dismiss it.
+    pub changelog_modal_rect: Option<Rect>,
     /// The changelog modal's close button, for mouse hit-testing.
     pub changelog_close_rect: Option<Rect>,
     /// The changelog modal's "check for updates" button. `None` when the modal is
@@ -1565,6 +1568,7 @@ impl App {
             sidebar_toggle_rect: None,
             right_sidebar_toggle_rect: None,
             version_rect: None,
+            changelog_modal_rect: None,
             changelog_close_rect: None,
             changelog_check_rect: None,
             changelog_link_rects: Vec::new(),
@@ -1988,6 +1992,7 @@ impl App {
             sidebar_toggle_rect: None,
             right_sidebar_toggle_rect: None,
             version_rect: None,
+            changelog_modal_rect: None,
             changelog_close_rect: None,
             changelog_check_rect: None,
             changelog_link_rects: Vec::new(),

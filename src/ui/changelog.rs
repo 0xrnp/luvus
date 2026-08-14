@@ -28,6 +28,7 @@ pub(super) fn draw_changelog(f: &mut RenderTarget, area: Rect, app: &mut App, t:
     let w = area.width.saturating_sub(6).clamp(50, 92).min(area.width);
     let h = area.height.saturating_sub(2).clamp(12, 44).min(area.height);
     let modal = centered_rect(area, w, h);
+    app.changelog_modal_rect = Some(modal);
     f.render_widget(Clear, modal);
     let block = Block::new()
         .borders(Borders::ALL)
@@ -102,16 +103,27 @@ pub(super) fn draw_changelog(f: &mut RenderTarget, area: Rect, app: &mut App, t:
         );
         top += 1;
     }
-    // The upgrade command, always present so a reader always knows how to update.
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            format!("  {}", cat.update_hint),
-            Style::new().fg(t.subtext0),
-        )),
-        Rect::new(inner.x, top, inner.width, 1),
-    );
-    hline(f, inner.x, top + 1, inner.width, t);
-    top += 2; // the hint line + its separator rule
+    // Complete, copyable commands instead of a bare installer URL. The script
+    // is listed first because it works for a direct install or upgrade; package
+    // manager users can keep using the manager they originally chose.
+    let update_guide = [
+        (cat.update_hint, Style::new().fg(t.subtext0)),
+        (
+            "curl -fsSL https://bohay.dev/install.sh | sh",
+            Style::new().fg(t.text),
+        ),
+        ("brew upgrade bohay", Style::new().fg(t.text)),
+        ("cargo install bohay", Style::new().fg(t.text)),
+    ];
+    for (line, style) in update_guide {
+        f.render_widget(
+            Paragraph::new(Span::styled(format!("  {line}"), style)),
+            Rect::new(inner.x, top, inner.width, 1),
+        );
+        top += 1;
+    }
+    hline(f, inner.x, top, inner.width, t);
+    top += 1;
 
     // ── body ──
     let body = Rect::new(
@@ -273,6 +285,7 @@ fn build_rows(width: usize, t: &Theme) -> Vec<Row> {
         &[Seg {
             text: format!("↗ {}", crate::i18n::EN.changelog_full),
             url: Some(CHANGELOG_URL.to_string()),
+            bold: false,
         }],
         0,
         Style::new().fg(t.subtext0),
@@ -293,10 +306,20 @@ fn row(segs: &[Seg], off: u16, base: Style, t: &Theme) -> Row {
     let mut col = off;
     for seg in segs {
         let w = display_width(&seg.text) as u16;
+        let base = if seg.bold {
+            base.add_modifier(ratatui::style::Modifier::BOLD)
+        } else {
+            base
+        };
         match &seg.url {
             Some(url) if w > 0 => {
                 links.push((col, w, url.clone()));
-                spans.push(Span::styled(seg.text.clone(), link_style));
+                let style = if seg.bold {
+                    link_style.add_modifier(ratatui::style::Modifier::BOLD)
+                } else {
+                    link_style
+                };
+                spans.push(Span::styled(seg.text.clone(), style));
             }
             _ => spans.push(Span::styled(seg.text.clone(), base)),
         }
@@ -325,7 +348,7 @@ fn words(segs: &[Seg]) -> Vec<Vec<Seg>> {
                 }
                 continue;
             }
-            push(&mut cur, ch, &seg.url);
+            push(&mut cur, ch, &seg.url, seg.bold);
         }
     }
     if !cur.is_empty() {
@@ -336,12 +359,13 @@ fn words(segs: &[Seg]) -> Vec<Vec<Seg>> {
 
 /// Append `ch` to `out`, extending the previous run when it links to the same
 /// place — so a reference is one span, and therefore one hit rect.
-fn push(out: &mut Vec<Seg>, ch: char, url: &Option<String>) {
+fn push(out: &mut Vec<Seg>, ch: char, url: &Option<String>, bold: bool) {
     match out.last_mut() {
-        Some(last) if last.url == *url => last.text.push(ch),
+        Some(last) if last.url == *url && last.bold == bold => last.text.push(ch),
         _ => out.push(Seg {
             text: ch.to_string(),
             url: url.clone(),
+            bold,
         }),
     }
 }
@@ -368,16 +392,16 @@ fn wrap(segs: &[Seg], width: usize) -> Vec<Vec<Seg>> {
             // The space carries the link only when it sits *inside* one, so a
             // multi-word label underlines continuously while an ordinary gap
             // between a reference and the prose after it does not.
-            let joined = match (cur.last(), word.first()) {
-                (Some(a), Some(b)) if a.url == b.url => a.url.clone(),
-                _ => None,
+            let (joined_url, joined_bold) = match (cur.last(), word.first()) {
+                (Some(a), Some(b)) if a.url == b.url && a.bold == b.bold => (a.url.clone(), a.bold),
+                _ => (None, false),
             };
-            push(&mut cur, ' ', &joined);
+            push(&mut cur, ' ', &joined_url, joined_bold);
             cur_w += 1;
         }
         for seg in word {
             for ch in seg.text.chars() {
-                push(&mut cur, ch, &seg.url);
+                push(&mut cur, ch, &seg.url, seg.bold);
             }
         }
         cur_w += ww;
@@ -545,6 +569,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn latest_release_contributors_are_visible_in_the_app() {
+        let _env = crate::persist::test_env("cl-contributors");
+        let (app, _t) = open();
+        let text = rows(&app)
+            .iter()
+            .map(|row| row.line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Contributors"));
+        assert!(text.contains("RizRiyz"));
+        assert!(text.contains("RiN (@r17x)"));
+    }
+
     /// Commit and PR references in the notes are clickable, which is the whole
     /// point of carrying URLs through the parser.
     #[test]
@@ -567,14 +605,34 @@ mod tests {
         );
     }
 
-    /// A click that is not on a link still just dismisses, as it always did.
+    /// Clicking ordinary content must not make the popup disappear. The popup is
+    /// modal: only its explicit close control or the backdrop dismisses it.
     #[test]
-    fn a_click_elsewhere_only_dismisses() {
-        let _env = crate::persist::test_env("cl-dismiss");
+    fn a_click_inside_the_popup_does_not_dismiss() {
+        let _env = crate::persist::test_env("cl-inside");
         let (mut app, _t) = open();
-        let (rect, _) = app.changelog_link_rects.first().cloned().expect("a link");
-        click(&mut app, rect.x, rect.y.saturating_sub(2));
+        let modal = app.changelog_modal_rect.expect("popup bounds");
+        click(&mut app, modal.x + 1, modal.y + 2);
         assert!(app.pending_open_url.is_none());
+        assert!(app.changelog_open, "an inside click leaves the popup open");
+    }
+
+    #[test]
+    fn a_click_on_the_backdrop_dismisses() {
+        let _env = crate::persist::test_env("cl-backdrop");
+        let (mut app, _t) = open();
+        let modal = app.changelog_modal_rect.expect("popup bounds");
+        assert!(modal.x > 0 && modal.y > 0, "fixture leaves a backdrop");
+        click(&mut app, 0, 0);
+        assert!(!app.changelog_open, "a backdrop click closes the popup");
+    }
+
+    #[test]
+    fn the_close_button_dismisses() {
+        let _env = crate::persist::test_env("cl-close");
+        let (mut app, _t) = open();
+        let close = app.changelog_close_rect.expect("close button");
+        click(&mut app, close.x + 1, close.y);
         assert!(!app.changelog_open);
     }
 
@@ -620,6 +678,33 @@ mod tests {
         );
     }
 
+    #[test]
+    fn bold_release_area_survives_wrapping_and_rendering() {
+        use ratatui::style::{Modifier, Style};
+
+        let segs = crate::changelog::inline(
+            "**Panes:** Preserve scrollback ([`1192e7b`](https://x/c/1), [#39](https://x/p/39)).",
+        );
+        let wrapped = super::wrap(&segs, 80);
+        let rendered = super::row(
+            &wrapped[0],
+            0,
+            Style::new(),
+            &crate::ui::theme::Theme::noir(),
+        );
+        let title = rendered
+            .line
+            .spans
+            .iter()
+            .find(|span| span.content.contains("Panes:"))
+            .expect("area span");
+        assert!(
+            title.style.add_modifier.contains(Modifier::BOLD),
+            "the in-app area label keeps its markdown emphasis"
+        );
+        assert_eq!(rendered.links.len(), 2, "PR and commit stay clickable");
+    }
+
     /// A label with spaces in it underlines as one run, so the website row is a
     /// single link rather than one per word.
     #[test]
@@ -627,6 +712,7 @@ mod tests {
         let segs = vec![Seg {
             text: "Read the full changelog".into(),
             url: Some("https://x".into()),
+            bold: false,
         }];
         let row = super::wrap(&segs, 80);
         assert_eq!(row.len(), 1);
@@ -642,6 +728,7 @@ mod tests {
             Seg {
                 text: "one two three".into(),
                 url: Some("https://x/1".into()),
+                bold: false,
             },
         ];
         let wrapped = super::wrap(&segs, 10);
@@ -663,6 +750,50 @@ mod tests {
         let close = app.changelog_close_rect.expect("close drawn");
         assert_eq!(btn.y, close.y, "same row as the close box");
         assert_eq!(btn.right(), close.x, "sits immediately left of it");
+    }
+
+    #[test]
+    fn update_guide_shows_complete_commands() {
+        let _env = crate::persist::test_env("cl-update-guide");
+        let (_app, term) = open();
+        let screen: String = term
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("curl -fsSL https://bohay.dev/install.sh | sh"));
+        assert!(screen.contains("brew upgrade bohay"));
+        assert!(screen.contains("cargo install bohay"));
+    }
+
+    #[test]
+    fn every_newer_check_shows_the_update_in_the_popup() {
+        let _env = crate::persist::test_env("cl-update-banner");
+        let (mut app, mut term) = open();
+
+        for event in [
+            crate::event::AppEvent::UpdateAvailable("98.0.0".into()),
+            crate::event::AppEvent::UpdateChecked(crate::update::CheckOutcome::Newer(
+                "99.0.0".into(),
+            )),
+        ] {
+            app.handle_event(event);
+            term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+            let screen: String = term
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            let version = app.update_available.as_deref().expect("newer version");
+            assert!(
+                screen.contains(&format!("Update available: v{version}")),
+                "both periodic and requested checks render the available version"
+            );
+        }
     }
 
     /// On a phone-width terminal there is no room beside the title, and a button

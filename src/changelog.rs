@@ -7,7 +7,7 @@
 include!(concat!(env!("OUT_DIR"), "/changelog_gen.rs"));
 
 /// One run of inline text from a release note, with the URL it points at if it
-/// came from a markdown link.
+/// came from a markdown link and the emphasis the modal should preserve.
 ///
 /// Segments rather than a flat `String` because the modal makes commit and PR
 /// references **clickable** — the URL has to survive parsing to reach the
@@ -16,6 +16,7 @@ include!(concat!(env!("OUT_DIR"), "/changelog_gen.rs"));
 pub struct Seg {
     pub text: String,
     pub url: Option<String>,
+    pub bold: bool,
 }
 
 impl Seg {
@@ -23,22 +24,34 @@ impl Seg {
         Seg {
             text: text.into(),
             url: None,
+            bold: false,
         }
     }
 }
 
 /// Parse the inline markdown a release note uses into display segments:
-/// `**bold**` and `` `code` `` markers are dropped, and `[text](url)` becomes a
-/// segment carrying its URL. Everything else passes through unchanged.
+/// `**bold**` keeps its emphasis, `` `code` `` markers are dropped, and
+/// `[text](url)` becomes a segment carrying its URL. Everything else passes
+/// through unchanged.
 pub fn inline(s: &str) -> Vec<Seg> {
     let chars: Vec<char> = s.chars().collect();
     let mut out: Vec<Seg> = Vec::new();
     let mut buf = String::new();
     let mut i = 0;
+    let mut bold = false;
     while i < chars.len() {
         let c = chars[i];
-        // `**` bold markers → dropped.
+        // `**` bold markers toggle emphasis. Flush first so the runs on either
+        // side retain their own style through word wrapping.
         if c == '*' && chars.get(i + 1) == Some(&'*') {
+            if !buf.is_empty() {
+                out.push(Seg {
+                    text: std::mem::take(&mut buf),
+                    url: None,
+                    bold,
+                });
+            }
+            bold = !bold;
             i += 2;
             continue;
         }
@@ -56,7 +69,11 @@ pub fn inline(s: &str) -> Vec<Seg> {
                         let label: String = chars[i + 1..close].iter().collect();
                         let url: String = chars[close + 2..paren].iter().collect();
                         if !buf.is_empty() {
-                            out.push(Seg::plain(std::mem::take(&mut buf)));
+                            out.push(Seg {
+                                text: std::mem::take(&mut buf),
+                                url: None,
+                                bold,
+                            });
                         }
                         let text = strip_inline(&label);
                         // A link with no label, or one pointing nowhere, is text.
@@ -66,6 +83,7 @@ pub fn inline(s: &str) -> Vec<Seg> {
                             out.push(Seg {
                                 text,
                                 url: Some(url.trim().to_string()),
+                                bold,
                             });
                         }
                         i = paren + 1;
@@ -78,7 +96,11 @@ pub fn inline(s: &str) -> Vec<Seg> {
         i += 1;
     }
     if !buf.is_empty() {
-        out.push(Seg::plain(buf));
+        out.push(Seg {
+            text: buf,
+            url: None,
+            bold,
+        });
     }
     out
 }
@@ -153,6 +175,33 @@ mod tests {
         assert_eq!(strip_inline("array[0] value"), "array[0] value");
     }
 
+    #[test]
+    fn keeps_bold_area_and_trailing_release_links() {
+        assert_eq!(
+            inline("**Agents:** Keep exited agents at the shell ([`1192e7b`](https://x/commit/1192e7b), [#39](https://x/pull/39))."),
+            vec![
+                Seg {
+                    text: "Agents:".into(),
+                    url: None,
+                    bold: true,
+                },
+                Seg::plain(" Keep exited agents at the shell ("),
+                Seg {
+                    text: "1192e7b".into(),
+                    url: Some("https://x/commit/1192e7b".into()),
+                    bold: false,
+                },
+                Seg::plain(", "),
+                Seg {
+                    text: "#39".into(),
+                    url: Some("https://x/pull/39".into()),
+                    bold: false,
+                },
+                Seg::plain(")."),
+            ]
+        );
+    }
+
     /// The URL survives parsing, which is what makes a commit ref clickable.
     #[test]
     fn keeps_link_urls_as_segments() {
@@ -162,7 +211,8 @@ mod tests {
                 Seg::plain("see "),
                 Seg {
                     text: "#19".into(),
-                    url: Some("https://x/pull/19".into())
+                    url: Some("https://x/pull/19".into()),
+                    bold: false,
                 },
                 Seg::plain(" for more"),
             ]
@@ -174,7 +224,8 @@ mod tests {
                 Seg::plain("("),
                 Seg {
                     text: "59a2bd5".into(),
-                    url: Some("https://x/c/59a2bd5".into())
+                    url: Some("https://x/c/59a2bd5".into()),
+                    bold: false,
                 },
                 Seg::plain(")"),
             ]
@@ -192,7 +243,7 @@ mod tests {
         assert!(matches!(classify(""), Block::Blank));
         assert!(matches!(classify("### ✨ Added"), Block::Heading(h) if h == "✨ Added"));
         assert!(
-            matches!(classify("- **A** thing"), Block::Bullet { depth: 0, segs } if segs == vec![Seg::plain("A thing")])
+            matches!(classify("- **A** thing"), Block::Bullet { depth: 0, segs } if segs == vec![Seg { text: "A".into(), url: None, bold: true }, Seg::plain(" thing")])
         );
         assert!(matches!(
             classify("  - nested"),
@@ -229,18 +280,17 @@ mod tests {
         }
     }
 
-    /// The embedded notes are stripped of credits for the in-app modal (the
-    /// changelog itself, no author/contributor section or bare compare-link
-    /// footer). `build.rs::clean_body` does this; the raw files + website keep it.
+    /// The embedded notes keep contributor credits but drop the bare compare-link
+    /// footer. The modal already provides a link to the website after its notes.
     #[test]
-    fn embedded_notes_drop_the_contributor_section_and_footer() {
+    fn embedded_notes_keep_contributors_and_drop_the_footer() {
+        assert!(
+            CHANGELOG[0].2.contains("## Contributors"),
+            "the latest release keeps contributor credits in the app"
+        );
         for (_v, _d, body) in CHANGELOG {
             assert!(
-                !body.contains("### Contributors") && !body.contains("## Contributors"),
-                "the Contributors heading is stripped"
-            );
-            assert!(
-                !body.contains("Full Changelog**") && !body.contains("/compare/"),
+                !body.to_lowercase().contains("full changelog") && !body.contains("/compare/"),
                 "the trailing Full Changelog compare link is stripped"
             );
         }

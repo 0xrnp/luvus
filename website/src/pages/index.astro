@@ -709,19 +709,28 @@ const ogImage = 'https://bohay.dev/og.png';
       </p>
     </section>
 
-
     <section class="cta-repo">
-      <div class="cta-card">
+      <div class="cta-card" aria-labelledby="name-note-title">
         {ctaArt && <div class="cta-art" style={`--art:url(${ctaArt.src})`} aria-hidden="true"></div>}
 
         <div class="cta-copy">
-        <span class="cta-badge">Open source · AGPL-3.0 licensed</span>
-        <h2>If bohay saves you time, give it a star</h2>
-        <p>
-          bohay is free and fully open source. A star helps more people running AI
-          agents find it, and you are welcome to read the code, open an issue, or
-          send a pull request any time.
-        </p>
+        <div class="name-dictionary">
+          <div class="name-entry">
+            <span class="name-word">Bohay</span>
+            <span class="name-ipa" aria-label="pronounced boh AI">/boʊˈaɪ/</span>
+          </div>
+          <span class="name-respell">boh-AI · proper noun</span>
+        </div>
+
+        <div class="name-story">
+          <h2 id="name-note-title">It is short enough to type and strange enough to remember.</h2>
+          <p>
+            <strong>Why the name?</strong>
+            Search for “bohay” today and you may find something else. We want to
+            change that result with something more useful and much cooler.
+          </p>
+        </div>
+
         <div class="cta-actions">
           <a class="btn primary" href={GITHUB}>
             <svg class="cta-ic" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2.2l2.95 5.98 6.6.96-4.77 4.65 1.13 6.57L12 17.98l-5.9 3.1 1.13-6.56L2.45 9.14l6.6-.96z"/></svg>
@@ -2317,28 +2326,61 @@ const ogImage = 'https://bohay.dev/og.png';
       .hookdot { color: var(--accent); }
 
 
+      /* ── the name ────────────────────────────────────────────────────── */
+      /* The original dictionary + story content now lives in the final GitHub
+         card, opposite its artwork, instead of creating a second card. */
+      .name-dictionary {
+        display: flex; flex-direction: column; justify-content: center;
+      }
+      .name-entry {
+        display: flex; align-items: baseline; gap: 1rem; flex-wrap: wrap;
+        line-height: 1;
+      }
+      .name-word {
+        color: var(--text); font-family: 'Orbit', 'IBM Plex Mono', monospace;
+        font-size: clamp(2.6rem, 6vw, 5rem); letter-spacing: -0.065em;
+      }
+      .name-ipa {
+        color: var(--sub2); font-family: 'JetBrains Mono Variable', ui-monospace, monospace;
+        font-size: clamp(1rem, 2vw, 1.35rem); letter-spacing: -0.03em;
+      }
+      .name-respell {
+        margin-top: 1rem; color: var(--sub); font-size: 0.74rem;
+        font-family: 'JetBrains Mono Variable', ui-monospace, monospace;
+        letter-spacing: 0.04em;
+      }
+      .name-story {
+        display: flex; flex-direction: column; justify-content: center;
+        margin-top: 1.35rem; padding-top: 1.35rem;
+        border-top: 1px solid var(--line);
+      }
+      .name-story h2 {
+        max-width: 38rem; margin: 0 0 1rem;
+        font-size: clamp(1.35rem, 3vw, 2.1rem); line-height: 1.25;
+      }
+      .name-story p {
+        max-width: 43rem; color: var(--sub); font-size: 0.95rem; line-height: 1.85;
+      }
+      .name-story strong { color: var(--text); font-weight: 600; }
+
       /* ── closing call to action ──────────────────────────────────────── */
       /* Two columns across the frame: copy left, the mark right. Restores the
          card styles lost when the notch showcase's CSS block was removed. */
+      .cta-repo { padding-block: 4rem; }
       .cta-card {
-        display: grid; grid-template-columns: minmax(0, 0.5fr) minmax(0, 1fr);
-        gap: 3rem; align-items: center;
+        display: grid; grid-template-columns: minmax(0, 0.68fr) minmax(0, 1fr);
+        gap: 2rem; align-items: center;
         border: 1px solid var(--line);
         /* No bottom padding: the mark runs to the card's lower edge. */
-        padding: 2.6rem var(--gut) 0;
+        padding: 2rem var(--gut) 0;
       }
-      .cta-copy { min-width: 0; padding-bottom: 2.6rem; }
-      .cta-badge {
-        display: inline-block; font-family: var(--bh-display); font-size: 0.62rem;
-        letter-spacing: 0.16em; text-transform: uppercase; color: var(--accent);
-        margin-bottom: 0.9rem;
-      }
-      .cta-card h2 { font-size: clamp(1.4rem, 3vw, 2rem); letter-spacing: -0.035em; margin: 0 0 0.9rem; }
-      .cta-card p { color: var(--sub); max-width: 40rem; margin: 0; font-size: 0.95rem; line-height: 1.8; }
-      .cta-actions { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-top: 1.7rem; }
+      .cta-copy { min-width: 0; padding-bottom: 2rem; }
+      .cta-card h2 { font-size: clamp(1.25rem, 2.5vw, 1.7rem); letter-spacing: -0.035em; margin: 0 0 0.65rem; }
+      .cta-card p { color: var(--sub); max-width: 40rem; margin: 0; font-size: 0.88rem; line-height: 1.7; }
+      .cta-actions { display: flex; gap: 0.8rem; flex-wrap: wrap; margin-top: 1.15rem; }
       .cta-actions .btn {
         display: inline-flex; align-items: center; gap: 0.55rem;
-        padding: 0.72rem 1.5rem; font-size: 0.92rem;
+        padding: 0.6rem 1.2rem; font-size: 0.86rem;
         transition: border-color 0.15s, filter 0.15s, transform 0.15s;
       }
       .cta-actions .btn:hover { transform: translateY(-2px); }
@@ -2349,26 +2391,28 @@ const ogImage = 'https://bohay.dev/og.png';
       .cta-art {
         /* Bottom-aligned and flush: `align-self: end` puts its lower edge on the
            card's, and the card drops its bottom padding to meet it. */
-        aspect-ratio: 1; width: 100%; max-width: 26rem;
-        justify-self: start; align-self: end;
+        aspect-ratio: 1; width: 100%; max-width: 28rem;
+        justify-self: center; align-self: end;
         background: var(--overlay1);
         -webkit-mask: var(--art) center / contain no-repeat;
         mask: var(--art) center / contain no-repeat;
       }
 
       @media (max-width: 900px) {
-        .cta-card { grid-template-columns: minmax(0, 1fr); gap: 1.6rem; text-align: center; padding-bottom: 0; }
-        .cta-copy { padding-bottom: 2.2rem; }
+        .cta-card { grid-template-columns: minmax(0, 1fr); gap: 1.1rem; text-align: center; padding-bottom: 0; }
+        .cta-copy { padding-bottom: 1.8rem; }
+        .name-dictionary { align-items: center; }
+        .name-entry { justify-content: center; }
         .cta-actions { justify-content: center; }
         .cta-card p { margin-inline: auto; }
-        .cta-art { order: -1; justify-self: center; max-width: 11rem; }
+        .cta-art { order: -1; justify-self: center; max-width: 9rem; }
       }
 
 
       footer { border-top: 1px solid var(--line); margin-top: 0; }
       .foot-inner {
         max-width: 1440px; margin: 0 auto; padding: 2rem var(--gut);
-        display: flex; justify-content: flex-start; align-items: center; gap: 2.2rem; flex-wrap: wrap;
+        display: flex; justify-content: center; align-items: center; gap: 2.2rem; flex-wrap: wrap;
       }
       .foot-brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 700; }
       .foot-brand .dim { font-weight: 400; font-size: 0.85rem; }
