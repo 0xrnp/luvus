@@ -355,6 +355,35 @@ mod tests {
     }
 
     #[test]
+    fn bundled_and_plugin_skills_delegate_without_a_preflight_list() {
+        let plugin = include_str!("../plugins/bohay/skills/bohay/SKILL.md");
+        let guide = include_str!("../website/src/content/docs/docs/guides/codex-plugin.mdx");
+        let required = [
+            "bohay agent send <target> \"<message>\"` directly",
+            "Do not run `agent list` first",
+            "accept the returned pane, agent, name, and status",
+            "Only after `not_found` or `ambiguous_target`",
+            "run `bohay agent list` once",
+            "Never absorb or",
+            "perform the delegated task locally after delivery fails",
+        ];
+        for marker in required {
+            assert!(
+                SKILL.contains(marker),
+                "bundled skill is missing direct delegation guidance: {marker}"
+            );
+            assert!(
+                plugin.contains(marker),
+                "Codex plugin skill is missing direct delegation guidance: {marker}"
+            );
+        }
+        assert!(!SKILL.contains("Run `bohay agent list` against the selected session"));
+        assert!(!plugin.contains("Run `bohay agent list` against the selected session"));
+        assert!(guide.contains("the plugin does not prepend `agent list`"));
+        assert!(guide.contains("once only after `not_found` or `ambiguous_target`"));
+    }
+
+    #[test]
     fn bundled_and_plugin_skills_explain_how_to_install_a_missing_client() {
         let plugin = include_str!("../plugins/bohay/skills/bohay/SKILL.md");
         let required = [

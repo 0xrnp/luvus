@@ -24,13 +24,17 @@ Examples:
 
 For every delegation line:
 
-1. Run `bohay agent list` against the selected session.
-2. Resolve the target by live name, numeric pane id, then unique agent kind.
-3. If it resolves, run `bohay agent send <target> "<message>"` without
-   `--wait`, tell the user where it was sent, and end the turn. Do not perform
-   the delegated task yourself and do not poll.
-4. If it does not resolve, do not absorb the task. Start the requested agent
-   only when that is clearly requested or ask which live target the user meant.
+1. Run `bohay agent send <target> "<message>"` directly without `--wait`.
+   `agent send` resolves live names, numeric pane ids, and unique agent kinds
+   authoritatively. Do not run `agent list` first.
+2. On success, accept the returned pane, agent, name, and status, tell the user
+   where the work was sent, and end the turn. Do not reread or poll.
+3. Only after `not_found` or `ambiguous_target`, run `bohay agent list` once to
+   show the live choices. Never guess or retry a different target without the
+   user's choice.
+4. For any other error, report it without listing agents. Never absorb or
+   perform the delegated task locally after delivery fails. Start an agent only
+   when the user clearly requested it.
 
 Plain-language delegation requests follow the same workflow. Never delegate
 merely because another agent could help.
@@ -87,6 +91,8 @@ Use the same selected binary and socket for the entire request.
 
 - Run the requested semantic command directly. Do not prepend routine `help`,
   `ping`, status, or list calls.
+- For delegation, call `agent send` directly. Treat `agent list` as recovery
+  only after `not_found` or `ambiguous_target`.
 - Use `help` only when syntax is uncertain or a command is unsupported.
 - Reuse live IDs, names, and results already returned in the thread.
 - Trust a successful mutation response that identifies its target. Do not

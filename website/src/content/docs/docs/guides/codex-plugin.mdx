@@ -188,6 +188,12 @@ command already proves whether the production server is reachable. It also reuse
 resolved pane IDs and successful command results instead of immediately listing
 or reading the same state again.
 
+Delegation calls `agent send` directly because the server already resolves live
+names, pane IDs, and unique agent kinds. A successful response returns the pane,
+agent, name, and status, so the plugin does not prepend `agent list`. It lists
+agents once only after `not_found` or `ambiguous_target`, when live choices are
+needed to recover safely.
+
 A successful `agent start` result with `ready: true` is complete. The plugin
 does not follow it with another status or agent lookup. It waits only when the
 next requested action depends on a state transition or when you explicitly ask
