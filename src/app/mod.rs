@@ -806,6 +806,11 @@ pub struct PaneStatus {
     pub last_input: Instant,
     pub seen: bool,
     pub agent_session: Option<AgentSession>,
+    /// Consecutive successful process scans that saw this pane's shell/process
+    /// tree but not the agent bound in `agent_session`. Two confirmations mean
+    /// the agent really returned to the shell, rather than briefly disappearing
+    /// during startup/re-exec; see `apply_proc_scan`.
+    agent_absent_scans: u8,
     prev_working: bool,
     done: bool,
     /// Whether a blocked/done bell may fire. Set false after one fires; re-armed
@@ -844,6 +849,7 @@ impl PaneStatus {
                 .unwrap_or_else(Instant::now),
             seen: true,
             agent_session: None,
+            agent_absent_scans: 0,
             prev_working: false,
             done: false,
             notify_armed: true,
@@ -873,7 +879,7 @@ pub enum LinkTarget {
 /// `link.spans` are **grid** coordinates, the same space
 /// `VtEngine::for_each_cell` reports, so the renderer tests a cell directly with
 /// no arithmetic per frame.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HoverLink {
     pub pane: PaneId,
     pub link: crate::links::Link,
@@ -3311,8 +3317,52 @@ impl App {
                 next.insert(*id, cmds.clone());
             }
         }
-        let changed = next != self.proc_commands;
+        let mut lifecycle_changed = false;
+        for (id, cmds) in &next {
+            // A successful Unix scan includes at least the pane's shell. Empty
+            // means the process table could not see this root, so it is not
+            // evidence that an agent exited.
+            if cmds.is_empty() {
+                continue;
+            }
+            let base = self
+                .panes
+                .get(id)
+                .map(|p| p.command.clone())
+                .unwrap_or_default();
+            let Some(st) = self.status.get_mut(id) else {
+                continue;
+            };
+            let Some(bound_agent) = st.agent_session.as_ref().map(|s| s.agent.as_str()) else {
+                st.agent_absent_scans = 0;
+                continue;
+            };
+            if self.manifests.process_has_agent(cmds, bound_agent) {
+                st.agent_absent_scans = 0;
+                continue;
+            }
+
+            st.agent_absent_scans = st.agent_absent_scans.saturating_add(1);
+            if st.agent_absent_scans < 2 {
+                continue;
+            }
+
+            // The agent process has been absent from two real process-table
+            // snapshots. Treat that as an intentional/complete return to the
+            // shell: keeping the session here would make persistence relaunch
+            // it after a detach + later restart. If another recognised agent is
+            // already running, publish that identity while its own session hook
+            // catches up; otherwise this is now a plain shell pane.
+            st.agent_session = None;
+            st.agent_absent_scans = 0;
+            st.agent = self.manifests.agent_in_processes(cmds).unwrap_or(base);
+            lifecycle_changed = true;
+        }
+        let changed = next != self.proc_commands || lifecycle_changed;
         self.proc_commands = next;
+        if lifecycle_changed {
+            self.session_dirty = true;
+        }
         changed
     }
 
@@ -3422,6 +3472,7 @@ impl App {
     }
 
     fn focus_pane_global(&mut self, id: PaneId) {
+        let changed = self.layout().focus != id;
         let mut found = None;
         for (wi, ws) in self.workspaces.iter().enumerate() {
             for (ti, tab) in ws.tabs.iter().enumerate() {
@@ -3434,6 +3485,9 @@ impl App {
             self.active_ws = wi;
             self.workspaces[wi].active_tab = ti;
             self.workspaces[wi].tabs[ti].layout.focus = id;
+            if changed {
+                self.scroll_pane = None;
+            }
             self.mode = Mode::Normal;
         }
     }
@@ -4660,6 +4714,65 @@ mod tests {
         assert_eq!(sess.session_id, "abc-123");
     }
 
+    #[test]
+    fn exited_agent_becomes_shell_and_is_not_resumed() {
+        let _env = crate::persist::test_env("agent-exit-shell");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let id = app.layout().focus;
+        let root = app.panes.get(&id).unwrap().child_pid.unwrap();
+        let shell = app.panes.get(&id).unwrap().command.clone();
+        {
+            let st = app.status.get_mut(&id).unwrap();
+            st.agent = "claude".into();
+            st.agent_session = Some(AgentSession {
+                agent: "claude".into(),
+                session_id: "finished-session".into(),
+            });
+        }
+        let scan = |commands: &[&str]| {
+            Some(HashMap::from([(
+                root,
+                commands.iter().map(|s| s.to_string()).collect(),
+            )]))
+        };
+
+        // One shell-only observation is not enough: an agent may be starting or
+        // re-execing. Seeing it again resets the exit candidate, even when a
+        // different recognised agent appears earlier in the same process tree.
+        assert!(app.apply_proc_scan(scan(&[&shell])));
+        assert!(app.status.get(&id).unwrap().agent_session.is_some());
+        assert_eq!(app.status.get(&id).unwrap().agent_absent_scans, 1);
+        assert!(app.apply_proc_scan(scan(&[&shell, "codex", "claude"])));
+        assert!(app.status.get(&id).unwrap().agent_session.is_some());
+        assert_eq!(app.status.get(&id).unwrap().agent_absent_scans, 0);
+
+        // Two confirmed scans back at the shell clear the resume binding and
+        // dirty persistence. A detach may now leave this pane alive as a shell;
+        // a later server restart must not relaunch the exited agent.
+        app.session_dirty = false;
+        app.apply_proc_scan(scan(&[&shell]));
+        assert!(app.status.get(&id).unwrap().agent_session.is_some());
+        assert!(app.apply_proc_scan(scan(&[&shell])));
+        let st = app.status.get(&id).unwrap();
+        assert!(st.agent_session.is_none());
+        assert_eq!(st.agent, shell);
+        assert!(app.session_dirty);
+
+        let pane = persist::snapshot(&app)
+            .workspaces
+            .into_iter()
+            .flat_map(|ws| ws.tabs)
+            .flat_map(|tab| tab.panes)
+            .find(|(raw, _)| *raw == id.0)
+            .map(|(_, pane)| pane)
+            .unwrap();
+        assert_eq!(
+            pane.agent_session, None,
+            "the exited agent is not resumable"
+        );
+    }
+
     /// A pane's live name (`pane name`) survives a restart: it is re-attached to
     /// the pane's freshly allocated id on restore, so the sidebar/title keep it.
     #[test]
@@ -5322,23 +5435,23 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
         // Grab the divider and drag it 20 cells left.
-        app.handle_event(AppEvent::Mouse(mouse(
+        assert!(app.handle_event(AppEvent::Mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             line,
             area.y + 2,
-        )));
+        ))));
         assert!(app.resize_drag.is_some(), "grabbed the divider");
         let target = line.saturating_sub(20);
-        app.handle_event(AppEvent::Mouse(mouse(
+        assert!(app.handle_event(AppEvent::Mouse(mouse(
             MouseEventKind::Drag(MouseButton::Left),
             target,
             area.y + 2,
-        )));
-        app.handle_event(AppEvent::Mouse(mouse(
+        ))));
+        assert!(app.handle_event(AppEvent::Mouse(mouse(
             MouseEventKind::Up(MouseButton::Left),
             target,
             area.y + 2,
-        )));
+        ))));
         assert!(app.resize_drag.is_none(), "released the drag");
         assert!(
             width(&app, left) < before,
@@ -5356,13 +5469,102 @@ mod tests {
             .find(|(id, _)| *id == right)
             .map(|(_, r)| *r)
             .expect("right pane content rect");
-        app.handle_event(AppEvent::Mouse(mouse(
+        assert!(app.handle_event(AppEvent::Mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             content.x + 3,
             content.y + 3,
-        )));
+        ))));
         assert!(app.resize_drag.is_none(), "content press is not a resize");
         assert!(app.selection.is_some(), "content press starts a selection");
+        assert!(app.handle_event(AppEvent::Mouse(mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            content.x + 7,
+            content.y + 3,
+        ))));
+    }
+
+    #[test]
+    fn clicking_another_pane_keeps_the_scrolled_pane_at_its_position() {
+        let _env = crate::persist::test_env("scroll-focus-keeps-position");
+        use crate::event::AppEvent;
+        use ratatui::backend::TestBackend;
+        use ratatui::crossterm::event::{
+            KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+        use ratatui::Terminal;
+        use std::sync::{Arc, Mutex};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        app.run_cmd(crate::app::keys::Cmd::SplitRight);
+        let leaves = app.layout().leaves();
+        let (left, right) = (leaves[0], leaves[1]);
+
+        // Give the left pane deterministic history. Its real shell reader keeps
+        // its old engine, so it cannot race this viewport assertion.
+        let (response_tx, _response_rx) = std::sync::mpsc::channel();
+        app.panes.get_mut(&left).unwrap().engine = Arc::new(Mutex::new(
+            crate::terminal::vt::alacritty::AlacrittyEngine::new(60, 38, response_tx, 2_000),
+        ));
+        if let Some(pane) = app.panes.get(&left) {
+            let mut engine = pane.engine.lock().unwrap();
+            for i in 0..200 {
+                engine.advance(format!("history {i}\r\n").as_bytes());
+            }
+        }
+
+        app.layout_mut().focus = left;
+        let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
+        let rect = |app: &App, id| {
+            app.pane_content_rects
+                .iter()
+                .find(|(pane, _)| *pane == id)
+                .map(|(_, rect)| *rect)
+                .unwrap()
+        };
+        let left_rect = rect(&app, left);
+        let right_rect = rect(&app, right);
+        let mouse = |kind, rect: Rect| {
+            AppEvent::Mouse(MouseEvent {
+                kind,
+                column: rect.x + 2,
+                row: rect.y + 2,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+
+        assert!(app.handle_event(mouse(MouseEventKind::ScrollUp, left_rect)));
+        let stopped_at = app.panes.get(&left).unwrap().scroll_state().0;
+        assert!(stopped_at > 0, "the left pane is stopped in its history");
+        assert_eq!(app.scroll_pane, Some(left));
+
+        assert!(app.handle_event(mouse(MouseEventKind::Down(MouseButton::Left), right_rect,)));
+        assert_eq!(
+            app.layout().focus,
+            right,
+            "the click focuses the right pane"
+        );
+        assert!(
+            app.scroll_pane.is_none(),
+            "the old pane no longer owns keyboard scroll mode"
+        );
+        assert_eq!(
+            app.panes.get(&left).unwrap().scroll_state().0,
+            stopped_at,
+            "focus leaves the left viewport exactly where the user stopped"
+        );
+
+        assert!(!app.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('x'),
+            KeyModifiers::NONE,
+        ))));
+        assert_eq!(app.layout().focus, right);
+        assert_eq!(
+            app.panes.get(&left).unwrap().scroll_state().0,
+            stopped_at,
+            "typing in the right pane cannot snap the left pane to live"
+        );
     }
 
     #[test]
@@ -5390,26 +5592,26 @@ mod tests {
             modifiers: KeyModifiers::NONE,
         };
         // Grab the seam and drag it 6 columns to the right (wider).
-        app.handle_event(AppEvent::Mouse(mouse(
+        assert!(app.handle_event(AppEvent::Mouse(mouse(
             MouseEventKind::Down(MouseButton::Left),
             seam.x,
             seam.y + 3,
-        )));
+        ))));
         assert_eq!(
             app.sidebar_resize,
             Some(Side::Left),
             "grabbed the left sidebar edge"
         );
-        app.handle_event(AppEvent::Mouse(mouse(
+        assert!(app.handle_event(AppEvent::Mouse(mouse(
             MouseEventKind::Drag(MouseButton::Left),
             seam.x + 6,
             seam.y + 3,
-        )));
-        app.handle_event(AppEvent::Mouse(mouse(
+        ))));
+        assert!(app.handle_event(AppEvent::Mouse(mouse(
             MouseEventKind::Up(MouseButton::Left),
             seam.x + 6,
             seam.y + 3,
-        )));
+        ))));
         assert!(app.sidebar_resize.is_none(), "released the drag");
         assert_eq!(
             app.sidebars.left.width,
@@ -6733,11 +6935,11 @@ mod tests {
                 column: na.x + 2,
                 row: na.y + 1,
                 modifiers: KeyModifiers::NONE,
-            }));
+            }))
         };
         // Wheel down over the WORKSPACES list → it scrolls.
-        wheel(&mut app, MouseEventKind::ScrollDown);
-        wheel(&mut app, MouseEventKind::ScrollDown);
+        assert!(wheel(&mut app, MouseEventKind::ScrollDown));
+        assert!(wheel(&mut app, MouseEventKind::ScrollDown));
         draw(&mut app);
         assert_eq!(
             app.workspaces_scroll, 2,
@@ -8180,18 +8382,21 @@ mod cwd_test {
     use super::*;
 
     #[test]
-    #[ignore] // real-process timing test; flaky under parallel load. Run with --ignored.
-    fn cwd_follows_cd() {
+    fn pane_cwd_follows_cd_without_moving_its_workspace() {
+        let _env = crate::persist::test_env("pane-cwd-follows-cd");
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(80, 24, tx).unwrap();
-        std::thread::sleep(Duration::from_millis(800));
         let id = app.layout().focus;
-        // Send the cd repeatedly in case the shell wasn't ready yet.
+        let workspace_cwd = app.ws().cwd.clone();
+        let workspace_name = app.ws().name.clone();
+        let deadline = Instant::now() + Duration::from_secs(8);
+
+        // Poll a real child process up to a deadline. Repeating the idempotent
+        // command handles shells that have not finished startup yet without a
+        // fixed readiness sleep.
         let mut got = String::new();
-        for i in 0..60 {
-            if i % 5 == 0 {
-                app.panes.get(&id).unwrap().send(b"cd /tmp\r");
-            }
+        while Instant::now() < deadline {
+            app.panes.get(&id).unwrap().send(b"cd /tmp\r");
             std::thread::sleep(Duration::from_millis(100));
             app.refresh_cwds();
             got = app.panes.get(&id).unwrap().cwd.display().to_string();
@@ -8200,10 +8405,15 @@ mod cwd_test {
             }
         }
         assert!(got.contains("tmp"), "cwd did not follow cd: got '{got}'");
-        assert!(
-            app.ws().name.contains("tmp"),
-            "ws name not updated: '{}'",
-            app.ws().name
+        assert_eq!(
+            app.ws().cwd,
+            workspace_cwd,
+            "cd changes the pane cwd, not its static workspace root"
+        );
+        assert_eq!(
+            app.ws().name,
+            workspace_name,
+            "cd does not rename the static workspace"
         );
     }
 }
