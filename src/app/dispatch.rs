@@ -169,6 +169,10 @@ impl App {
         // A newly-detected resumable agent means there's a session worth saving;
         // flag a snapshot so it's captured even if we later crash (no clean exit).
         let mut agent_appeared = false;
+        // Identity changes alter which rows the AGENTS sidebar shows even when
+        // the state remains Idle. Keep this separate from `agent_appeared`:
+        // non-resumable agents still need a repaint, but not a persisted session.
+        let mut visible_identity_changed = false;
         for id in ids {
             let (title, bottom, base) = match self.panes.get(&id) {
                 Some(p) => {
@@ -261,10 +265,17 @@ impl App {
                         _ => det.agent,
                     }
                 };
+                let was_visible_agent =
+                    self.manifests.is_agent(&s.agent) || s.agent_session.is_some();
                 let agent_changed = s.agent != detected;
+                let is_visible_agent =
+                    self.manifests.is_agent(&detected) || s.agent_session.is_some();
                 s.agent = detected;
-                if agent_changed && crate::agent::is_resumable(&s.agent) {
-                    agent_appeared = true;
+                if agent_changed {
+                    visible_identity_changed |= was_visible_agent || is_visible_agent;
+                    if crate::agent::is_resumable(&s.agent) {
+                        agent_appeared = true;
+                    }
                 }
                 // The state the raw reading wants right now.
                 let desired = if s.done && det.state == State::Idle {
@@ -305,8 +316,9 @@ impl App {
         if agent_appeared {
             self.session_dirty = true;
         }
-        // A state transition (or a newly-resumable agent) changes the sidebar.
-        let changed = !changes.is_empty() || agent_appeared;
+        // State and visible identity transitions both change the sidebar. Session
+        // persistence remains limited to resumable agents via `agent_appeared`.
+        let changed = !changes.is_empty() || visible_identity_changed;
         let (sound_done, sound_blocked) = {
             let n = &self.config.notifications;
             (n.sound_on_done, n.sound_on_blocked)

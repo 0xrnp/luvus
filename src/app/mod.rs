@@ -1247,8 +1247,8 @@ pub struct App {
     /// The reused single-click **preview** file pane, if one is open — clicking
     /// another file replaces its content instead of spawning a second pane.
     pub preview_view: Option<PaneId>,
-    /// AGENTS list filter: `true` (default) shows only live (active) agents;
-    /// `false` also shows the resumable session history.
+    /// AGENTS list filter: `true` shows only live (active) agents; `false`
+    /// (the default) also shows the resumable session history.
     pub agents_active_only: bool,
     /// Last active workspace shown, to auto-reveal it on a programmatic change.
     pub last_active_ws_shown: usize,
@@ -1497,7 +1497,7 @@ impl App {
                 .unwrap_or_else(Instant::now),
             workspaces_scroll: 0,
             agents_scroll: 0,
-            agents_active_only: true,
+            agents_active_only: false,
             workspaces_area: Rect::ZERO,
             agents_area: Rect::ZERO,
             // Rooted at nothing; the first detect tick re-roots it to the active
@@ -1921,7 +1921,7 @@ impl App {
                 .unwrap_or_else(Instant::now),
             workspaces_scroll: 0,
             agents_scroll: 0,
-            agents_active_only: true,
+            agents_active_only: false,
             workspaces_area: Rect::ZERO,
             agents_area: Rect::ZERO,
             // Rooted at nothing; the first detect tick re-roots it to the active
@@ -3310,9 +3310,12 @@ impl App {
     }
 
     /// Fold a finished process scan into `proc_commands`, re-keyed from child
-    /// pids to panes. A `None` result means the scan could not run at all, so
-    /// the previous mapping is *kept* rather than cleared — dropping it would
-    /// silently demote every agent back to text-only detection.
+    /// pids to panes. Returns whether the scan directly changed visible agent
+    /// lifecycle state. Process-cache churn alone stays clean because the next
+    /// detection tick decides whether it changes an identity or status. A
+    /// `None` result means the scan could not run at all, so the previous mapping
+    /// is *kept* rather than cleared — dropping it would silently demote every
+    /// agent back to text-only detection.
     pub(crate) fn apply_proc_scan(&mut self, found: Option<HashMap<u32, Vec<String>>>) -> bool {
         self.proc_scan_inflight = false;
         let Some(by_pid) = found else { return false };
@@ -3363,12 +3366,11 @@ impl App {
             st.agent = self.manifests.agent_in_processes(cmds).unwrap_or(base);
             lifecycle_changed = true;
         }
-        let changed = next != self.proc_commands || lifecycle_changed;
         self.proc_commands = next;
         if lifecycle_changed {
             self.session_dirty = true;
         }
-        changed
+        lifecycle_changed
     }
 
     /// Fold a finished session scan into the sidebar list. Returns whether the
@@ -4745,10 +4747,16 @@ mod tests {
         // One shell-only observation is not enough: an agent may be starting or
         // re-execing. Seeing it again resets the exit candidate, even when a
         // different recognised agent appears earlier in the same process tree.
-        assert!(app.apply_proc_scan(scan(&[&shell])));
+        assert!(
+            !app.apply_proc_scan(scan(&[&shell])),
+            "the first missing scan only updates the process cache"
+        );
         assert!(app.status.get(&id).unwrap().agent_session.is_some());
         assert_eq!(app.status.get(&id).unwrap().agent_absent_scans, 1);
-        assert!(app.apply_proc_scan(scan(&[&shell, "codex", "claude"])));
+        assert!(
+            !app.apply_proc_scan(scan(&[&shell, "codex", "claude"])),
+            "seeing the bound agent again does not change visible lifecycle state"
+        );
         assert!(app.status.get(&id).unwrap().agent_session.is_some());
         assert_eq!(app.status.get(&id).unwrap().agent_absent_scans, 0);
 
@@ -4756,9 +4764,12 @@ mod tests {
         // dirty persistence. A detach may now leave this pane alive as a shell;
         // a later server restart must not relaunch the exited agent.
         app.session_dirty = false;
-        app.apply_proc_scan(scan(&[&shell]));
+        assert!(!app.handle_event(AppEvent::ProcScanned(scan(&[&shell]))));
         assert!(app.status.get(&id).unwrap().agent_session.is_some());
-        assert!(app.apply_proc_scan(scan(&[&shell])));
+        assert!(
+            app.handle_event(AppEvent::ProcScanned(scan(&[&shell]))),
+            "the confirmed exit dirties the sidebar through the event path"
+        );
         let st = app.status.get(&id).unwrap();
         assert!(st.agent_session.is_none());
         assert_eq!(st.agent, shell);
@@ -5400,6 +5411,35 @@ mod tests {
         // classify() falls back to the shell command — the exact trigger.
         app.detect_tick(Instant::now());
         assert_eq!(app.status.get(&focus).unwrap().agent, "claude");
+    }
+
+    #[test]
+    fn detect_tick_dirties_when_an_idle_non_resumable_agent_appears() {
+        let _env = crate::persist::test_env("idle-agent-sidebar-dirty");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let focus = app.layout().focus;
+        assert!(
+            !crate::agent::is_resumable("gemini"),
+            "the regression needs an agent whose identity is visible but not persisted"
+        );
+
+        app.proc_commands.insert(focus, vec!["gemini".into()]);
+        let now = Instant::now();
+        app.last_detect_at = now - Duration::from_secs(1);
+        app.last_proc_at = now;
+        app.last_sessions_at = now;
+        app.session_dirty = false;
+
+        assert!(
+            app.detect_tick(now),
+            "an idle identity change adds a sidebar row and must request a frame"
+        );
+        assert_eq!(app.status.get(&focus).unwrap().agent, "gemini");
+        assert!(
+            !app.session_dirty,
+            "a non-resumable identity repaint does not create persistence work"
+        );
     }
 
     #[test]

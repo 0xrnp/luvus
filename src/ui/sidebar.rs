@@ -939,21 +939,24 @@ mod tests {
         }];
         let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
 
-        // Default = Active: the toggle is drawn but the history row is hidden.
+        // Default = All: retained sessions remain visible after a fresh start or
+        // snapshot restore, so history never appears to have been lost.
+        assert!(!app.agents_active_only);
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
         assert_eq!(app.agents_filter_rects.len(), 2, "All/Active toggle drawn");
         assert!(buffer_contains(&term, "Active"), "toggle label present");
         assert!(
-            !buffer_contains(&term, "resume"),
-            "Active (the default) hides session history"
+            buffer_contains(&term, "resume"),
+            "All default shows session history"
         );
 
-        // All: the history row shows.
-        app.agents_active_only = false;
+        // Active: history is hidden when the user explicitly asks for live
+        // agents only.
+        app.agents_active_only = true;
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
         assert!(
-            buffer_contains(&term, "resume"),
-            "All shows session history"
+            !buffer_contains(&term, "resume"),
+            "Active hides session history"
         );
     }
 }
