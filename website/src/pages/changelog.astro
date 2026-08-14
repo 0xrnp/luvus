@@ -3,7 +3,7 @@ import jetbrainsLatin from '@fontsource-variable/jetbrains-mono/files/jetbrains-
 import plexLatin600 from '@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2?url';
 import '../styles/themes.css';
 import { THEMES, DEFAULT_THEME } from '../lib/themes';
-// The /changelog page: every release rendered as a timeline.
+// The /changelog page: every release rendered as a flat, readable list.
 //
 // The notes come from `changelog/<tag>.md` **in the repo**, which is the same
 // source `scripts/changelog.sh` publishes to the GitHub Release — so the site and
@@ -198,13 +198,10 @@ const entries = await Promise.all(
             </a>
           </div>
         ) : (
-          <ol class="timeline">
+          <ol class="release-list">
             {entries.map((e, i) => (
               <li class="entry">
-                <div class="rail">
-                  <span class={i === 0 && !e.prerelease ? 'dot latest' : 'dot'} />
-                </div>
-                <article class="card">
+                <article class="release">
                   <div class="chead">
                     <a class="version" href={e.url}>
                       {e.tag}
@@ -425,44 +422,15 @@ const entries = await Promise.all(
       .btn.primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
       .btn.primary:hover { filter: brightness(1.08); color: var(--bg); }
 
-      /* timeline */
-      /* Between the extremes we tried: 800px left all the slack on the right,
-         full-bleed (1355px) ran the prose to ~185 characters a line. 64rem
-         centred keeps the entries substantial without the text becoming hard
-         to track. */
+      /* Flat release list. The page gutters are the only horizontal chrome, so
+         notes keep their useful width on phones without becoming too long to
+         scan on a desktop. */
       .log { max-width: 64rem; margin-inline: auto; padding-top: 1rem; }
       .empty { text-align: center; color: var(--sub); display: grid; gap: 1.2rem; justify-items: center; padding: 3rem 0; }
-      .timeline { list-style: none; padding: 0; margin: 0; }
-      .entry { display: grid; grid-template-columns: 26px 1fr; gap: 1rem; }
-      .rail { position: relative; }
-      /* the vertical thread, drawn between dots */
-      .rail::before {
-        content: ''; position: absolute; left: 12px; top: 8px; bottom: -0.8rem; width: 2px;
-        background: var(--line);
-      }
-      .entry:last-child .rail::before {
-        bottom: auto; height: 26px;
-        background: none;
-      }
-      /* Centred on the thread. `box-sizing: border-box` is global, so the 12px
-         width already includes the 2px border — the dot's centre is
-         `left + 6`, and the thread's is `12 + 1`. At left:5 it sat 2px wide of
-         the line. */
-      .dot {
-        position: absolute; left: 7px; top: 24px; width: 12px; height: 12px; border-radius: 50%;
-        background: var(--bg2); border: 2px solid var(--border);
-      }
-      .dot.latest {
-        background: var(--accent); border-color: var(--accent);
-      }
-      .card {
-        min-width: 0;
-        border: 1px solid var(--line);
-        background: none;
-        padding: 1.35rem 1.6rem 1.15rem; margin-bottom: 1.7rem;
-        transition: border-color 0.18s, transform 0.18s;
-      }
-      .card:hover { border-color: rgb(from var(--accent) r g b / 0.28); transform: translateY(-2px); }
+      .release-list { list-style: none; padding: 0; margin: 0; }
+      .entry { border-bottom: 1px solid var(--line); }
+      .entry:last-child { border-bottom: 0; }
+      .release { min-width: 0; padding: 1.6rem 0 1.8rem; }
       .chead { display: flex; align-items: center; gap: 0.7rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
       .version {
         font-family: 'IBM Plex Mono', monospace; font-weight: 700; font-size: 1.12rem;
@@ -553,7 +521,8 @@ const entries = await Promise.all(
 
       @media (max-width: 760px) {
         section, header.page-hero { padding: 3rem 1.25rem; }
-        .card { padding: 1.15rem 1.2rem 1rem; }
+        .log { padding-top: 0.5rem; padding-inline: 1rem; }
+        .release { padding-block: 1.35rem 1.55rem; }
         .nav-links { gap: 1rem; }
       }
 
