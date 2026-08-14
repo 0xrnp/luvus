@@ -6663,6 +6663,35 @@ mod tests {
     }
 
     #[test]
+    fn codex_pane_menu_offers_and_runs_native_fork() {
+        let _env = crate::persist::test_env("fork-codex-pane-menu");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let src = app.layout().focus;
+        let before = app.layout().len();
+        {
+            let st = app.status.get_mut(&src).unwrap();
+            st.agent = "codex".into();
+            st.agent_session = Some(AgentSession {
+                agent: "codex".into(),
+                session_id: "019c1234-abcd-7890-abcd-ef0123456789".into(),
+            });
+        }
+
+        app.open_pane_menu(src, 1, 1);
+        assert!(
+            app.pane_menu_items().contains(&PaneMenuItem::ForkPane),
+            "right-click menu exposes fork for Codex"
+        );
+        app.pane_menu_action(PaneMenuItem::ForkPane);
+
+        assert_eq!(app.layout().len(), before + 1, "Codex fork opens a pane");
+        let fork = app.layout().focus;
+        assert_ne!(fork, src);
+        assert_eq!(app.status.get(&fork).unwrap().agent, "codex");
+    }
+
+    #[test]
     fn sidebar_lists_scroll() {
         use ratatui::backend::TestBackend;
         use ratatui::crossterm::event::{MouseEvent, MouseEventKind};
