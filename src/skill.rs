@@ -290,6 +290,127 @@ mod tests {
     }
 
     #[test]
+    fn bundled_and_plugin_skills_document_layout_moves() {
+        let plugin = include_str!("../plugins/bohay/skills/bohay/SKILL.md");
+        let required = [
+            "bohay pane move <pane-id> --tab <tab-number>",
+            "bohay pane move <pane-id> --new-tab",
+            "bohay tab move <from> <to>",
+            "Tab numbers are 1-based",
+        ];
+        for marker in required {
+            assert!(
+                SKILL.contains(marker),
+                "bundled skill is missing layout command marker: {marker}"
+            );
+            assert!(
+                plugin.contains(marker),
+                "Codex plugin skill is missing layout command marker: {marker}"
+            );
+        }
+        assert!(
+            ADVANCED_CONTROL.contains("bohay pane move <id>"),
+            "advanced control reference is missing pane move safety guidance"
+        );
+        assert!(
+            ADVANCED_CONTROL.contains("move <from> <to>")
+                && ADVANCED_CONTROL.contains("tab positions are 1-based"),
+            "advanced control reference is missing tab move safety guidance"
+        );
+    }
+
+    #[test]
+    fn codex_plugin_documents_native_agent_forks() {
+        let plugin = include_str!("../plugins/bohay/skills/bohay/SKILL.md");
+        let manifest = include_str!("../plugins/bohay/.codex-plugin/plugin.json");
+        let metadata = include_str!("../plugins/bohay/skills/bohay/agents/openai.yaml");
+        let guide = include_str!("../website/src/content/docs/docs/guides/codex-plugin.mdx");
+
+        let skill_markers = [
+            "bohay agent get <target>",
+            "bohay agent fork <target> [--name <alias>] [--no-focus]",
+            "Native forks currently support Claude, Codex, and Pi",
+            "`unsupported_agent`, `session_unknown`, or `spawn_failed`",
+            "Do not approximate a failed fork",
+        ];
+        for marker in skill_markers {
+            assert!(
+                SKILL.contains(marker),
+                "bundled skill is missing native fork guidance: {marker}"
+            );
+            assert!(
+                plugin.contains(marker),
+                "Codex plugin skill is missing native fork guidance: {marker}"
+            );
+        }
+
+        assert!(
+            ADVANCED_CONTROL.contains("bohay agent fork"),
+            "advanced control reference is missing agent fork safety guidance"
+        );
+        assert!(manifest.contains("Fork a supported live Bohay agent"));
+        assert!(metadata.contains("Use $bohay to fork a supported live agent"));
+        assert!(guide.contains("### Fork an agent session"));
+        assert!(guide.contains("bohay agent fork reviewer --name experiment --no-focus"));
+    }
+
+    #[test]
+    fn bundled_and_plugin_skills_explain_how_to_install_a_missing_client() {
+        let plugin = include_str!("../plugins/bohay/skills/bohay/SKILL.md");
+        let required = [
+            "Only after an attempted Bohay action cannot run because command lookup finds",
+            "no `bohay` client, report that Bohay is not installed and stop",
+            "curl -fsSL https://bohay.dev/install.sh | sh",
+            "brew install RizRiyz/bohay/bohay",
+            "cargo install bohay",
+            "Do not show this",
+            "preemptively or for socket, permission, server, or other command",
+            "failures",
+        ];
+        for marker in required {
+            assert!(
+                SKILL.contains(marker),
+                "bundled skill is missing installation guidance: {marker}"
+            );
+            assert!(
+                plugin.contains(marker),
+                "Codex plugin skill is missing installation guidance: {marker}"
+            );
+        }
+    }
+
+    #[test]
+    fn bundled_and_plugin_skills_require_explicit_bohay_intent() {
+        let plugin = include_str!("../plugins/bohay/skills/bohay/SKILL.md");
+        let required = [
+            "Use only for a line beginning with `=target message`",
+            "an explicit request naming Bohay",
+            "a request to delegate to a named live Bohay agent or pane",
+            "Do not use for ordinary coding, file edits, Git operations, tests",
+            "unless the user explicitly connects the request to Bohay",
+            "Being inside Bohay does not trigger this skill by itself",
+        ];
+        for marker in required {
+            assert!(
+                SKILL.contains(marker),
+                "bundled skill is missing explicit trigger guidance: {marker}"
+            );
+            assert!(
+                plugin.contains(marker),
+                "Codex plugin skill is missing explicit trigger guidance: {marker}"
+            );
+        }
+        assert!(
+            !SKILL.contains("Also use when asked to delegate work, inspect or control Bohay"),
+            "bundled skill still has the broad automatic trigger"
+        );
+        assert!(
+            !plugin.contains("Also use when asked to delegate work, inspect or control Bohay"),
+            "Codex plugin skill still has the broad automatic trigger"
+        );
+    }
+
+    #[test]
     fn skill_valid_accepts_a_real_skill_and_rejects_junk() {
         assert!(skill_valid(SKILL), "the bundled skill validates");
         assert!(!skill_valid(""), "empty is rejected");

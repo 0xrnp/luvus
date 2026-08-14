@@ -30,6 +30,7 @@ tabs:
   tab list                   list tabs in the current workspace
   tab new                    new tab
   tab focus <n>              focus tab n (1-based)
+  tab move <from> <to>       reorder tabs in the current workspace (1-based)
   tab rename <name>          name a tab (--tab N to target one; empty clears it)
   tab close [<n>]            close a tab (default: active)
 
@@ -37,6 +38,7 @@ panes / agents:
   pane list                  list panes in the current tab
   pane split [<id>] [--down] [--no-focus]   split a pane (default: side by side)
   pane focus <id>            focus a pane (jumps to its workspace/tab)
+  pane move [<id>] (--tab <n> | --new-tab)  move a pane within its workspace
   pane run [<id>] <cmd...>   run a command in a pane
   pane send [<id>] <text>    send raw text to a pane
   pane read [<id>]           print a pane's recent output
@@ -46,6 +48,8 @@ panes / agents:
   agent list                 list every agent across all workspaces/tabs
   agent start <name> --kind <k> [--pane <id> | --anchor <id>] [--down] [--timeout <s>] [-- <args>]
                              spawn beside an anchor or reuse a pane, wait until ready, name it
+  agent fork <target> [--name <alias>] [--no-focus]
+                             fork a supported agent's session into a sibling pane
   agent name <name>          alias the current agent, same as pane name (--clear to drop)
   agent send <target> <text> [--wait] [--until STATE] [--timeout <s>]
                              prompt an agent (target = a name, pane id, or kind)
