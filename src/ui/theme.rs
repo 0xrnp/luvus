@@ -1,7 +1,116 @@
 //! Color palette. "bohay vr46" — a near-black dark UI with a fluorescent
 //! stabilo/Valentino-Rossi green accent for active/selected elements.
 
+use crate::terminal::theme_probe::TerminalColors;
 use ratatui::style::Color;
+
+// ── Theme derivation from terminal colors ───────────────────────────────────
+
+fn luminance(rgb: [u8; 3]) -> f32 {
+    0.2126 * (rgb[0] as f32 / 255.0)
+        + 0.7152 * (rgb[1] as f32 / 255.0)
+        + 0.0722 * (rgb[2] as f32 / 255.0)
+}
+
+fn blend_rgb(a: [u8; 3], b: [u8; 3], t: f32) -> Color {
+    let f = |i: usize| (a[i] as f32 + (b[i] as f32 - a[i] as f32) * t).clamp(0.0, 255.0) as u8;
+    Color::Rgb(f(0), f(1), f(2))
+}
+
+fn pal(c: [u8; 3]) -> Color {
+    Color::Rgb(c[0], c[1], c[2])
+}
+
+impl Theme {
+    /// A zero-probe terminal theme. `Reset` follows the terminal's configured
+    /// foreground/background and ANSI indices follow its palette, so selecting
+    /// Terminal never flashes or falls back to a bundled bohay theme. A
+    /// successful OSC probe replaces this with the richer derived palette.
+    pub fn terminal_native() -> Self {
+        let ansi = Color::Indexed;
+        Theme {
+            crust: Color::Reset,
+            mantle: Color::Reset,
+            base: Color::Reset,
+            surface0: Color::Reset,
+            surface1: ansi(8),
+            overlay0: ansi(8),
+            overlay1: ansi(7),
+            subtext0: ansi(8),
+            subtext1: ansi(7),
+            text: Color::Reset,
+            accent: ansi(4),
+            sel_bg: ansi(8),
+            border: ansi(8),
+            border_focus: ansi(7),
+            green: ansi(2),
+            mint: ansi(6),
+            amber: ansi(3),
+            coral: ansi(1),
+        }
+    }
+
+    pub fn from_terminal(c: &TerminalColors) -> Self {
+        let (bg, fg) = (c.bg, c.fg);
+        let is_dark = luminance(bg) < luminance(fg);
+        // palette[8] (bright black) is the terminal designer's chosen "dim/elevated"
+        // color — blend toward it for surfaces so the tint matches the scheme.
+        let dim = c.palette[8];
+        let base = Self::from_terminal_base(c);
+
+        if is_dark {
+            Theme {
+                crust: blend_rgb(bg, [0, 0, 0], 0.15),
+                mantle: blend_rgb(bg, [0, 0, 0], 0.07),
+                surface0: blend_rgb(bg, dim, 0.35),
+                surface1: blend_rgb(bg, dim, 0.70),
+                subtext0: blend_rgb(bg, fg, 0.62),
+                subtext1: blend_rgb(bg, fg, 0.78),
+                sel_bg: blend_rgb(bg, c.palette[4], 0.18),
+                border: blend_rgb(bg, dim, 0.90),
+                border_focus: blend_rgb(bg, fg, 0.38),
+                ..base
+            }
+        } else {
+            Theme {
+                crust: blend_rgb(bg, [255, 255, 255], 0.40),
+                mantle: blend_rgb(bg, [255, 255, 255], 0.20),
+                surface0: blend_rgb(bg, dim, 0.30),
+                surface1: blend_rgb(bg, dim, 0.60),
+                subtext0: blend_rgb(bg, fg, 0.55),
+                subtext1: blend_rgb(bg, fg, 0.70),
+                sel_bg: blend_rgb(bg, c.palette[4], 0.15),
+                border: blend_rgb(bg, dim, 0.85),
+                border_focus: blend_rgb(bg, fg, 0.45),
+                ..base
+            }
+        }
+    }
+
+    fn from_terminal_base(c: &TerminalColors) -> Self {
+        let (bg, fg) = (c.bg, c.fg);
+        Theme {
+            crust: Color::Reset,
+            mantle: Color::Reset,
+            base: pal(bg),
+            surface0: Color::Reset,
+            surface1: Color::Reset,
+            overlay0: blend_rgb(bg, fg, 0.28),
+            overlay1: blend_rgb(bg, fg, 0.40),
+            subtext0: Color::Reset,
+            subtext1: Color::Reset,
+            text: pal(fg),
+            accent: pal(c.palette[4]),
+            sel_bg: Color::Reset,
+            border: Color::Reset,
+            border_focus: Color::Reset,
+            green: pal(c.palette[2]),
+            mint: pal(c.palette[6]),
+            amber: pal(c.palette[3]),
+            coral: pal(c.palette[1]),
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Theme {
@@ -516,6 +625,9 @@ pub const THEMES: &[&str] = &[
     "catppuccin-latte",
     "gruvbox-light",
     "mono",
+    // Terminal is capability-derived rather than a bundled palette, and is
+    // newest, so keep it after the built-in themes.
+    "terminal",
 ];
 
 /// Map a stored theme name onto its current registry name. The Catppuccin
@@ -532,9 +644,11 @@ pub fn canonical(name: &str) -> &str {
     }
 }
 
-/// A theme by name; unknown names fall back to `noir`.
 pub fn by_name(name: &str) -> Theme {
     match name {
+        // The client-supplied RGB palette is applied after startup. Until then,
+        // use terminal-native Reset/ANSI colors rather than a bundled palette.
+        "terminal" => Theme::terminal_native(),
         "ocean" => Theme::ocean(),
         "homebrew" => Theme::homebrew(),
         "redsands" => Theme::red_sands(),
@@ -557,9 +671,9 @@ pub fn by_name(name: &str) -> Theme {
     }
 }
 
-/// One-line description of a palette, for the Settings UI.
 pub fn describe(name: &str) -> &'static str {
     match name {
+        "terminal" => "inferred from your terminal",
         "ocean" => "deep cmd-blue, cyan accent",
         "homebrew" => "classic green-on-black",
         "redsands" => "warm dark red, orange accent",
@@ -736,6 +850,11 @@ mod tests {
         let mut swatches_256 = std::collections::HashSet::new();
         for &name in THEMES {
             assert!(!describe(name).is_empty(), "{name} needs a description");
+            // Probe depends on runtime env — just verify it resolves without panic.
+            if name == "terminal" {
+                let _ = by_name(name);
+                continue;
+            }
             let pal = by_name(name);
             assert!(
                 swatches.insert(format!("{:?}{:?}", pal.base, pal.accent)),
@@ -749,6 +868,7 @@ mod tests {
             );
         }
         assert!(THEMES.len() >= 15, "the new palettes are registered");
+        assert_eq!(THEMES.last(), Some(&"terminal"));
 
         // Legacy config values must keep resolving to the same palette.
         for (old, new) in [
@@ -763,6 +883,47 @@ mod tests {
                 "{old} must still resolve to the {new} palette"
             );
         }
+    }
+
+    #[test]
+    fn from_terminal_does_not_panic() {
+        // Dark terminal.
+        let dark = TerminalColors {
+            fg: [0xee, 0xee, 0xee],
+            bg: [0x1a, 0x1a, 0x2e],
+            palette: crate::terminal::theme_probe::default_ansi_palette(
+                [0xee; 3],
+                [0x1a, 0x1a, 0x2e],
+            ),
+        };
+        let _ = Theme::from_terminal(&dark);
+
+        // Light terminal.
+        let light = TerminalColors {
+            fg: [0x33, 0x33, 0x33],
+            bg: [0xf5, 0xf5, 0xf0],
+            palette: crate::terminal::theme_probe::default_ansi_palette(
+                [0x33; 3],
+                [0xf5, 0xf5, 0xf0],
+            ),
+        };
+        let _ = Theme::from_terminal(&light);
+    }
+
+    #[test]
+    fn terminal_fallback_uses_the_terminal_palette() {
+        let terminal = by_name("terminal");
+        assert_eq!(terminal.base, Color::Reset);
+        assert_eq!(terminal.text, Color::Reset);
+        assert_eq!(terminal.accent, Color::Indexed(4));
+        assert_eq!(terminal.green, Color::Indexed(2));
+        assert_eq!(terminal.mint, Color::Indexed(6));
+        assert_eq!(terminal.amber, Color::Indexed(3));
+        assert_eq!(terminal.coral, Color::Indexed(1));
+
+        let quattro = by_name("quattro-rally");
+        assert_ne!(terminal.base, quattro.base);
+        assert_ne!(terminal.accent, quattro.accent);
     }
 }
 
