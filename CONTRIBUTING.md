@@ -1,55 +1,113 @@
-# Contributing to bohay
+# Contributing to Bohay
 
-Thanks for helping make bohay better! Issues and PRs are welcome.
+Thanks for helping make Bohay better. Bug fixes, documentation, tests, and new
+features are all welcome.
 
-## Getting started
+## Before you start
+
+Small fixes can go directly to a pull request. For a large UI, architecture, or
+behavior change, open an issue first so we can agree on the direction before you
+spend time building it.
+
+Functionality around Bohay, such as panels, integrations, and automations, may
+fit better as a module than a core change. See [MODULE-GUIDE.md](MODULE-GUIDE.md).
+Modules live in separate repositories, can use any language, and need no SDK.
+
+## Development setup
+
+Bohay requires Rust 1.88 or newer. Fork the repository on GitHub, then clone
+your fork and create a focused branch:
 
 ```bash
-git clone https://github.com/RizRiyz/bohay
+git clone https://github.com/RizRiyz/bohay.git
 cd bohay
-cargo build            # pure Rust, no C toolchain needed (Rust ≥ 1.88)
-cargo run -- --local   # run client + server in one process (dev escape hatch)
+git switch -c fix/short-description
+cargo build
 ```
 
-Debug builds keep their state in `~/.bohay-dev/`, so hacking on bohay never
-touches your real session in `~/.bohay/`.
+Debug builds keep their state in `~/.bohay-dev/`, separate from your installed
+Bohay session in `~/.bohay/`.
 
-## Before you open a PR
-
-CI runs these on every PR — save a round-trip and run them locally:
+For the quickest local UI run:
 
 ```bash
-cargo test                                  # unit + off-screen render tests (no tty needed)
-cargo clippy --all-targets -- -D warnings   # lints (warnings are errors in CI)
-cargo fmt --all --check                     # formatting
+cargo run -- --local
 ```
 
-Tests render the full UI into an off-screen buffer and spawn real PTYs, so
-layout, VT, and draw paths are exercised without a terminal. Please add a test
-with any behavior change — `cargo test <substring>` runs a single test.
+For changes involving the client, server, sockets, or keyboard input, test the
+real debug client and server from a normal terminal outside your production
+Bohay session:
 
-## Guidelines
+```bash
+cargo run -- server restart
+cargo run
+```
 
-- **Performance first.** bohay's promise is a fast, smooth terminal. Anything
-  on the render or event hot path gets scrutiny; avoid per-frame allocations,
-  unbounded scans, or blocking I/O on the event loop (shell-outs and filesystem
-  scans belong on worker threads).
-- **Keep state pure.** App state is separate from runtime/IO (one event loop,
-  one timer). Match the existing module layout and code style around you.
-- **Commit messages** follow Conventional Commits (`feat:`, `fix:`, `perf:`,
-  `docs:`, `test:`, `chore:` …) — the release changelog is generated from them.
-- **Windows counts.** `cargo check --target x86_64-pc-windows-gnu` should stay
-  green; OS-specific code lives in `platform.rs` behind `cfg` gates.
+Running a debug Bohay inside an older production Bohay pane can hide input bugs
+because the outer process handles the keys first.
 
-## Extending bohay instead
+## Development guidelines
 
-If you want to add functionality *around* bohay (panels, integrations,
-automations), a **module** may be a better fit than a core PR — see
-[MODULE-GUIDE.md](MODULE-GUIDE.md). Modules are separate repos, any language,
-no SDK.
+- **Keep changes focused.** Solve one user-facing problem at a time. Keep
+  unrelated formatting, cleanup, and refactors separate.
+- **Performance first.** Avoid per-frame allocations, unbounded scans, and
+  blocking work on the event loop. Shell commands and filesystem scans belong
+  on worker threads.
+- **Keep state predictable.** Application state is separate from runtime and IO.
+  Preserve the single event loop and follow the patterns around the code you edit.
+- **Preserve user sessions.** Development and tests must not modify production
+  state, close active panes, or connect to the production socket unexpectedly.
+- **Keep behavior cross-platform.** CI builds Bohay on Linux, macOS, and Windows.
+  Keep operating-system code in `platform.rs` behind `cfg` gates when possible.
+- **Update related documentation.** CLI, API, configuration, or visible behavior
+  changes should update the matching public documentation.
+
+## Tests and checks
+
+Add a regression test for behavior changes when practical. Use
+`cargo test <substring>` while developing to run one focused test.
+
+Before submitting your change, run the same checks as CI:
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets -- -D warnings
+cargo test --locked
+```
+
+UI tests render into an off-screen buffer, and many terminal tests exercise real
+PTYs without requiring an interactive terminal. Test visible changes manually,
+measure performance changes before and after, and test platform-specific code on
+the affected platform when available.
+
+## Commits
+
+Use concise Conventional Commit messages:
+
+```text
+fix(input): preserve navigation modifiers on Windows
+feat(cli): add pane move command
+perf(render): avoid repeated frame allocations
+docs: clarify module setup
+```
+
+Bohay squash-merges pull requests, so follow-up commits during review are fine.
+You do not need to rebuild a perfect commit history before submitting changes.
+
+## Review
+
+Maintainers may ask for a regression test, a smaller scope, or another
+compatibility check. Keep review discussions focused on the behavior being
+changed and push follow-up commits to the same branch.
 
 ## Reporting bugs
 
-Please include your OS/terminal, `bohay server status` + `bohay doctor` output,
-and steps to reproduce. For security issues, see [SECURITY.md](SECURITY.md) -
-please don't open a public issue.
+Include clear reproduction steps, your OS and terminal, and the output of:
+
+```bash
+bohay server status
+bohay doctor
+```
+
+Screenshots and the name of the running agent are often helpful. For security
+issues, follow [SECURITY.md](SECURITY.md) and do not open a public issue.
