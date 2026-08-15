@@ -751,8 +751,17 @@ pub struct WsRename {
     pub buffer: String,
 }
 
-/// Cap a custom workspace name (same reasoning as [`TAB_NAME_MAX`]).
-const WS_NAME_MAX: usize = 40;
+/// Cap a custom workspace name (same reasoning as [`TAB_NAME_MAX`]). Shared
+/// with the CLI so local validation and the socket mutation agree.
+pub(crate) const WS_NAME_MAX: usize = 40;
+
+/// Why workspace metadata could not be changed.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WorkspaceUpdateError {
+    NotFound,
+    EmptyName,
+    NameTooLong,
+}
 
 /// The pane-rename modal: sets a pane's live name (the same alias `pane name` /
 /// `agent name` set), which addresses the agent and shows on the pane's title.
@@ -2542,6 +2551,49 @@ impl App {
         self.create_workspace_at(cwd);
     }
 
+    /// Change only a workspace's display label. The folder on disk remains
+    /// untouched. The same validation is shared by the TUI and socket API.
+    pub fn rename_workspace(
+        &mut self,
+        index: usize,
+        raw_name: &str,
+    ) -> Result<(), WorkspaceUpdateError> {
+        let name = raw_name.trim();
+        if name.is_empty() {
+            return Err(WorkspaceUpdateError::EmptyName);
+        }
+        if name.chars().count() > WS_NAME_MAX {
+            return Err(WorkspaceUpdateError::NameTooLong);
+        }
+        let workspace = self
+            .workspaces
+            .get_mut(index)
+            .ok_or(WorkspaceUpdateError::NotFound)?;
+        if workspace.name != name {
+            workspace.name = name.to_string();
+            self.session_dirty = true;
+        }
+        Ok(())
+    }
+
+    /// Pin or unpin a workspace in the sidebar. Indices stay in storage order;
+    /// only [`Self::workspace_display_order`] changes.
+    pub fn set_workspace_pinned(
+        &mut self,
+        index: usize,
+        pinned: bool,
+    ) -> Result<(), WorkspaceUpdateError> {
+        let workspace = self
+            .workspaces
+            .get_mut(index)
+            .ok_or(WorkspaceUpdateError::NotFound)?;
+        if workspace.pinned != pinned {
+            workspace.pinned = pinned;
+            self.session_dirty = true;
+        }
+        Ok(())
+    }
+
     /// Open `cwd` as a new **static** workspace (a workspace) and focus it. The folder
     /// is fixed — its name/cwd won't change as the pane's process `cd`s around.
     ///
@@ -2597,18 +2649,27 @@ impl App {
                 .collect();
             group_worktrees(&nodes)
         };
-        // Pinned nodes (with their worktree group) float to the top. Keyed by the
-        // group *leader* (the parent node, since children follow it in `order`),
-        // and stably sorted so each group's internal order and the unpinned order
-        // are preserved.
+        // Pinned nodes (with their worktree group) float to the top. A pin on
+        // either the parent or a linked child pins the complete group, while a
+        // stable sort preserves internal group order and the unpinned order.
+        let mut group_pinned = vec![false; self.workspaces.len()];
         let mut leader = 0usize;
+        for &(idx, is_child) in &order {
+            if !is_child {
+                leader = idx;
+            }
+            if self.workspaces.get(idx).is_some_and(|w| w.pinned) {
+                group_pinned[leader] = true;
+            }
+        }
+        leader = 0;
         let mut keyed: Vec<(bool, usize, bool)> = order
             .into_iter()
             .map(|(idx, is_child)| {
                 if !is_child {
                     leader = idx;
                 }
-                let pinned = self.workspaces.get(leader).is_some_and(|w| w.pinned);
+                let pinned = group_pinned.get(leader).copied().unwrap_or(false);
                 (!pinned, idx, is_child) // !pinned => pinned groups sort first
             })
             .collect();
@@ -2617,6 +2678,13 @@ impl App {
             .into_iter()
             .map(|(_, idx, is_child)| (idx, is_child))
             .collect()
+    }
+
+    /// A workspace's 0-based position in the sidebar after pin/group ordering.
+    pub fn workspace_display_position(&self, index: usize) -> Option<usize> {
+        self.workspace_display_order()
+            .iter()
+            .position(|&(workspace, _)| workspace == index)
     }
 
     /// Create a git worktree for `branch` off `repo` and open it as a workspace
@@ -2849,10 +2917,7 @@ impl App {
             // Pin/Unpin the right-clicked node: float it to the top of the list
             // (docs), persisted across restarts.
             WsMenuItem::Pin | WsMenuItem::Unpin => {
-                if let Some(w) = self.workspaces.get_mut(index) {
-                    w.pinned = item == WsMenuItem::Pin;
-                    self.session_dirty = true;
-                }
+                let _ = self.set_workspace_pinned(index, item == WsMenuItem::Pin);
             }
             // The right-clicked node, which needn't be the focused one.
             WsMenuItem::Module(i) => {
@@ -3012,13 +3077,7 @@ impl App {
             KeyCode::Esc => self.ws_rename = None,
             KeyCode::Enter => {
                 if let Some(r) = self.ws_rename.take() {
-                    let name = r.buffer.trim();
-                    if !name.is_empty() {
-                        if let Some(w) = self.workspaces.get_mut(r.index) {
-                            w.name = name.to_string();
-                        }
-                        self.session_dirty = true;
-                    }
+                    let _ = self.rename_workspace(r.index, &r.buffer);
                 }
             }
             KeyCode::Backspace => {
@@ -4401,6 +4460,8 @@ mod tests {
         app.handle_event(key(' ', KeyModifiers::CONTROL));
         app.handle_event(key('v', KeyModifiers::NONE));
         assert_eq!(app.layout().len(), 2);
+        app.rename_workspace(0, "Bohay website").unwrap();
+        app.set_workspace_pinned(0, true).unwrap();
 
         let json = serde_json::to_string(&persist::snapshot(&app)).unwrap();
         let snap: SessionSnapshot = serde_json::from_str(&json).unwrap();
@@ -4409,6 +4470,8 @@ mod tests {
         let restored = App::from_snapshot(snap, tx2).expect("restore");
         assert_eq!(restored.workspaces.len(), 1);
         assert_eq!(restored.layout().len(), 2);
+        assert_eq!(restored.workspaces[0].name, "Bohay website");
+        assert!(restored.workspaces[0].pinned);
     }
 
     // A saved pane whose cwd no longer exists (deleted project dir) must not
@@ -4730,6 +4793,8 @@ mod tests {
         };
 
         for method in [
+            "workspace.rename",
+            "workspace.pin",
             "tab.list",
             "tab.new",
             "tab.move",
@@ -5022,6 +5087,42 @@ mod tests {
         app.open_ws_menu(0, 0, 0);
         app.ws_menu_action(WsMenuItem::Unpin);
         assert!(!app.workspaces[0].pinned, "unpinned after Unpin");
+
+        // A linked worktree remains nested under its parent. Pinning the child
+        // floats that complete group instead of recording a no-op pin.
+        let pane = app.layout().focus;
+        let common_dir = PathBuf::from("/tmp/bohay-group/.git");
+        app.workspaces.push(Workspace {
+            name: "parent".into(),
+            cwd: PathBuf::from("/tmp/bohay-group"),
+            branch: None,
+            git_ahead_behind: None,
+            worktree: Some(crate::git::WorktreeMembership {
+                common_dir: common_dir.clone(),
+                linked: false,
+            }),
+            tabs: vec![Tab::panes(TileLayout::new(pane))],
+            active_tab: 0,
+            pinned: false,
+        });
+        app.workspaces.push(Workspace {
+            name: "child".into(),
+            cwd: PathBuf::from("/tmp/bohay-group-child"),
+            branch: None,
+            git_ahead_behind: None,
+            worktree: Some(crate::git::WorktreeMembership {
+                common_dir,
+                linked: true,
+            }),
+            tabs: vec![Tab::panes(TileLayout::new(pane))],
+            active_tab: 0,
+            pinned: false,
+        });
+        app.set_workspace_pinned(2, true).unwrap();
+        assert_eq!(
+            app.workspace_display_order(),
+            vec![(1, false), (2, true), (0, false)]
+        );
     }
 
     #[test]

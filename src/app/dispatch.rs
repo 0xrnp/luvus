@@ -612,12 +612,26 @@ impl App {
             // ── workspaces ── (`node.*` kept as a back-compat alias)
             "workspace.list" | "node.list" => {
                 let active = self.active_ws;
+                let mut display_positions = vec![0usize; self.workspaces.len()];
+                for (position, (workspace, _)) in
+                    self.workspace_display_order().into_iter().enumerate()
+                {
+                    display_positions[workspace] = position;
+                }
                 let arr: Vec<Value> = self
                     .workspaces
                     .iter()
                     .enumerate()
                     .map(|(i, w)| {
-                        json!({"workspace": i.to_string(), "name": w.name, "active": i == active, "tabs": w.tabs.len()})
+                        json!({
+                            "workspace": i.to_string(),
+                            "name": w.name,
+                            "cwd": w.cwd.display().to_string(),
+                            "pinned": w.pinned,
+                            "display_position": display_positions[i].to_string(),
+                            "active": i == active,
+                            "tabs": w.tabs.len(),
+                        })
                     })
                     .collect();
                 Ok(json!({"type":"workspace_list","workspaces":arr}))
@@ -673,6 +687,46 @@ impl App {
                     }
                 }
                 Ok(json!({"type":"ok"}))
+            }
+            "workspace.rename" | "node.rename" => {
+                let i = required_workspace_param(p)?;
+                let name = p.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+                    (
+                        "invalid_request".to_string(),
+                        "name must be a non-empty string".to_string(),
+                    )
+                })?;
+                self.rename_workspace(i, name)
+                    .map_err(|err| workspace_update_error(i, err))?;
+                let workspace = &self.workspaces[i];
+                Ok(json!({
+                    "type": "workspace_rename",
+                    "workspace": i.to_string(),
+                    "name": workspace.name,
+                    "cwd": workspace.cwd.display().to_string(),
+                    "pinned": workspace.pinned,
+                    "display_position": self.workspace_display_position(i).unwrap_or(i).to_string(),
+                }))
+            }
+            "workspace.pin" | "node.pin" => {
+                let i = required_workspace_param(p)?;
+                let pinned = p.get("pinned").and_then(|v| v.as_bool()).ok_or_else(|| {
+                    (
+                        "invalid_request".to_string(),
+                        "pinned must be a boolean".to_string(),
+                    )
+                })?;
+                self.set_workspace_pinned(i, pinned)
+                    .map_err(|err| workspace_update_error(i, err))?;
+                let workspace = &self.workspaces[i];
+                Ok(json!({
+                    "type": "workspace_pin",
+                    "workspace": i.to_string(),
+                    "name": workspace.name,
+                    "cwd": workspace.cwd.display().to_string(),
+                    "pinned": workspace.pinned,
+                    "display_position": self.workspace_display_position(i).unwrap_or(i).to_string(),
+                }))
             }
             "workspace.close" | "node.close" => {
                 let i = param_usize(p, "workspace")
@@ -1817,6 +1871,23 @@ fn tab_move_error(err: TabMoveError) -> (String, String) {
     ("invalid_request".to_string(), message.to_string())
 }
 
+fn workspace_update_error(index: usize, err: WorkspaceUpdateError) -> (String, String) {
+    match err {
+        WorkspaceUpdateError::NotFound => (
+            "not_found".to_string(),
+            format!("workspace {index} not found"),
+        ),
+        WorkspaceUpdateError::EmptyName => (
+            "invalid_request".to_string(),
+            "name must not be empty".to_string(),
+        ),
+        WorkspaceUpdateError::NameTooLong => (
+            "invalid_request".to_string(),
+            format!("name must be at most {WS_NAME_MAX} characters"),
+        ),
+    }
+}
+
 fn agent_fork_error(err: AgentForkError) -> (String, String) {
     let (code, message) = match err {
         AgentForkError::PaneNotFound => ("not_found", "agent pane not found"),
@@ -1980,6 +2051,19 @@ fn param_usize(p: &Value, key: &str) -> Option<usize> {
     v.as_u64()
         .map(|n| n as usize)
         .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
+}
+
+/// Required public workspace index. Workspace indices are deliberately
+/// 0-based and stay in storage/API order even when pins change sidebar order.
+fn required_workspace_param(p: &Value) -> Result<usize, (String, String)> {
+    param_usize(p, "workspace")
+        .or_else(|| param_usize(p, "node"))
+        .ok_or_else(|| {
+            (
+                "invalid_request".to_string(),
+                "workspace must be a 0-based number".to_string(),
+            )
+        })
 }
 
 /// Required public tab position: accepts a JSON integer or numeric string and
@@ -2428,6 +2512,114 @@ mod tests {
         // Default split still moves focus to the new pane.
         let out2 = app.dispatch("pane.split", &json!({})).unwrap();
         assert_eq!(app.layout().focus.0.to_string(), out2["pane"]);
+    }
+
+    #[test]
+    fn workspace_organization_api_renames_pins_lists_and_validates() {
+        let _env = crate::persist::test_env("workspace-organization-api");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let root = std::env::temp_dir().join(format!(
+            "bohay-workspace-organization-{}",
+            std::process::id()
+        ));
+        let a = root.join("a");
+        let b = root.join("b");
+        std::fs::create_dir_all(&a).unwrap();
+        std::fs::create_dir_all(&b).unwrap();
+        assert!(app.create_workspace_at(a.clone()));
+        assert!(app.create_workspace_at(b.clone()));
+        app.workspaces[0].name = "zero".into();
+        app.workspaces[1].name = "one".into();
+        app.workspaces[2].name = "two".into();
+        app.session_dirty = false;
+        assert_eq!(app.active_ws, 2);
+
+        let renamed = app
+            .dispatch(
+                "workspace.rename",
+                &json!({"workspace": "1", "name": "  Bohay website  "}),
+            )
+            .expect("valid workspace rename");
+        assert_eq!(renamed["type"], "workspace_rename");
+        assert_eq!(renamed["workspace"], "1");
+        assert_eq!(renamed["name"], "Bohay website");
+        assert_eq!(renamed["cwd"], a.display().to_string());
+        assert_eq!(renamed["pinned"], false);
+        assert_eq!(renamed["display_position"], "1");
+        assert_eq!(app.active_ws, 2, "rename does not change focus");
+        assert!(app.session_dirty);
+
+        app.session_dirty = false;
+        let pinned = app
+            .dispatch("workspace.pin", &json!({"workspace": 2, "pinned": true}))
+            .expect("valid workspace pin");
+        assert_eq!(pinned["type"], "workspace_pin");
+        assert_eq!(pinned["pinned"], true);
+        assert_eq!(pinned["display_position"], "0");
+        assert_eq!(app.active_ws, 2, "pin does not change focus");
+        assert!(app.session_dirty);
+
+        let listed = app
+            .dispatch("workspace.list", &json!({}))
+            .expect("workspace list");
+        let rows = listed["workspaces"].as_array().unwrap();
+        assert_eq!(rows[0]["workspace"], "0", "API order stays stable");
+        assert_eq!(rows[1]["name"], "Bohay website");
+        assert_eq!(rows[1]["cwd"], a.display().to_string());
+        assert_eq!(rows[1]["pinned"], false);
+        assert_eq!(rows[1]["display_position"], "2");
+        assert_eq!(rows[2]["workspace"], "2");
+        assert_eq!(rows[2]["pinned"], true);
+        assert_eq!(rows[2]["display_position"], "0");
+
+        let unpinned = app
+            .dispatch("workspace.pin", &json!({"workspace": "2", "pinned": false}))
+            .expect("valid workspace unpin");
+        assert_eq!(unpinned["pinned"], false);
+        assert_eq!(unpinned["display_position"], "2");
+
+        let before = app.workspaces[1].name.clone();
+        for (method, params, code) in [
+            (
+                "workspace.rename",
+                json!({"name": "missing"}),
+                "invalid_request",
+            ),
+            (
+                "workspace.rename",
+                json!({"workspace": 99, "name": "missing"}),
+                "not_found",
+            ),
+            (
+                "workspace.rename",
+                json!({"workspace": 1, "name": "   "}),
+                "invalid_request",
+            ),
+            (
+                "workspace.rename",
+                json!({"workspace": 1, "name": "x".repeat(41)}),
+                "invalid_request",
+            ),
+            (
+                "workspace.pin",
+                json!({"workspace": 1, "pinned": "yes"}),
+                "invalid_request",
+            ),
+            (
+                "workspace.pin",
+                json!({"workspace": 99, "pinned": true}),
+                "not_found",
+            ),
+        ] {
+            let err = app.dispatch(method, &params).expect_err("invalid mutation");
+            assert_eq!(err.0, code, "method={method} params={params}");
+        }
+        assert_eq!(app.workspaces[1].name, before, "failed rename is atomic");
+        assert!(!app.workspaces[1].pinned, "failed pin is atomic");
+
+        drop(app);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

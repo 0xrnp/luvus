@@ -189,6 +189,19 @@ Use these read routes before a write whose target is not already known:
 - `bohay pane read <id> --lines 120`
 - `bohay search <query>`
 
+When the user supplies a stable 0-based workspace index, run the requested
+mutation directly. Run `workspace list` only to resolve a name, path, or sidebar
+position to an index, or once after `not_found` to show current choices. Reuse a
+current list result from the thread and do not run `help` before these documented
+commands. Renaming changes the label, never the folder; pinning changes sidebar
+display order, never the API index:
+
+```sh
+bohay workspace rename <workspace-index> <name>
+bohay workspace pin <workspace-index>
+bohay workspace unpin <workspace-index>
+```
+
 From a managed pane, use `BOHAY_PANE_ID` as the caller or split anchor. From an
 external terminal, select an explicit pane returned by live state.
 

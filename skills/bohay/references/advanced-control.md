@@ -34,6 +34,11 @@ Run `bohay help` only when the requested command grammar is uncertain.
   clear authorization.
 - Inspect docks before moving them. Avoid sidebar, dock, toast, or focus changes
   unless they serve the user's request.
+- With an explicit stable index, run `bohay workspace rename <i> <name>`, `pin
+  <i>`, or `unpin <i>` directly. List workspaces only to resolve an unknown
+  target or recover from `not_found`, and reuse a current list result. Workspace
+  indices and returned `display_position` values are 0-based; pinning changes
+  only display order.
 - Resolve a live agent with `bohay agent get <target>` before `bohay agent fork
   <target> [--name <alias>] [--no-focus]`; the fork creates a new independent
   session and may change focus unless `--no-focus` is passed.

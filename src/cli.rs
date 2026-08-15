@@ -51,6 +51,9 @@ workspaces:
   workspace new              create a workspace in the current directory
   workspace open <path>      open <path> as a workspace (or focus it if already open)
   workspace focus <i>        focus workspace i (0-based)
+  workspace rename <i> <name>  rename workspace i without changing its folder
+  workspace pin <i>          pin workspace i (0-based) in the sidebar
+  workspace unpin <i>        unpin workspace i (0-based)
   workspace close [<i>]      close a workspace (default: active)
 
 tabs:
@@ -1184,8 +1187,50 @@ fn parse(args: &[String]) -> Result<(String, Value)> {
         ("workspace" | "node", "new") => ("workspace.new".into(), json!({})),
         ("workspace" | "node", "open") => ("workspace.open".into(), one("path", arg0())),
         ("workspace" | "node", "focus") => ("workspace.focus".into(), one("workspace", arg0())),
+        ("workspace" | "node", "rename") => {
+            let usage = "usage: bohay workspace rename <i> <name>";
+            if rest.len() < 2 {
+                return Err(anyhow!(usage));
+            }
+            let workspace = rest[0]
+                .parse::<usize>()
+                .map_err(|_| anyhow!("workspace must be a 0-based number. {usage}"))?;
+            let name = rest[1..].join(" ");
+            let name = name.trim();
+            if name.is_empty() {
+                return Err(anyhow!("workspace name must not be empty"));
+            }
+            if name.chars().count() > crate::app::WS_NAME_MAX {
+                return Err(anyhow!(
+                    "workspace name must be at most {} characters",
+                    crate::app::WS_NAME_MAX
+                ));
+            }
+            (
+                "workspace.rename".into(),
+                json!({"workspace": workspace.to_string(), "name": name}),
+            )
+        }
+        ("workspace" | "node", action @ ("pin" | "unpin")) => {
+            let usage = format!("usage: bohay workspace {action} <i>");
+            if rest.len() != 1 {
+                return Err(anyhow!(usage));
+            }
+            let workspace = rest[0]
+                .parse::<usize>()
+                .map_err(|_| anyhow!("workspace must be a 0-based number. {usage}"))?;
+            (
+                "workspace.pin".into(),
+                json!({"workspace": workspace.to_string(), "pinned": action == "pin"}),
+            )
+        }
         ("workspace" | "node", "close") => ("workspace.close".into(), one("workspace", arg0())),
-        ("workspace" | "node", _) => ("workspace.list".into(), json!({})),
+        ("workspace" | "node", "" | "list") => ("workspace.list".into(), json!({})),
+        ("workspace" | "node", other) => {
+            return Err(anyhow!(
+                "unknown workspace command `{other}`. Try `bohay help`."
+            ))
+        }
 
         ("tab", "new") => ("tab.new".into(), json!({})),
         ("tab", "focus") => ("tab.focus".into(), one("tab", arg0())),
@@ -1661,6 +1706,40 @@ mod tests {
         assert_eq!(m, "tab.new");
         let (m, _) = parse(&argv("bohay agent list")).unwrap();
         assert_eq!(m, "agent.list");
+    }
+
+    #[test]
+    fn maps_workspace_organization_and_rejects_bad_syntax() {
+        let (method, params) = parse(&argv("bohay workspace rename 2 Bohay website")).unwrap();
+        assert_eq!(method, "workspace.rename");
+        assert_eq!(params, json!({"workspace": "2", "name": "Bohay website"}));
+
+        let (method, params) = parse(&argv("bohay workspace pin 0")).unwrap();
+        assert_eq!(method, "workspace.pin");
+        assert_eq!(params, json!({"workspace": "0", "pinned": true}));
+
+        let (method, params) = parse(&argv("bohay node unpin 3")).unwrap();
+        assert_eq!(method, "workspace.pin");
+        assert_eq!(params, json!({"workspace": "3", "pinned": false}));
+
+        for bad in [
+            "bohay workspace rename",
+            "bohay workspace rename 2",
+            "bohay workspace rename two name",
+            "bohay workspace pin",
+            "bohay workspace pin -1",
+            "bohay workspace pin 1 extra",
+            "bohay workspace unpin two",
+            "bohay workspace organize 1",
+        ] {
+            assert!(parse(&argv(bad)).is_err(), "{bad} must be rejected");
+        }
+
+        let long = format!("bohay workspace rename 1 {}", "x".repeat(41));
+        assert!(
+            parse(&argv(&long)).is_err(),
+            "41-character name is rejected"
+        );
     }
 
     #[test]

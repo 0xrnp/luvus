@@ -1,4 +1,4 @@
 interface:
   display_name: "Bohay"
-  short_description: "Delegate, fork, and arrange Bohay agents"
-  default_prompt: "Use $bohay to fork a supported live agent into a named sibling pane."
+  short_description: "Delegate agents and organize Bohay workspaces"
+  default_prompt: "Use $bohay to rename and pin a workspace without changing its folder."

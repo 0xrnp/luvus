@@ -290,13 +290,21 @@ mod tests {
     }
 
     #[test]
-    fn bundled_and_plugin_skills_document_layout_moves() {
+    fn bundled_and_plugin_skills_document_layout_controls() {
         let plugin = include_str!("../plugins/bohay/skills/bohay/SKILL.md");
+        let manifest = include_str!("../plugins/bohay/.codex-plugin/plugin.json");
+        let metadata = include_str!("../plugins/bohay/skills/bohay/agents/openai.yaml");
+        let guide = include_str!("../website/src/content/docs/docs/guides/codex-plugin.mdx");
         let required = [
             "bohay pane move <pane-id> --tab <tab-number>",
             "bohay pane move <pane-id> --new-tab",
             "bohay tab move <from> <to>",
             "Tab numbers are 1-based",
+            "bohay workspace rename <workspace-index> <name>",
+            "bohay workspace pin <workspace-index>",
+            "bohay workspace unpin <workspace-index>",
+            "stable 0-based",
+            "do not run `help` before these documented",
         ];
         for marker in required {
             assert!(
@@ -317,13 +325,32 @@ mod tests {
                 && ADVANCED_CONTROL.contains("tab positions are 1-based"),
             "advanced control reference is missing tab move safety guidance"
         );
+        assert!(
+            ADVANCED_CONTROL.contains("bohay workspace rename <i> <name>")
+                && ADVANCED_CONTROL.contains("pinning changes")
+                && ADVANCED_CONTROL.contains("only display order")
+                && ADVANCED_CONTROL.contains("recover from `not_found`"),
+            "advanced control reference is missing workspace organization guidance"
+        );
+        assert!(
+            manifest.contains("\"version\": \"0.3.0\"")
+                && manifest.contains("Rename and pin a Bohay workspace"),
+            "Codex plugin manifest is missing workspace organization metadata"
+        );
+        assert!(
+            metadata.contains("Use $bohay to rename and pin a workspace"),
+            "Codex skill metadata is missing workspace organization guidance"
+        );
+        assert!(
+            guide.contains("bohay workspace rename 2") && guide.contains("display_position"),
+            "Codex plugin guide is missing workspace organization guidance"
+        );
     }
 
     #[test]
     fn codex_plugin_documents_native_agent_forks() {
         let plugin = include_str!("../plugins/bohay/skills/bohay/SKILL.md");
         let manifest = include_str!("../plugins/bohay/.codex-plugin/plugin.json");
-        let metadata = include_str!("../plugins/bohay/skills/bohay/agents/openai.yaml");
         let guide = include_str!("../website/src/content/docs/docs/guides/codex-plugin.mdx");
 
         let skill_markers = [
@@ -349,7 +376,6 @@ mod tests {
             "advanced control reference is missing agent fork safety guidance"
         );
         assert!(manifest.contains("Fork a supported live Bohay agent"));
-        assert!(metadata.contains("Use $bohay to fork a supported live agent"));
         assert!(guide.contains("### Fork an agent session"));
         assert!(guide.contains("bohay agent fork reviewer --name experiment --no-focus"));
     }

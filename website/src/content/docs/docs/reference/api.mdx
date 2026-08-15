@@ -33,7 +33,7 @@ printf '%s\n' '{"id":"1","method":"ping","params":{}}' | nc -U ~/.bohay/bohay.so
 
 | Family | Methods |
 |---|---|
-| workspaces | `workspace.list` · `workspace.open` · `workspace.focus` · `workspace.close` |
+| workspaces | `workspace.list` · `workspace.open` · `workspace.focus` · `workspace.rename` · `workspace.pin` · `workspace.close` |
 | tabs | `tab.list` · `tab.new` · `tab.focus` · `tab.move` · `tab.rename` · `tab.close` |
 | panes | `pane.list` · `pane.split` · `pane.move` · `pane.focus` · `pane.run` · `pane.send_input` · `pane.read` · `pane.status` · `pane.close` · `attach.pane` |
 | agents | `agent.list` · `agent.get` · `agent.name` · `agent.fork` · `agent.send` · `agent.keys` · `agent.read` · `agent.sessions` · `agent.resume` · `pane.report_session` · `pane.report_event` |
@@ -47,6 +47,30 @@ Parameter shapes mirror the CLI flags (`bohay task add --paths x` →
 `{"paths": ["x"]}`). For CLI commands, an omitted pane uses
 `$BOHAY_PANE_ID` when available; a raw API request with no pane uses the
 currently focused pane.
+
+## Organizing workspaces
+
+Workspace indices are 0-based and remain stable when sidebar ordering changes.
+
+| Method | Params | Result |
+|---|---|---|
+| `workspace.rename` | `{workspace, name}` | `{type:"workspace_rename", workspace, name, cwd, pinned, display_position}` |
+| `workspace.pin` | `{workspace, pinned}` | `{type:"workspace_pin", workspace, name, cwd, pinned, display_position}` |
+
+The equivalent CLI commands are `bohay workspace rename <i> <name>`,
+`bohay workspace pin <i>`, and `bohay workspace unpin <i>`. Renaming changes
+only the display label, trims surrounding whitespace, rejects empty or
+over-40-character labels, and never renames the folder on disk. Pinning changes
+sidebar display order without changing the API index or stealing focus. A pin
+on a parent or linked worktree floats that complete worktree group while
+preserving its internal order.
+
+`workspace.list` remains in stable API-index order. Each row includes
+`workspace`, `name`, `cwd`, `pinned`, `display_position`, `active`, and `tabs`.
+Both `workspace` and `display_position` are 0-based; callers can therefore
+target a stable index and separately verify where it appears in the sidebar.
+Missing or malformed parameters return `invalid_request`, while an out-of-range
+workspace returns `not_found` without changing state.
 
 ## Moving panes and tabs
 

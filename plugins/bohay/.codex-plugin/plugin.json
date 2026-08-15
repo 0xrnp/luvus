@@ -1,7 +1,7 @@
 {
   "name": "bohay",
-  "version": "0.2.0",
-  "description": "Delegate, fork, and arrange Bohay coding agents and sessions from Codex.",
+  "version": "0.3.0",
+  "description": "Delegate, fork, arrange agents, and organize Bohay workspaces from Codex.",
   "author": {
     "name": "Riz",
     "url": "https://github.com/RizRiyz"
@@ -19,8 +19,8 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Bohay",
-    "shortDescription": "Delegate, fork, and arrange Bohay agents.",
-    "longDescription": "Delegate work, fork supported Bohay agent sessions, arrange panes and tabs, and manage workspaces from Codex. Inside Bohay it uses the inherited session. From an external terminal it uses the installed production Bohay command and configured session.",
+    "shortDescription": "Delegate agents and organize Bohay workspaces.",
+    "longDescription": "Delegate work, fork supported Bohay agent sessions, arrange panes and tabs, and rename, pin, or reorder workspaces from Codex. Inside Bohay it uses the inherited session. From an external terminal it uses the installed production Bohay command and configured session.",
     "developerName": "Riz",
     "category": "Productivity",
     "capabilities": [
@@ -35,9 +35,9 @@
     "logo": "./assets/logo.svg",
     "logoDark": "./assets/logo.svg",
     "defaultPrompt": [
-      "Show me the panes and coding agents in the current Bohay session.",
       "Delegate a review to the Bohay agent named reviewer.",
-      "Fork a supported live Bohay agent into a named sibling pane."
+      "Fork a supported live Bohay agent into a named sibling pane.",
+      "Rename and pin a Bohay workspace without changing its folder."
     ]
   }
 }

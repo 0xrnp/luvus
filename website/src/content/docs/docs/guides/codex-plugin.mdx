@@ -152,6 +152,19 @@ follows the pane with focus. Reordering tabs keeps the same tab active even
 when its position changes. The plugin uses explicit pane IDs and confirmed tab
 positions instead of inferring either from the visible sidebar.
 
+The plugin can also organize workspaces after resolving their stable 0-based
+indices:
+
+```sh
+bohay workspace list
+bohay workspace rename 2 "Bohay website"
+bohay workspace pin 2
+bohay workspace unpin 2
+```
+
+Renaming changes only the label. Pinning changes `display_position`, not the
+workspace index, and keeps linked worktrees grouped with their parent.
+
 From an external terminal there is no implicit caller pane. The skill resolves
 live IDs first and uses explicit targets for state changes. It also uses bounded
 reads and waits, preserves focus where possible, and asks before destructive

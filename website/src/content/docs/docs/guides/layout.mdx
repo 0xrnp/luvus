@@ -81,8 +81,23 @@ Right-click any workspace row for its menu:
 - **Close** the workspace
 - **Rename** its label (this changes the sidebar name only, never the folder on
   disk)
+- **Pin** / **Unpin** it at the top of the list. A linked worktree stays with
+  its parent, so pinning either one moves the complete group.
 - **New Git Worktree** / **Open Worktree** (for git repos)
 - **Open Git Tab** · **Open Task Board** · **Open Mission Control**
+
+The same organization actions are available from the CLI using stable 0-based
+workspace indices:
+
+```sh
+bohay workspace list
+bohay workspace rename 2 "Bohay website"
+bohay workspace pin 2
+bohay workspace unpin 2
+```
+
+`workspace list` reports both the stable API index and `display_position`, so a
+pin never changes which workspace a later command targets.
 
 ## The sidebar
 
