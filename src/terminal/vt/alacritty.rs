@@ -12,7 +12,7 @@ use alacritty_terminal::vte::ansi::{Color as VtColor, Processor};
 
 use ratatui::style::{Color, Modifier};
 
-use super::{Cursor, RenderCell, VtEngine};
+use super::{CodexComposerRegion, Cursor, RenderCell, VtEngine};
 
 type TitleSlot = Arc<Mutex<Option<String>>>;
 
@@ -121,6 +121,47 @@ impl VtEngine for AlacrittyEngine {
             visible: self.term.mode().contains(TermMode::SHOW_CURSOR)
                 && self.term.grid().display_offset() == 0,
         }
+    }
+
+    fn codex_composer_region(&self) -> Option<CodexComposerRegion> {
+        let grid = self.term.grid();
+        if grid.display_offset() != 0 {
+            return None;
+        }
+
+        let rows = grid.screen_lines();
+        let cols = grid.columns();
+        if rows < 3 || cols < 4 {
+            return None;
+        }
+
+        let cursor = grid.cursor.point.line.0.max(0) as usize;
+        if cursor >= rows {
+            return None;
+        }
+        let row_is_blank = |row: usize| {
+            (0..cols).all(|col| {
+                let c = grid[Line(row as i32)][Column(col)].c;
+                c == '\0' || c == ' '
+            })
+        };
+        let row_has_prompt =
+            |row: usize| (0..cols.min(3)).any(|col| grid[Line(row as i32)][Column(col)].c == '›');
+
+        let prompt = (cursor.saturating_sub(8)..=cursor)
+            .rev()
+            .find(|&row| row_has_prompt(row))?;
+        let top = prompt.checked_sub(1)?;
+        if !row_is_blank(top) || (prompt..=cursor).any(row_is_blank) {
+            return None;
+        }
+
+        let bottom_limit = (cursor + 8).min(rows - 1);
+        let bottom = ((cursor + 1)..=bottom_limit).find(|&row| row_is_blank(row))?;
+        Some(CodexComposerRegion {
+            top: top as u16,
+            bottom: bottom as u16,
+        })
     }
 
     fn for_each_cell(&self, f: &mut dyn FnMut(u16, u16, &str, RenderCell)) {
@@ -705,5 +746,23 @@ mod tests {
         assert!(!e.mouse_report());
         assert!(!e.mouse_drag());
         assert!(!e.mouse_motion());
+    }
+
+    #[test]
+    fn codex_composer_region_finds_the_real_default_background_layout() {
+        let (tx, _rx) = channel();
+        let mut e = AlacrittyEngine::new(40, 8, tx, 2000);
+        // Codex leaves one blank padding row above and below its `›` prompt.
+        e.advance("\x1b[2;1H› Write tests".as_bytes());
+
+        assert_eq!(
+            e.codex_composer_region(),
+            Some(CodexComposerRegion { top: 0, bottom: 2 })
+        );
+
+        // A prompt-looking transcript line without the padding geometry must
+        // not be restyled as the active composer.
+        e.advance(b"\x1b[1;1Htranscript\x1b[2;1H");
+        assert_eq!(e.codex_composer_region(), None);
     }
 }

@@ -22,6 +22,19 @@ fn pal(c: [u8; 3]) -> Color {
 }
 
 impl Theme {
+    /// The intentionally soft composer treatment used by Bohay's default
+    /// Quattro Rally palette. Preserve its original low-contrast character.
+    pub fn subtle_composer_surface(&self) -> Color {
+        match (self.mantle, self.surface0) {
+            (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+                let blend = |a: u8, b: u8| (a as i16 + ((b as i16 - a as i16) * 28) / 100) as u8;
+                Color::Rgb(blend(ar, br), blend(ag, bg), blend(ab, bb))
+            }
+            (_, surface) if surface != self.mantle => surface,
+            _ => self.surface1,
+        }
+    }
+
     /// A zero-probe terminal theme. `Reset` follows the terminal's configured
     /// foreground/background and ANSI indices follow its palette, so selecting
     /// Terminal never flashes or falls back to a bundled bohay theme. A
@@ -138,6 +151,46 @@ pub struct Theme {
 }
 
 impl Theme {
+    /// A clearly raised—but still quiet—surface for the Codex composer.
+    ///
+    /// Palette surfaces are not equally spaced: in some themes `surface0` is
+    /// almost the pane background, while in others it is already prominent.
+    /// Pick the nearest semantic surface with enough range, then blend just far
+    /// enough to reach a consistent visible step. Terminal-native and 256-color
+    /// themes retain their own palette indices instead of borrowing RGB colors.
+    pub fn composer_surface(&self) -> Color {
+        let Color::Rgb(ar, ag, ab) = self.mantle else {
+            return [self.surface1, self.surface0, self.base, self.overlay0]
+                .into_iter()
+                .find(|&surface| surface != self.mantle)
+                .unwrap_or(self.mantle);
+        };
+
+        let distance = |color: Color| match color {
+            Color::Rgb(r, g, b) => ar.abs_diff(r).max(ag.abs_diff(g)).max(ab.abs_diff(b)),
+            _ => 0,
+        };
+        let candidates = [self.surface1, self.surface0, self.base, self.overlay0];
+        let target = candidates
+            .into_iter()
+            .find(|&color| distance(color) >= 24)
+            .or_else(|| candidates.into_iter().max_by_key(|&color| distance(color)))
+            .unwrap_or(self.surface1);
+
+        match target {
+            Color::Rgb(br, bg, bb) => {
+                let range = distance(target).max(1) as i16;
+                // Aim for an 18-step channel difference. The bounds prevent a
+                // distant surface becoming loud or a close one staying muddy.
+                let percent = (1800 / range).clamp(28, 70);
+                let blend =
+                    |a: u8, b: u8| (a as i16 + ((b as i16 - a as i16) * percent) / 100) as u8;
+                Color::Rgb(blend(ar, br), blend(ag, bg), blend(ab, bb))
+            }
+            surface => surface,
+        }
+    }
+
     pub fn noir() -> Self {
         let rgb = |r, g, b| Color::Rgb(r, g, b);
         Theme {
@@ -924,6 +977,39 @@ mod tests {
         let quattro = by_name("quattro-rally");
         assert_ne!(terminal.base, quattro.base);
         assert_ne!(terminal.accent, quattro.accent);
+    }
+
+    #[test]
+    fn composer_surface_adapts_to_every_theme_and_256_color_variant() {
+        for &name in THEMES {
+            let theme = by_name(name);
+            let composer = theme.composer_surface();
+            assert_ne!(
+                composer, theme.mantle,
+                "{name} needs a visible composer surface"
+            );
+            if let (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) = (theme.mantle, composer) {
+                let distance = ar.abs_diff(br).max(ag.abs_diff(bg)).max(ab.abs_diff(bb));
+                assert!(
+                    distance >= 15,
+                    "{name} composer is still too close to its pane background: {distance}"
+                );
+            }
+
+            let reduced = theme.to_256();
+            assert_ne!(
+                reduced.composer_surface(),
+                reduced.mantle,
+                "{name} needs a visible 256-color composer surface"
+            );
+        }
+
+        let default = by_name("quattro-rally");
+        assert_eq!(
+            default.subtle_composer_surface(),
+            Color::Rgb(0x24, 0x27, 0x38),
+            "the default theme keeps its original softer composer treatment"
+        );
     }
 }
 

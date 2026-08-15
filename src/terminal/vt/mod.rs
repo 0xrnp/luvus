@@ -24,6 +24,15 @@ pub struct Cursor {
     pub visible: bool,
 }
 
+/// Visible rows occupied by Codex's composer, including its blank padding rows.
+/// Bohay uses this geometry only for the optional theme-aware composer frame;
+/// the terminal engine remains responsible for recognizing the live grid.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CodexComposerRegion {
+    pub top: u16,
+    pub bottom: u16,
+}
+
 /// Minimal terminal-emulator surface. Owns the grid + scrollback.
 pub trait VtEngine: Send {
     /// Feed child output. Must never panic on arbitrary bytes.
@@ -34,6 +43,10 @@ pub trait VtEngine: Send {
 
     /// Cursor position in the visible viewport.
     fn cursor(&self) -> Cursor;
+
+    /// Detect Codex's live composer around the cursor. Returns `None` for
+    /// scrollback, unrelated terminal content, or an incomplete layout.
+    fn codex_composer_region(&self) -> Option<CodexComposerRegion>;
 
     /// Visit every visible cell as `(row, col, symbol, style)`. `symbol` is the
     /// cell's full grapheme cluster (base char + any combining/VS16/ZWJ chars),

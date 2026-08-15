@@ -248,6 +248,8 @@ fn draw_one_pane(
         .filter(|fl| fl.pane == id)
         .map(|fl| (fl.row, fl.scroll));
     let mut scrolled = 0usize;
+    let is_codex = app.status.get(&id).is_some_and(|s| s.agent == "codex");
+    let mut composer_region = None;
     let cursor_pos = match pane.engine.lock() {
         Ok(engine) => {
             {
@@ -319,6 +321,9 @@ fn draw_one_pane(
                 });
             }
             scrolled = engine.scroll_offset();
+            if is_codex {
+                composer_region = engine.codex_composer_region();
+            }
             let cur = engine.cursor();
             if focused && cur.visible && cur.x < content.width && cur.y < content.height {
                 Some((content.x + cur.x, content.y + cur.y))
@@ -328,6 +333,16 @@ fn draw_one_pane(
         }
         Err(_) => None,
     };
+
+    if let Some(region) = composer_region {
+        draw_codex_composer(
+            f.buffer_mut(),
+            content,
+            region,
+            t,
+            app.config.theme == "quattro-rally",
+        );
+    }
 
     // The search-jump flash band (docs/63): recolor the landed row's background
     // full width, keeping the text, so it reads as a highlighted line. Only while
@@ -363,4 +378,65 @@ fn draw_one_pane(
         }
     }
     cursor_pos
+}
+
+/// Give Codex's input a gently raised, theme-aware surface while retaining all
+/// terminal text, foreground styling, and geometry.
+fn draw_codex_composer(
+    buf: &mut ratatui::buffer::Buffer,
+    content: Rect,
+    region: crate::terminal::vt::CodexComposerRegion,
+    t: &Theme,
+    subtle: bool,
+) {
+    if region.bottom < region.top || region.bottom >= content.height {
+        return;
+    }
+
+    let top = content.y + region.top;
+    let bottom = content.y + region.bottom;
+    let fill = if subtle {
+        t.subtle_composer_surface()
+    } else {
+        t.composer_surface()
+    };
+
+    for y in top..=bottom {
+        for x in content.x..content.right() {
+            if let Some(cell) = buf.cell_mut((x, y)) {
+                cell.set_bg(fill);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::terminal::vt::CodexComposerRegion;
+
+    #[test]
+    fn composer_uses_only_a_subtle_theme_fill_and_preserves_geometry() {
+        let t = Theme::quattro_rally();
+        let area = Rect::new(0, 0, 20, 5);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        buf[(0, 2)].set_symbol("›");
+        buf[(2, 2)].set_symbol("H");
+
+        draw_codex_composer(
+            &mut buf,
+            area,
+            CodexComposerRegion { top: 1, bottom: 3 },
+            &t,
+            true,
+        );
+
+        assert_eq!(buf[(0, 2)].symbol(), "›");
+        assert_eq!(buf[(2, 2)].symbol(), "H");
+        assert_eq!(buf[(0, 1)].symbol(), " ");
+        assert_eq!(buf[(19, 3)].symbol(), " ");
+        assert_eq!(buf[(10, 2)].bg, t.subtle_composer_surface());
+        assert_ne!(buf[(10, 2)].bg, t.mantle);
+        assert_ne!(buf[(10, 2)].bg, t.surface0);
+    }
 }
