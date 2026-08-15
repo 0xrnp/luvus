@@ -20,7 +20,7 @@
   "interface": {
     "displayName": "Bohay",
     "shortDescription": "Delegate agents and organize Bohay workspaces.",
-    "longDescription": "Delegate work, fork supported Bohay agent sessions, arrange panes and tabs, and rename, pin, or reorder workspaces from Codex. Inside Bohay it uses the inherited session. From an external terminal it uses the installed production Bohay command and configured session.",
+    "longDescription": "Control a local Bohay session from Codex. Delegate work, fork supported agent sessions, arrange panes and tabs, and organize workspaces. Requires an installed Bohay client and a running Bohay session.",
     "developerName": "Riz",
     "category": "Productivity",
     "capabilities": [
@@ -30,10 +30,10 @@
     "websiteURL": "https://bohay.dev/",
     "privacyPolicyURL": "https://bohay.dev/privacy/",
     "termsOfServiceURL": "https://bohay.dev/terms/",
-    "brandColor": "#DBC66F",
-    "composerIcon": "./assets/logo.svg",
-    "logo": "./assets/logo.svg",
-    "logoDark": "./assets/logo.svg",
+    "brandColor": "#C2AA45",
+    "composerIcon": "./assets/logo-dark.svg",
+    "logo": "./assets/logo-dark.svg",
+    "logoDark": "./assets/logo-dark.svg",
     "defaultPrompt": [
       "Delegate a review to the Bohay agent named reviewer.",
       "Fork a supported live Bohay agent into a named sibling pane.",

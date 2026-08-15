@@ -6,7 +6,7 @@ import LegalPage from '../components/LegalPage.astro';
   title="Privacy Policy"
   description="How Bohay handles data in the local app, the Codex plugin, and the Bohay website."
   path="/privacy/"
-  updated="August 14, 2026"
+  updated="August 15, 2026"
 >
   <h2>Overview</h2>
   <p>
@@ -17,9 +17,10 @@ import LegalPage from '../components/LegalPage.astro';
 
   <h2>Local app and Codex plugin</h2>
   <p>
-    Bohay stores the configuration and session state needed to run the app on your computer. The
-    default data directory is <code>~/.bohay</code>. You can select another location with Bohay's
-    supported environment variables.
+    Bohay stores the configuration and session state needed to run the app on your computer. This
+    can include workspace paths, layouts, pane and agent metadata, tasks, modules, and preferences.
+    The default data directory is <code>~/.bohay</code>. You can select another location with
+    Bohay's supported environment variables.
   </p>
   <p>
     The Codex plugin is a skills-only plugin. It starts no separate network service and stores no
@@ -34,10 +35,32 @@ import LegalPage from '../components/LegalPage.astro';
 
   <h2>Website and documentation</h2>
   <p>
-    Bohay does not use a first-party account system on bohay.dev. The hosting provider may process
-    ordinary request information such as an IP address, browser details, requested URL, and time of
-    access to deliver and protect the site. Its handling of that information is governed by the
-    provider's own terms and policies.
+    Bohay does not use a first-party account system or first-party visitor analytics on bohay.dev.
+    Cloudflare Pages hosts the site and may process ordinary request information such as an IP
+    address, browser details, requested URL, and time of access to deliver and protect the site.
+  </p>
+
+  <h2>Data recipients</h2>
+  <p>
+    The Bohay project does not receive local project data merely because you use the app or plugin.
+    Cloudflare processes website request information as the hosting provider. GitHub processes
+    information you choose to include in an issue or private security advisory. A command you ask
+    Bohay to run may also send data to a third-party tool or service you selected, subject to that
+    provider's policies and your local permissions.
+  </p>
+
+  <h2>Data retention</h2>
+  <p>
+    Local configuration and session state remain on your computer until you remove them through
+    Bohay, uninstall the related data, or delete the configured data directory. The Codex plugin
+    keeps no separate account or hosted copy of that data.
+  </p>
+  <p>
+    The Bohay project does not create or retain a separate first-party database of website request
+    logs. Cloudflare may retain request information under its
+    <a href="https://www.cloudflare.com/privacypolicy/">privacy policy</a>. Information submitted
+    to GitHub remains there until it is deleted by the author, a repository maintainer, or GitHub
+    under its applicable policies.
   </p>
 
   <h2>Third-party services</h2>
@@ -56,7 +79,9 @@ import LegalPage from '../components/LegalPage.astro';
   <h2>Your choices</h2>
   <p>
     You control local Bohay data through the app, its CLI, and its configured data directory. You
-    can remove the Codex plugin without stopping Bohay or changing a Bohay session.
+    can remove the Codex plugin without stopping Bohay or changing a Bohay session. You can avoid
+    submitting information to GitHub, edit or delete information where GitHub permits it, and use
+    the private security advisory form for a sensitive report.
   </p>
 
   <h2>Changes and contact</h2>
