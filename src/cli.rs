@@ -84,8 +84,7 @@ Options:
 
 Help:
   bohay help all                         Complete CLI reference
-  bohay help <topic>                     Focus on one command area
-  bohay <topic> <command> --help         Parameters and flags for a command
+  bohay help <topic> [command]           Focus on one area or command
   https://bohay.dev/docs/reference/cli/  Online reference
 ";
 
@@ -98,7 +97,7 @@ usage: bohay <command> [args]
   --session <name>     target one named server session
   --version, -V        print the version
   --help, -h           show compact help
-  help [all|<topic>]   show compact, complete, or focused help
+  help [all|<topic> [command]]  show compact, complete, or focused help
   doctor               check optional external tools (git, gh, …)
   ping                 check the server
 
@@ -257,8 +256,9 @@ pub fn run(args: &[String]) -> Result<i32> {
                 print!("{DETAILED_USAGE}");
                 Ok(0)
             }
-            Some(topic) if args.len() == 3 => {
-                if write_topic_help(std::io::stdout().lock(), topic, None)? {
+            Some(topic) if matches!(args.len(), 3 | 4) => {
+                let command = args.get(3).map(String::as_str);
+                if write_topic_help(std::io::stdout().lock(), topic, command)? {
                     Ok(0)
                 } else {
                     eprintln!("unknown help topic `{topic}`. Run `bohay --help` for the list.");
@@ -266,7 +266,7 @@ pub fn run(args: &[String]) -> Result<i32> {
                 }
             }
             _ => {
-                eprintln!("usage: bohay help [all|<topic>]");
+                eprintln!("usage: bohay help [all|<topic> [command]]");
                 Ok(2)
             }
         };
@@ -368,8 +368,9 @@ fn command_help_request(args: &[String]) -> Option<(&str, Option<&str>)> {
             args.get(2).map(String::as_str),
             Some("help" | "--help" | "-h")
         );
-    let command_help =
-        args.len() > 3 && matches!(args.last().map(String::as_str), Some("--help" | "-h"));
+    let command_help = args.len() > 3
+        && matches!(args.last().map(String::as_str), Some("--help" | "-h"))
+        && !trailing_help_is_pass_through_payload(args, normalized);
     if group_help {
         return Some((topic, None));
     }
@@ -378,6 +379,16 @@ fn command_help_request(args: &[String]) -> Option<(&str, Option<&str>)> {
         return Some((topic, command));
     }
     None
+}
+
+fn trailing_help_is_pass_through_payload(args: &[String], topic: &str) -> bool {
+    match topic {
+        "pane" => matches!(args.get(2).map(String::as_str), Some("run" | "send")),
+        "agent" => matches!(args.get(2).map(String::as_str), Some("send" | "keys")),
+        // `--remote <host> [ssh args]` forwards everything after the host to SSH.
+        "remote" => args.len() > 3,
+        _ => false,
+    }
 }
 
 fn help_topic_has_subcommands(topic: &str) -> bool {
@@ -2152,6 +2163,38 @@ mod tests {
 
     fn argv(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
+    }
+
+    #[test]
+    fn pass_through_commands_preserve_trailing_help_payloads() {
+        for raw in [
+            "bohay pane run 9 cargo --help",
+            "bohay pane run 9 cargo -h",
+            "bohay pane send 9 --help",
+            "bohay pane send 9 -h",
+            "bohay agent send reviewer --help",
+            "bohay agent send reviewer -h",
+            "bohay agent keys reviewer --help",
+            "bohay agent keys reviewer -h",
+            "bohay --remote devbox --help",
+            "bohay --remote devbox -h",
+        ] {
+            let args = argv(raw);
+            assert_eq!(command_help_request(&args), None, "{raw}");
+        }
+    }
+
+    #[test]
+    fn normal_and_group_help_detection_remains_intact() {
+        for (raw, expected) in [
+            ("bohay pane --help", Some(("pane", None))),
+            ("bohay --remote --help", Some(("--remote", None))),
+            ("bohay pane split --help", Some(("pane", Some("split")))),
+            ("bohay module install -h", Some(("module", Some("install")))),
+        ] {
+            let args = argv(raw);
+            assert_eq!(command_help_request(&args), expected, "{raw}");
+        }
     }
 
     #[test]

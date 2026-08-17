@@ -114,8 +114,8 @@ Live status works out of the box for every agent, with no setup.
 
 → Full guides, keybindings, and the complete CLI reference live at
 **[bohay.dev/docs](https://bohay.dev/docs/)**. Run `bohay --help` for the compact
-overview, `bohay help <topic>` for focused guidance, or `bohay help all` for
-the complete reference.
+overview, `bohay help <topic> [command]` for focused guidance, or
+`bohay help all` for the complete reference.
 
 ## Development
 

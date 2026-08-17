@@ -9,9 +9,10 @@ version. This page carries the same text **verbatim**. A test in bohay's CI
 fails if they ever drift apart.
 :::
 
-Use `bohay help <topic>` for one command area or append `--help` to a
-specific command, such as `bohay pane split --help`. Explicit help writes to
-stdout, while invalid usage writes to stderr.
+Use `bohay help <topic> [command]` for focused help. Most commands also accept
+a trailing `--help`. Pass-through commands preserve that flag as payload, so
+use the explicit `bohay help` form for them. Help writes to stdout, while
+invalid usage writes to stderr.
 
 ```txt
 bohay: Mission control for your AI coding agents
@@ -22,7 +23,7 @@ usage: bohay <command> [args]
   --session <name>     target one named server session
   --version, -V        print the version
   --help, -h           show compact help
-  help [all|<topic>]   show compact, complete, or focused help
+  help [all|<topic> [command]]  show compact, complete, or focused help
   doctor               check optional external tools (git, gh, …)
   ping                 check the server
 
