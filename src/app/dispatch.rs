@@ -2,6 +2,26 @@
 //! per-pane agent-detection tick. Methods on [`App`](super::App).
 
 use super::*;
+use std::sync::mpsc::Sender;
+
+/// A parked `wait.output` request (docs/81): reply when the pane's recent
+/// output contains `needle`, or the optional deadline passes.
+pub struct OutputWait {
+    pub request_id: String,
+    pub needle: String,
+    pub reply: Sender<String>,
+    pub deadline: Option<Instant>,
+}
+
+/// The canonical `wait.output` response: `matched` says whether the marker
+/// appeared before the deadline.
+fn wait_response(request_id: &str, matched: bool, pane: Option<PaneId>) -> String {
+    let result = match pane {
+        Some(id) => json!({ "type": "wait", "matched": matched, "pane": id.0.to_string() }),
+        None => json!({ "type": "wait", "matched": matched }),
+    };
+    json!({ "id": request_id, "result": result }).to_string()
+}
 
 /// Debounce dwell for committing a newly-desired agent state (hysteresis).
 /// Active states publish instantly (responsive sidebar); the fall back to a
@@ -75,7 +95,14 @@ impl App {
         {
             self.last_proc_at = now;
             self.proc_scan_inflight = true;
-            let pids: Vec<u32> = self.panes.values().filter_map(|p| p.child_pid).collect();
+            let pids: Vec<u32> = self
+                .panes
+                .values()
+                .filter_map(|p| {
+                    let pid = p.child_pid.load(std::sync::atomic::Ordering::SeqCst);
+                    (pid != 0).then_some(pid)
+                })
+                .collect();
             let tx = self.app_tx.clone();
             std::thread::spawn(move || {
                 let found = crate::platform::descendant_commands(&pids);
@@ -1803,7 +1830,7 @@ impl App {
         })
     }
 
-    fn resolve_pane(&self, p: &Value) -> Option<PaneId> {
+    pub(crate) fn resolve_pane(&self, p: &Value) -> Option<PaneId> {
         match p.get("pane") {
             Some(v) => {
                 let raw = v
@@ -1814,6 +1841,121 @@ impl App {
                 self.panes.contains_key(&id).then_some(id)
             }
             None => Some(self.layout().focus),
+        }
+    }
+
+    /// The pane's recent output snapshot — the same view `pane.read` exposes.
+    pub(crate) fn pane_recent_text(&self, id: PaneId) -> String {
+        self.panes
+            .get(&id)
+            .and_then(|pane| pane.engine.lock().ok().map(|e| e.detection_text(200)))
+            .unwrap_or_default()
+    }
+
+    /// Register a server-side `wait.output` (docs/81). An already-visible
+    /// marker replies immediately; otherwise the waiter is parked and answered
+    /// by the pane's next output event — no polling on either side.
+    pub(crate) fn register_output_wait(
+        &mut self,
+        id: PaneId,
+        request_id: String,
+        needle: String,
+        reply: Sender<String>,
+        timeout: Option<Duration>,
+    ) {
+        let recent = self.pane_recent_text(id);
+        if recent.contains(&needle) {
+            let _ = reply.send(wait_response(&request_id, true, Some(id)));
+            return;
+        }
+        // Always bound the wait: a client that disconnects cannot be detected on
+        // the reply channel, so an uncapped waiter would be re-scanned forever.
+        // A shorter caller-specified timeout still wins; a longer one (or none)
+        // is capped so an abandoned waiter is reclaimed within an hour.
+        const MAX_WAIT: Duration = Duration::from_secs(3600);
+        let deadline = Some(Instant::now() + timeout.unwrap_or(MAX_WAIT).min(MAX_WAIT));
+        self.output_waits.entry(id).or_default().push(OutputWait {
+            request_id,
+            needle,
+            reply,
+            deadline,
+        });
+    }
+
+    /// Answer every waiter on `id` whose needle is now in the pane's output;
+    /// keep the rest parked. Called when the pane produces output.
+    pub(crate) fn check_output_waits(&mut self, id: PaneId) {
+        if !self.output_waits.contains_key(&id) {
+            return;
+        }
+        let text = self.pane_recent_text(id);
+        let Some(waiters) = self.output_waits.get_mut(&id) else {
+            return;
+        };
+        let mut keep = Vec::with_capacity(waiters.len());
+        for waiter in waiters.drain(..) {
+            if text.contains(&waiter.needle) {
+                let _ = waiter
+                    .reply
+                    .send(wait_response(&waiter.request_id, true, Some(id)));
+            } else {
+                keep.push(waiter);
+            }
+        }
+        // A waiter still parked means the needle may land inside an already-
+        // coalesced burst. Clear the pane's announcement flag so its next
+        // output read wakes the loop immediately instead of the idle tick.
+        if !keep.is_empty() {
+            if let Some(pane) = self.panes.get(&id) {
+                pane.rearm_pty_notify();
+            }
+        }
+        *waiters = keep;
+    }
+
+    /// Parked-waiter housekeeping, called from the loop tick (docs/81):
+    /// re-test every pane with waiters against its latest output — a marker
+    /// can arrive inside an already-coalesced burst with no PtyData event —
+    /// then expire any deadline that lapsed. A no-op while nobody waits.
+    pub(crate) fn tick_output_waits(&mut self, now: Instant) {
+        if self.output_waits.is_empty() {
+            return;
+        }
+        // A marker can arrive inside an already-coalesced burst, so re-test
+        // periodically — but not every tick, which would lock each waiting pane's
+        // VT engine and rebuild its recent text at the loop rate (~30-60/s).
+        // Deadline expiry below still runs on every tick.
+        if now.duration_since(self.last_output_wait_scan) >= Duration::from_millis(100) {
+            self.last_output_wait_scan = now;
+            let panes: Vec<PaneId> = self.output_waits.keys().copied().collect();
+            for id in panes {
+                self.check_output_waits(id);
+            }
+        }
+        for waiters in self.output_waits.values_mut() {
+            waiters.retain(|waiter| {
+                if waiter.deadline.is_some_and(|d| now >= d) {
+                    let _ = waiter
+                        .reply
+                        .send(wait_response(&waiter.request_id, false, None));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.output_waits.retain(|_, waiters| !waiters.is_empty());
+    }
+
+    /// Fail every waiter on a closing pane; `pane.read` for it can no longer
+    /// see new output.
+    pub(crate) fn cancel_output_waits(&mut self, id: PaneId) {
+        if let Some(waiters) = self.output_waits.remove(&id) {
+            for waiter in waiters {
+                let _ = waiter
+                    .reply
+                    .send(wait_response(&waiter.request_id, false, None));
+            }
         }
     }
 
@@ -2906,5 +3048,111 @@ mod tests {
         assert!(!valid_agent_name("Bad")); // uppercase
         assert!(!valid_agent_name("has space"));
         assert!(!valid_agent_name(&"x".repeat(33))); // too long
+    }
+
+    /// `wait.output` never polls: an already-visible marker resolves on
+    /// registration, fresh output resolves on the next output event, and a
+    /// deadline lapses on the loop tick (docs/81).
+    #[test]
+    fn wait_output_resolves_immediately_or_on_output_or_deadline() {
+        use std::sync::mpsc::{Receiver, RecvTimeoutError};
+        let _env = crate::persist::test_env("wait-output");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+
+        // Immediate: the marker is already in the pane's recent output.
+        app.panes
+            .get(&pane)
+            .unwrap()
+            .engine
+            .lock()
+            .unwrap()
+            .advance(b"ready NOW\r\n");
+        let (reply, rx): (_, Receiver<String>) = std::sync::mpsc::channel();
+        app.register_output_wait(pane, "t1".into(), "NOW".into(), reply, None);
+        assert!(rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .contains("\"matched\":true"));
+
+        // Parked: resolves only when the pane produces matching output.
+        let (reply, rx): (_, Receiver<String>) = std::sync::mpsc::channel();
+        app.register_output_wait(pane, "t2".into(), "LATER".into(), reply, None);
+        assert_eq!(
+            rx.recv_timeout(Duration::from_millis(50)),
+            Err(RecvTimeoutError::Timeout)
+        );
+        app.panes
+            .get(&pane)
+            .unwrap()
+            .engine
+            .lock()
+            .unwrap()
+            .advance(b"arrives LATER\r\n");
+        app.check_output_waits(pane);
+        assert!(rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .contains("\"matched\":true"));
+
+        // Deadline: an unmatched waiter lapses on the tick.
+        let (reply, rx): (_, Receiver<String>) = std::sync::mpsc::channel();
+        app.register_output_wait(
+            pane,
+            "t3".into(),
+            "NEVER".into(),
+            reply,
+            Some(Duration::from_millis(10)),
+        );
+        app.tick_output_waits(Instant::now() + Duration::from_secs(1));
+        assert!(rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .contains("\"matched\":false"));
+
+        // A closed pane fails its parked waiters.
+        let (reply, rx): (_, Receiver<String>) = std::sync::mpsc::channel();
+        app.register_output_wait(pane, "t4".into(), "NEVER".into(), reply, None);
+        app.cancel_output_waits(pane);
+        assert!(rx
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap()
+            .contains("\"matched\":false"));
+        assert!(app.output_waits.is_empty(), "no waiters leak");
+    }
+
+    /// A waiter registered without `timeout_s` still gets a bounded deadline, so
+    /// a disconnected client cannot leave it parked for the life of the pane.
+    #[test]
+    fn output_wait_without_timeout_is_bounded() {
+        let _env = crate::persist::test_env("wait-bound");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+        let (reply, _rx): (_, std::sync::mpsc::Receiver<String>) = std::sync::mpsc::channel();
+        app.register_output_wait(pane, "t".into(), "NEVER".into(), reply, None);
+        let waiter = &app.output_waits[&pane][0];
+        assert!(waiter.deadline.is_some(), "an abandoned waiter must expire");
+    }
+
+    /// Every pane-close path funnels through `drop_leaf_runtime`, so closing a
+    /// workspace or tab must fail its parked waiters rather than leaking them.
+    #[test]
+    fn closing_a_workspace_cancels_parked_waiters() {
+        let _env = crate::persist::test_env("wait-close-ws");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+        let (reply, rx): (_, std::sync::mpsc::Receiver<String>) = std::sync::mpsc::channel();
+        app.register_output_wait(pane, "t".into(), "NEVER".into(), reply, None);
+        app.close_workspace(0);
+        assert!(
+            rx.recv_timeout(Duration::from_secs(1))
+                .unwrap()
+                .contains("\"matched\":false"),
+            "a closed workspace fails its parked waiters"
+        );
+        assert!(app.output_waits.is_empty(), "no waiters leak");
     }
 }

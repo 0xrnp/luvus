@@ -1291,6 +1291,13 @@ pub struct App {
     /// `pane.list` for diagnostics and performance comparisons.
     detection_extractions: u64,
     detection_skips: u64,
+    /// Pending server-side `wait.output` requests keyed by pane (docs/81).
+    /// Satisfied by the pane's next output event, expired by the loop tick.
+    output_waits: HashMap<PaneId, Vec<crate::app::dispatch::OutputWait>>,
+    /// Throttle for re-scanning parked waiters — the scan locks each waiting
+    /// pane's VT engine and rebuilds its recent text, so it runs at ~100ms,
+    /// not at the render frame rate. Deadline expiry still runs every tick.
+    last_output_wait_scan: Instant,
     /// Scroll offsets + scrollable regions for the two sidebar lists, so long
     /// WORKSPACES / AGENTS lists can be wheeled through.
     pub workspaces_scroll: usize,
@@ -1606,6 +1613,8 @@ impl App {
                 .unwrap_or_else(Instant::now),
             detection_extractions: 0,
             detection_skips: 0,
+            output_waits: HashMap::new(),
+            last_output_wait_scan: Instant::now(),
             workspaces_scroll: 0,
             agents_scroll: 0,
             agents_active_only: false,
@@ -2033,6 +2042,8 @@ impl App {
                 .unwrap_or_else(Instant::now),
             detection_extractions: 0,
             detection_skips: 0,
+            output_waits: HashMap::new(),
+            last_output_wait_scan: Instant::now(),
             workspaces_scroll: 0,
             agents_scroll: 0,
             agents_active_only: false,
@@ -2443,6 +2454,36 @@ impl App {
         }
     }
 
+    /// `spawn_into`, but with the shell forked off-loop (docs/82): the pane
+    /// exists immediately so `pane split` answers before paying the fork.
+    /// Used only where synchronous failure reporting is not required — the
+    /// sync `spawn_into` keeps `workspace.open`'s "shell failed to start"
+    /// contract.
+    fn spawn_into_deferred(&mut self, cwd: PathBuf) -> Option<PaneId> {
+        let id = PaneId::alloc();
+        let shell = crate::platform::resolve_shell(&self.config.shell);
+        let history_budget_bytes = self.config.scrollback_bytes();
+        let pane = Pane::spawn_deferred(
+            id,
+            80,
+            24,
+            cwd,
+            self.app_tx.clone(),
+            &shell,
+            history_budget_bytes,
+        );
+        let cmd = pane.command.clone();
+        self.panes.insert(id, pane);
+        self.status.insert(id, PaneStatus::new(cmd));
+        self.zoomed = false;
+        self.session_dirty = true;
+        self.emit_event(
+            "pane.created",
+            serde_json::json!({"pane": id.0.to_string()}),
+        );
+        Some(id)
+    }
+
     /// `spawn_into`, but the shell starts on the `resume` command (falling back
     /// to typing it into the prompt when the shell family isn't recognised) —
     /// a resumed session opens straight into its agent.
@@ -2496,7 +2537,7 @@ impl App {
 
     fn split(&mut self, axis: Axis) {
         let cwd = self.focused_cwd();
-        if let Some(id) = self.spawn_into(cwd) {
+        if let Some(id) = self.spawn_into_deferred(cwd) {
             self.layout_mut().split_focused(axis, id);
         }
     }
@@ -3608,8 +3649,10 @@ impl App {
             .panes
             .iter()
             .filter_map(|(id, p)| {
-                p.child_pid
-                    .and_then(crate::platform::process_cwd)
+                let pid = p.child_pid.load(std::sync::atomic::Ordering::SeqCst);
+                (pid != 0)
+                    .then(|| crate::platform::process_cwd(pid))
+                    .flatten()
                     .map(|c| (*id, c))
             })
             .collect();
@@ -3654,7 +3697,8 @@ impl App {
         let Some(by_pid) = found else { return false };
         let mut next: HashMap<PaneId, Vec<String>> = HashMap::new();
         for (id, pane) in self.panes.iter() {
-            if let Some(cmds) = pane.child_pid.and_then(|pid| by_pid.get(&pid)) {
+            let pid = pane.child_pid.load(std::sync::atomic::Ordering::SeqCst);
+            if let Some(cmds) = (pid != 0).then(|| by_pid.get(&pid)).flatten() {
                 next.insert(*id, cmds.clone());
             }
         }
@@ -4102,6 +4146,10 @@ impl App {
         self.panes.remove(&id);
         self.status.remove(&id);
         self.views.remove(&id);
+        // Parked `wait.output` calls can never see new output on a dead pane, and
+        // every close path (close_pane, close_tab, close_workspace) funnels
+        // through here — so cancellation cannot be forgotten by a new path.
+        self.cancel_output_waits(id);
         self.editor_files.remove(&id); // untrack an editor pane's file (docs/38)
         self.module_panes.remove(&id); // untrack a module pane (MOD-2)
         if self.preview_view == Some(id) {
@@ -5082,7 +5130,13 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(80, 24, tx).unwrap();
         let id = app.layout().focus;
-        let root = app.panes.get(&id).unwrap().child_pid.unwrap();
+        let root = app
+            .panes
+            .get(&id)
+            .unwrap()
+            .child_pid
+            .load(std::sync::atomic::Ordering::SeqCst);
+        assert_ne!(root, 0, "the fresh pane has a spawned child");
         let shell = app.panes.get(&id).unwrap().command.clone();
         {
             let st = app.status.get_mut(&id).unwrap();

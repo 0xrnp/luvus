@@ -134,12 +134,34 @@ impl App {
     /// changes when the pane echoes (a separate `PtyData` event), so we don't waste
     /// a full render per keystroke.
     pub fn handle_event(&mut self, ev: AppEvent) -> bool {
-        // Closing the last workspace empties `workspaces` and sets `should_quit`; the
-        // loop drains the rest of the event batch before it checks that flag, so
-        // ignore events here once there's nothing left to act on (`layout()`
-        // would otherwise index an empty `workspaces`).
+        // Control-API requests and parked `wait.output` replies must be answered
+        // even with no workspace open. A server that has closed its last node
+        // stays alive (docs/43 §3.3), and the methods that reopen one are the
+        // only way back; dropping the reply channel here would leave the caller
+        // reading EOF instead of a `workspace.open` / `server.stop` answer.
         if self.workspaces.is_empty() {
-            return false;
+            match ev {
+                AppEvent::Api(req) => {
+                    let resp = self.handle_api(&req);
+                    let _ = req.reply.send(resp);
+                    return true;
+                }
+                AppEvent::WaitOutput { id, reply, .. } => {
+                    let _ = reply.send(
+                        json!({ "id": id, "error": {
+                            "code": "no_session", "message": "no active session"
+                        }})
+                        .to_string(),
+                    );
+                    return true;
+                }
+                // Closing the last workspace empties `workspaces` and sets
+                // `should_quit`; the loop drains the rest of the event batch
+                // before it checks that flag, so ignore everything else here
+                // once there's nothing left to act on (`layout()` would
+                // otherwise index an empty `workspaces`).
+                _ => return false,
+            }
         }
         match ev {
             AppEvent::Key(k) => self.handle_key(k),
@@ -180,10 +202,46 @@ impl App {
                 if let Some(s) = self.status.get_mut(&id) {
                     s.last_activity = Instant::now();
                 }
+                // A parked `wait.output` for this pane just got new output to
+                // test against — resolve it on the same wake (docs/81).
+                self.check_output_waits(id);
                 true // the pane's screen advanced
             }
             AppEvent::PtyExit(id) => {
                 self.close_pane(id);
+                true
+            }
+            // Control-API requests arrive on the event channel so the loop wakes
+            // for them immediately (docs/81). Answer inline: like the old
+            // server-side drain, an answered request counts as activity.
+            AppEvent::Api(req) => {
+                let resp = self.handle_api(&req);
+                let _ = req.reply.send(resp);
+                true
+            }
+            // A `wait.output` connection parks its reply here and blocks until
+            // the pane's output matches (docs/81) — no polling on either side.
+            AppEvent::WaitOutput {
+                id: request_id,
+                pane,
+                needle,
+                reply,
+                timeout,
+            } => {
+                let params = json!({ "pane": pane });
+                match self.resolve_pane(&params) {
+                    Some(id) => {
+                        self.register_output_wait(id, request_id, needle, reply, timeout);
+                    }
+                    None => {
+                        let _ = reply.send(
+                            json!({ "id": request_id, "error": {
+                                "code": "not_found", "message": "pane not found"
+                            }})
+                            .to_string(),
+                        );
+                    }
+                }
                 true
             }
             AppEvent::ModuleCommandFinished {
@@ -1680,10 +1738,12 @@ impl App {
             return;
         };
         let cwd = pane.cwd.clone();
-        let procs = pane
-            .child_pid
-            .map(crate::platform::process_tree)
-            .unwrap_or_default();
+        let pid = pane.child_pid.load(std::sync::atomic::Ordering::SeqCst);
+        let procs = if pid != 0 {
+            crate::platform::process_tree(pid)
+        } else {
+            Vec::new()
+        };
         self.cmd_inspect = Some(CmdInspect {
             pane: id,
             cwd,
@@ -2341,6 +2401,30 @@ mod tests {
             app.force_redraw,
             "resize requests a full repaint, not just a diff"
         );
+    }
+
+    // A server that has closed its last node keeps running (docs/43 §3.3), so
+    // control-API requests routed through the event channel must still be
+    // answered — otherwise the reply channel drops and the CLI reads EOF.
+    #[test]
+    fn api_requests_are_answered_with_no_workspace_open() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::new(80, 24, tx).unwrap();
+        app.close_workspace(0);
+        assert!(app.workspaces.is_empty(), "the only node is gone");
+        let (reply, rx) = std::sync::mpsc::channel();
+        let req = crate::ipc::api::ApiRequest {
+            id: "ping".into(),
+            method: "ping".into(),
+            params: serde_json::Value::Null,
+            reply,
+        };
+        let dirty = app.handle_event(AppEvent::Api(req));
+        assert!(dirty, "an answered control request counts as activity");
+        let resp = rx
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .expect("an empty server still answers its control API");
+        assert!(resp.contains("pong"), "got a real pong, not EOF: {resp}");
     }
 
     // Agents treat Enter as "submit" and Shift+Enter as "new line". A terminal
