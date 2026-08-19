@@ -41,12 +41,6 @@ Pick whichever channel you prefer:
     by default while a minimal server can skip them without breaking the install.
     Good for provisioning a Linux server.
   </TabItem>
-  <TabItem label="Cargo">
-    ```sh
-    cargo install luvus
-    ```
-    Works on any platform with **Rust ≥ 1.88** (ratatui 0.30 uses Rust edition 2024): pure Rust, no C toolchain needed. On an older toolchain run `rustup update` first, or use a prebuilt binary above (no Rust required).
-  </TabItem>
   <TabItem label="Nix">
     luvus ships a **flake**, so it works on NixOS and any machine with Nix. Every
     command below needs flakes enabled (add `experimental-features = nix-command

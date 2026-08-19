@@ -60,7 +60,6 @@ single-digit megabytes.
 curl -fsSL https://luvus.dev/install.sh | sh
 
 brew install RizRiyz/luvus/luvus      # Homebrew (also a prebuilt binary)
-cargo install luvus                   # build from source (needs Rust 1.88+)
 ```
 
 ```powershell
