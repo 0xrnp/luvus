@@ -5,6 +5,7 @@
 #   scripts/release.sh 0.1.1             # full release (prompts before publishing)
 #   scripts/release.sh 0.1.1 --dry-run   # bump + verify only, then revert — no release
 #   scripts/release.sh 0.1.1 --yes       # skip the confirmation prompt
+#   scripts/release.sh 0.1.1 --no-cargo-publish  # full release flow, skip `cargo publish`
 #
 # Prereqs:  `cargo login` done · `gh auth login` · push access to the repo.
 # Tap:      the Homebrew formula in ./homebrew-luvus (or $LUVUS_TAP_DIR) — the real
@@ -70,7 +71,29 @@ bump_formula() {
 }
 
 VERSION="${1:-}"
-MODE="${2:-}"
+MODE=""
+SKIP_CARGO_PUBLISH=0
+[ $# -ge 1 ] || die "usage: scripts/release.sh X.Y.Z [--dry-run|--yes|--no-cargo-publish]"
+
+shift
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run)
+      [ -n "$MODE" ] && die "only one of --dry-run or --yes is allowed"
+      MODE="--dry-run"
+      ;;
+    --yes)
+      [ -n "$MODE" ] && die "only one of --dry-run or --yes is allowed"
+      MODE="--yes"
+      ;;
+    --no-cargo-publish|--skip-cargo-publish|--no-publish)
+      SKIP_CARGO_PUBLISH=1
+      ;;
+    *)
+      die "usage: scripts/release.sh X.Y.Z [--dry-run|--yes] [--no-cargo-publish]"
+      ;;
+  esac
+done
 [ -n "$VERSION" ] || die "usage: scripts/release.sh X.Y.Z [--dry-run|--yes]"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version must be semver X.Y.Z (got '$VERSION')"
 TAG="v$VERSION"
@@ -166,7 +189,11 @@ git push origin main
 git push origin "$TAG"
 
 step "Publish to crates.io"
-cargo publish
+if [ "$SKIP_CARGO_PUBLISH" = "1" ]; then
+  echo "  skipping cargo publish by request"
+else
+  cargo publish
+fi
 
 step "Homebrew formula (source tarball is ready the instant the tag is pushed)"
 TARBALL="https://github.com/$REPO/archive/refs/tags/$TAG.tar.gz"
