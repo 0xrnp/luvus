@@ -1,12 +1,12 @@
 id = "example.file-tree"
 name = "File Tree"
 version = "0.1.0"
-min_bohay_version = "0.8.3"
+min_luvus_version = "0.8.3"
 description = "A collapsible file tree of the active node in the sidebar. Click a folder to expand, a file to open it in a pane. A no-core-edits prototype of docs/38."
 platforms = ["macos", "linux"]
 
-# The dock bohay reserves for this module. The scripts fill it over the socket
-# with `ui dock push`; bohay owns the rendering and the row geometry, and the
+# The dock luvus reserves for this module. The scripts fill it over the socket
+# with `ui dock push`; luvus owns the rendering and the row geometry, and the
 # user can move it to the other sidebar from Settings -> Layout.
 [[docks]]
 id = "files"

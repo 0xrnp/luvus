@@ -1,12 +1,12 @@
 id = "example.branch-dock"
 name = "Branch Dock"
 version = "0.1.0"
-min_bohay_version = "0.8.3"
+min_luvus_version = "0.8.3"
 description = "A sidebar dock listing the active node's git branches. Click one to check it out."
 platforms = ["macos", "linux"]
 
-# The dock bohay reserves for this module. The module fills it over the socket
-# with `ui.dock.push`; bohay owns the rendering and the user can move it to the
+# The dock luvus reserves for this module. The module fills it over the socket
+# with `ui.dock.push`; luvus owns the rendering and the user can move it to the
 # other sidebar from Settings -> Layout.
 [[docks]]
 id = "branches"
@@ -34,7 +34,7 @@ title = "Refresh branches"
 contexts = ["workspace"]
 command = ["sh", "refresh.sh"]
 
-# Clicking a dock row invokes this with the branch in BOHAY_MODULE_ROW_ACTION.
+# Clicking a dock row invokes this with the branch in LUVUS_MODULE_ROW_ACTION.
 [[actions]]
 id = "checkout"
 title = "Check out branch"

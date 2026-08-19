@@ -1,4 +1,4 @@
-//! User configuration at `~/.bohay/config.json` — theme, layout, notifications.
+//! User configuration at `~/.luvus/config.json` — theme, layout, notifications.
 //! Loaded on startup and saved whenever Settings changes something. Every field
 //! has a serde default, so old/new configs round-trip and a missing or corrupt
 //! file just yields defaults.
@@ -38,9 +38,9 @@ pub struct Config {
     pub layout: LayoutConfig,
     #[serde(default)]
     pub notifications: NotifyConfig,
-    /// Check `bohay.dev/latest.json` in the background for a newer release and
+    /// Check `luvus.dev/latest.json` in the background for a newer release and
     /// show an indicator by the version number. A single periodic `curl`/`wget`
-    /// GET; on by default, toggled in Settings → General. Notify-only — bohay
+    /// GET; on by default, toggled in Settings → General. Notify-only — luvus
     /// never self-updates (installed via cargo/brew/etc).
     #[serde(default = "yes")]
     pub check_updates: bool,
@@ -58,13 +58,6 @@ pub struct Config {
     /// (`--permission-mode bypassPermissions`), so switching it on is deliberate.
     #[serde(default)]
     pub resume_launch_flags: bool,
-    /// Auto-install the bundled agent skill on startup so agents can delegate to
-    /// each other out of the box (docs): the full skill for Claude Code, and a
-    /// short pointer in the global `AGENTS.md` for Codex and opencode. Each is
-    /// written only when that agent is set up, and only when missing or stale.
-    /// Set false to manage it yourself.
-    #[serde(default = "yes")]
-    pub install_agent_skill: bool,
     /// Custom keybindings: command id → key string (overrides the defaults).
     /// An empty value means the command is explicitly unbound.
     #[serde(default)]
@@ -143,7 +136,7 @@ pub struct LayoutConfig {
     /// `0` disables compact mode entirely (the full UI always renders).
     #[serde(default = "default_compact_width")]
     pub compact_width: u16,
-    /// What bohay forwards to a pane for **Shift/Alt+Enter** ("new line, don't
+    /// What luvus forwards to a pane for **Shift/Alt+Enter** ("new line, don't
     /// submit"). A keyword from [`SHIFT_ENTER_CHOICES`]; default `esc-cr`
     /// (`ESC CR`, the sequence Claude Code's `/terminal-setup` installs). Exposed
     /// because agents/terminals disagree on which byte sequence they treat as a
@@ -284,7 +277,6 @@ impl Default for Config {
             notifications: NotifyConfig::default(),
             check_updates: true,
             resume_launch_flags: false,
-            install_agent_skill: true,
             keybindings: std::collections::HashMap::new(),
             prefix: default_prefix(),
             mission_pricing: std::collections::HashMap::new(),

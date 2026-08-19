@@ -1,4 +1,4 @@
-//! `bohay module install owner/repo[/sub]` (docs/13 MOD-4): shallow-clone a git
+//! `luvus module install owner/repo[/sub]` (docs/13 MOD-4): shallow-clone a git
 //! source into a staging dir, **preview every command + confirm**, run
 //! `[[build]]` with a scrubbed env, verify the manifest didn't change, then
 //! atomically move it into the managed modules dir with a pinned commit. The CLI
@@ -74,7 +74,7 @@ fn install_inner(
     };
 
     // 2. Load + validate the manifest, and snapshot it for the immutability check.
-    let manifest_path = module_root.join(MANIFEST_FILE);
+    let manifest_path = ModuleManifest::path(&module_root);
     let before = fs::read(&manifest_path)
         .with_context(|| format!("no {MANIFEST_FILE} at {}", module_root.display()))?;
     let manifest = ModuleManifest::load(&module_root).map_err(|e| anyhow!("{e}"))?;
@@ -87,7 +87,7 @@ fn install_inner(
         bail!("aborted");
     }
 
-    // 4. Run [[build]] with a scrubbed environment (no BOHAY_*/socket access).
+    // 4. Run [[build]] with a scrubbed environment (no LUVUS_*/socket access).
     // A step gated to other platforms is skipped, so one manifest can carry
     // both a `npm.cmd` step for Windows and a `make` step for Unix.
     for b in &manifest.build {
@@ -98,11 +98,10 @@ fn install_inner(
             .with_context(|| format!("build step {:?} failed", b.command))?;
     }
 
-    // 5. The manifest must not have changed during the build.
-    let after = fs::read(&manifest_path).context("re-read manifest after build")?;
-    if before != after {
-        bail!("manifest changed during build — refusing to install");
-    }
+    // 5. The selected manifest must not have changed during the build. Resolve
+    // it again because a build that started from the legacy filename could add
+    // a higher-priority luvus-module.toml without touching the checked bytes.
+    verify_manifest_unchanged(&module_root, &manifest_path, &before)?;
 
     // 6. Atomically move into the managed dir.
     let dest = paths::git_dir(slug, &short(&sha));
@@ -122,11 +121,20 @@ fn install_inner(
     })
 }
 
+fn verify_manifest_unchanged(root: &Path, before_path: &Path, before: &[u8]) -> Result<()> {
+    let after_path = ModuleManifest::path(root);
+    let after = fs::read(&after_path).context("re-read manifest after build")?;
+    if after_path != before_path || after != before {
+        bail!("manifest changed during build — refusing to install");
+    }
+    Ok(())
+}
+
 /// Parse `owner/repo[/sub]` → a GitHub URL, or a local path / git URL verbatim.
 fn parse_spec(spec: &str) -> Result<(String, String, String)> {
     let spec = spec.trim();
     if spec.is_empty() {
-        bail!("usage: bohay module install owner/repo[/sub]");
+        bail!("usage: luvus module install owner/repo[/sub]");
     }
     // A path or explicit URL is cloned as-is, with no subdirectory.
     let is_url_or_path = spec.contains("://")
@@ -188,8 +196,8 @@ fn confirm() -> Result<bool> {
     Ok(matches!(line.trim(), "y" | "Y" | "yes"))
 }
 
-/// Run a build command in `dir` with a scrubbed environment — no `BOHAY_*` and
-/// no socket access, so build steps can't drive bohay.
+/// Run a build command in `dir` with a scrubbed environment — no `LUVUS_*` and
+/// no socket access, so build steps can't drive luvus.
 fn run_build(dir: &Path, argv: &[String]) -> Result<()> {
     let Some((program, args)) = argv.split_first() else {
         bail!("empty build command");
@@ -198,7 +206,7 @@ fn run_build(dir: &Path, argv: &[String]) -> Result<()> {
     cmd.args(args).current_dir(dir);
     cmd.env_clear();
     for (k, v) in std::env::vars() {
-        if !k.starts_with("BOHAY_") {
+        if !k.starts_with("LUVUS_") && !k.starts_with("BOHAY_") {
             cmd.env(k, v);
         }
     }
@@ -238,6 +246,7 @@ fn short(sha: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::module::manifest::LEGACY_MANIFEST_FILE;
 
     #[test]
     fn parse_owner_repo_and_paths() {
@@ -255,5 +264,24 @@ mod tests {
         assert!(sub.is_empty());
 
         assert!(parse_spec("nope").is_err());
+    }
+
+    #[test]
+    fn manifest_selection_cannot_change_during_build() {
+        let root =
+            std::env::temp_dir().join(format!("luvus-manifest-switch-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let legacy_path = root.join(LEGACY_MANIFEST_FILE);
+        let before = b"legacy manifest";
+        fs::write(&legacy_path, before).unwrap();
+        assert_eq!(ModuleManifest::path(&root), legacy_path);
+
+        fs::write(root.join(MANIFEST_FILE), "replacement manifest").unwrap();
+        let error = verify_manifest_unchanged(&root, &legacy_path, before)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("manifest changed during build"), "{error}");
+        let _ = fs::remove_dir_all(root);
     }
 }

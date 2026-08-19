@@ -52,48 +52,67 @@ pub fn next_log_id() -> u64 {
 /// The always-injected identity + context + settings environment (docs/13 §3.4).
 /// Ensures the module's config/state dirs exist.
 ///
-/// Alongside `BOHAY_MODULE_CONTEXT_JSON` this flattens the ids into plain
-/// `BOHAY_WORKSPACE_ID` / `BOHAY_PANE_ID` / … vars and each declared setting
-/// into `BOHAY_SETTING_<KEY>`, so a bash module never has to parse JSON.
-pub fn base_env(module: &InstalledModule, ctx: &Value) -> Vec<(String, String)> {
+/// Alongside `LUVUS_MODULE_CONTEXT_JSON` this flattens the ids into plain
+/// `LUVUS_WORKSPACE_ID` / `LUVUS_PANE_ID` / … vars and each declared setting
+/// into `LUVUS_SETTING_<KEY>`, so a bash module never has to parse JSON.
+fn base_env(module: &InstalledModule, ctx: &Value) -> Vec<(String, String)> {
     let config = paths::config_dir(&module.id);
     let state = paths::state_dir(&module.id);
     let _ = std::fs::create_dir_all(&config);
     let _ = std::fs::create_dir_all(&state);
 
     let mut env = vec![
-        ("BOHAY_ENV".to_string(), "1".to_string()),
-        ("BOHAY_MODULE_ID".to_string(), module.id.clone()),
+        ("LUVUS_ENV".to_string(), "1".to_string()),
+        ("LUVUS_MODULE_ID".to_string(), module.id.clone()),
         (
-            "BOHAY_MODULE_ROOT".to_string(),
+            "LUVUS_MODULE_ROOT".to_string(),
             module.root.display().to_string(),
         ),
         (
-            "BOHAY_MODULE_CONFIG_DIR".to_string(),
+            "LUVUS_MODULE_CONFIG_DIR".to_string(),
             config.display().to_string(),
         ),
         (
-            "BOHAY_MODULE_STATE_DIR".to_string(),
+            "LUVUS_MODULE_STATE_DIR".to_string(),
             state.display().to_string(),
         ),
-        ("BOHAY_MODULE_CONTEXT_JSON".to_string(), ctx.to_string()),
+        ("LUVUS_MODULE_CONTEXT_JSON".to_string(), ctx.to_string()),
         (
-            "BOHAY_MODULE_VERSION".to_string(),
+            "LUVUS_MODULE_VERSION".to_string(),
             module.manifest.version.clone(),
         ),
     ];
     env.extend(super::context::env_from(ctx));
     env.extend(super::settings::env(&module.manifest, &module.id));
     if let Some(sock) = crate::ipc::api::socket_path_env() {
-        env.push(("BOHAY_SOCKET_PATH".to_string(), sock));
+        env.push(("LUVUS_SOCKET_PATH".to_string(), sock));
     }
     if let Some(name) = crate::session::active_name() {
         env.push((crate::session::SESSION_ENV_VAR.to_string(), name));
     }
     if let Ok(exe) = std::env::current_exe() {
-        env.push(("BOHAY_BIN_PATH".to_string(), exe.display().to_string()));
+        env.push(("LUVUS_BIN_PATH".to_string(), exe.display().to_string()));
     }
     env
+}
+
+/// Build the complete module environment, then add 0.10 aliases. Applying the
+/// bridge last is important: entrypoint, dock, row, action, and event variables
+/// are supplied by the caller and must receive aliases too.
+pub fn env(
+    module: &InstalledModule,
+    ctx: &Value,
+    extra: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    complete_env(base_env(module, ctx), extra)
+}
+
+fn complete_env(
+    mut base: Vec<(String, String)>,
+    extra: Vec<(String, String)>,
+) -> Vec<(String, String)> {
+    base.extend(extra);
+    crate::compat::with_legacy_aliases(base)
 }
 
 /// Spawn `argv` in `root` on a detached thread; when it exits, send
@@ -172,4 +191,32 @@ fn read_capped<R: Read>(r: &mut R) -> String {
         }
     }
     String::from_utf8_lossy(&kept).into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::complete_env;
+
+    #[test]
+    fn complete_environment_aliases_late_module_variables() {
+        let env = complete_env(
+            vec![("LUVUS_MODULE_ID".into(), "example.test".into())],
+            vec![
+                ("LUVUS_MODULE_ENTRYPOINT_ID".into(), "monitor".into()),
+                ("LUVUS_MODULE_DOCK_ID".into(), "boards".into()),
+                ("LUVUS_MODULE_ACTION_ID".into(), "flash".into()),
+            ],
+        );
+        for (key, value) in [
+            ("BOHAY_MODULE_ID", "example.test"),
+            ("BOHAY_MODULE_ENTRYPOINT_ID", "monitor"),
+            ("BOHAY_MODULE_DOCK_ID", "boards"),
+            ("BOHAY_MODULE_ACTION_ID", "flash"),
+        ] {
+            assert!(
+                env.contains(&(key.to_string(), value.to_string())),
+                "missing {key}"
+            );
+        }
+    }
 }

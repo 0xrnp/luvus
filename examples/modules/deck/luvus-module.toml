@@ -1,12 +1,12 @@
 id = "example.deck"
 name = "Markdown Deck"
 version = "0.1.0"
-min_bohay_version = "0.9.6"
+min_luvus_version = "0.9.6"
 description = "Present a Markdown file as a slide deck in a pane. Slides split on a `---` line; arrow keys or space to navigate, r to reload, q to quit."
 platforms = ["macos", "linux"]
 
 # ── Settings (Settings → Modules → Markdown Deck) ────────────────────────────
-# Everything the presenter needs arrives as BOHAY_SETTING_<KEY>, so the script
+# Everything the presenter needs arrives as LUVUS_SETTING_<KEY>, so the script
 # never parses JSON.
 
 [[settings]]
@@ -41,7 +41,7 @@ command = ["python3", "deck.py"]
 
 # ── Right-click a node → present ──────────────────────────────────────────────
 # Convenience: opens the presenter pane for the node you clicked. The same thing
-# as `bohay module pane open example.deck present`.
+# as `luvus module pane open example.deck present`.
 
 [[actions]]
 id = "present"

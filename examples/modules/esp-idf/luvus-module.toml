@@ -1,12 +1,12 @@
 id = "example.esp-idf"
 name = "ESP-IDF"
 version = "0.1.0"
-min_bohay_version = "0.9.6"
+min_luvus_version = "0.9.6"
 description = "Build, flash and monitor ESP32 boards without leaving the terminal. Flashing stops the serial monitor, reflashes, and brings the monitor back in the same pane, so you keep the log from before the flash."
 platforms = ["macos", "linux"]
 
 # ── Settings (Settings -> Modules -> ESP-IDF) ────────────────────────────────
-# Everything the wrapper needs arrives as BOHAY_SETTING_<KEY>, so no script here
+# Everything the wrapper needs arrives as LUVUS_SETTING_<KEY>, so no script here
 # ever parses JSON or reads a config file.
 
 [[settings]]
@@ -71,7 +71,7 @@ placement = "tab"
 command = ["sh", "menuconfig-pane.sh"]
 
 # ── The DEVICES dock ─────────────────────────────────────────────────────────
-# bohay owns the rendering; this module only pushes rows.
+# luvus owns the rendering; this module only pushes rows.
 
 # One dock for the whole module: the boards it can see, then the commands that
 # act on the selected one. Two docks would compete for the same sidebar height —
@@ -93,7 +93,7 @@ command = ["sh", "dock.sh"]
 
 # ── Actions ──────────────────────────────────────────────────────────────────
 # Deliberately no `contexts` on any of these. `contexts` injects an action into
-# bohay's own right-click menus, and this module is global — so every node and
+# luvus's own right-click menus, and this module is global — so every node and
 # pane in every project would carry ESP-IDF entries whether or not it is
 # firmware. The dock is the module's single surface; nothing here reaches into
 # menus the user did not ask for.
@@ -137,18 +137,18 @@ id = "monitor"
 title = "ESP-IDF: monitor"
 command = ["sh", "monitor.sh"]
 
-# Opens the pane entrypoint above in its own tab. `$BOHAY_BIN_PATH` is the
-# running server's own binary — a bare `bohay` could resolve a different install
+# Opens the pane entrypoint above in its own tab. `$LUVUS_BIN_PATH` is the
+# running server's own binary — a bare `luvus` could resolve a different install
 # with a different socket and report "no module".
 [[actions]]
 id = "edit-partitions"
 title = "ESP-IDF: edit partition table"
-command = ["sh", "-c", '"$BOHAY_BIN_PATH" module pane open example.esp-idf partitions --placement tab']
+command = ["sh", "-c", '"$LUVUS_BIN_PATH" module pane open example.esp-idf partitions --placement tab']
 
 [[actions]]
 id = "menuconfig"
 title = "ESP-IDF: menuconfig"
-command = ["sh", "-c", '"$BOHAY_BIN_PATH" module pane open example.esp-idf menuconfig --placement tab']
+command = ["sh", "-c", '"$LUVUS_BIN_PATH" module pane open example.esp-idf menuconfig --placement tab']
 
 [[actions]]
 id = "set-target"
