@@ -17,6 +17,30 @@ REPO="RizRiyz/luvus"
 die()  { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 step() { printf '\n\033[36m▸ %s\033[0m\n' "$1"; }
 sha256() { if command -v shasum >/dev/null; then shasum -a 256; else sha256sum; fi | cut -d' ' -f1; }
+
+# The terminal memory patches are separate crates because crates.io removes
+# `[patch]` tables and local paths from published manifests. Development uses
+# the checked-in paths; published Luvus releases resolve these exact versions.
+wait_for_crate() {
+  local package="$1" version="$2" waited=0
+  while [ "$waited" -lt 300 ]; do
+    cargo info "$package@$version" >/dev/null 2>&1 && return 0
+    printf '  waiting for %s %s in the crates.io index… (%ss)\r' "$package" "$version" "$waited"
+    sleep 5
+    waited=$((waited + 5))
+  done
+  die "$package $version did not appear in the crates.io index"
+}
+
+publish_support_crate() {
+  local package="$1" version="$2" manifest="$3"
+  if cargo info "$package@$version" >/dev/null 2>&1; then
+    echo "  $package $version already published"
+    return 0
+  fi
+  cargo publish --manifest-path "$manifest"
+  wait_for_crate "$package" "$version"
+}
 # Rewrite the formula in place for $TAG. The formula ships **prebuilt binaries**
 # (one url+sha256 per platform) plus a source fallback for Intel macs, so this
 # has to bump the version, every url, and every checksum — each from that
@@ -98,6 +122,13 @@ done
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "version must be semver X.Y.Z (got '$VERSION')"
 TAG="v$VERSION"
 cd "$(git rev-parse --show-toplevel)"
+RELEASE_ROOT="$(pwd)"
+VTE_MANIFEST="vendor/vte/Cargo.toml"
+ALACRITTY_MANIFEST="vendor/alacritty_terminal/Cargo.toml"
+VTE_VERSION="$(sed -n -E 's/^version = "([^"]+)"/\1/p' "$VTE_MANIFEST" | head -1)"
+ALACRITTY_VERSION="$(sed -n -E 's/^version = "([^"]+)"/\1/p' "$ALACRITTY_MANIFEST" | head -1)"
+LOCAL_VTE_PATCH="patch.crates-io.luvus-vte.path=\"$RELEASE_ROOT/vendor/vte\""
+LOCAL_ALACRITTY_PATCH="patch.crates-io.luvus-alacritty-terminal.path=\"$RELEASE_ROOT/vendor/alacritty_terminal\""
 
 # Self-heal: if we bail out (failed check, abort, dry-run) before the release is
 # committed, undo the version bump so the tree is never left half-updated.
@@ -153,13 +184,20 @@ if [ -f nix/package.nix ]; then
 fi
 
 step "Verify (fmt · clippy · test · publish dry-run)"
-cargo fmt --all --check
+cargo fmt --package luvus --check
 cargo clippy --all-targets -- -D warnings
-cargo test --locked
+# Never let a test consume the release operator's terminal. Interactive
+# compatibility paths must fail closed instead of blocking the entire release.
+cargo test --locked </dev/null
 # --allow-dirty: the version bump isn't committed yet at this point. This is only
 # a build/package check; the REAL `cargo publish` below runs after the commit on a
 # clean tree, so the published artifact still matches a committed state.
-cargo publish --dry-run --allow-dirty
+cargo publish --dry-run --allow-dirty --manifest-path "$VTE_MANIFEST"
+cargo publish --dry-run --allow-dirty --manifest-path "$ALACRITTY_MANIFEST" \
+  --config "$LOCAL_VTE_PATCH"
+cargo publish --dry-run --allow-dirty \
+  --config "$LOCAL_VTE_PATCH" \
+  --config "$LOCAL_ALACRITTY_PATCH"
 
 step "Release notes preview (what the workflow will publish on the GitHub Release)"
 bash scripts/changelog.sh "$TAG"
@@ -188,10 +226,14 @@ step "Push (triggers the release workflow → binaries)"
 git push origin main
 git push origin "$TAG"
 
-step "Publish to crates.io"
+step "Publish terminal support crates to crates.io"
 if [ "$SKIP_CARGO_PUBLISH" = "1" ]; then
   echo "  skipping cargo publish by request"
 else
+  publish_support_crate "luvus-vte" "$VTE_VERSION" "$VTE_MANIFEST"
+  publish_support_crate "luvus-alacritty-terminal" "$ALACRITTY_VERSION" "$ALACRITTY_MANIFEST"
+
+  step "Publish Luvus to crates.io"
   cargo publish
 fi
 

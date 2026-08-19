@@ -12,21 +12,21 @@
 [package]
 edition = "2021"
 rust-version = "1.62.1"
-name = "vte"
+name = "luvus-vte"
 version = "0.15.0"
 authors = [
     "Joe Wilm <joe@jwilm.com>",
     "Christian Duerr <contact@christianduerr.com>",
 ]
 build = false
-exclude = ["/.travis.yml"]
+exclude = ["/.travis.yml", "/Cargo.toml.orig"]
 autolib = false
 autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Parser for implementing terminal emulators"
-documentation = "https://docs.rs/vte/"
+description = "Luvus-patched VTE parser with lazy synchronized-update allocation"
+documentation = "https://docs.rs/luvus-vte/"
 readme = "README.md"
 keywords = [
     "ansi",
@@ -39,7 +39,7 @@ categories = [
     "no-std",
 ]
 license = "Apache-2.0 OR MIT"
-repository = "https://github.com/alacritty/vte"
+repository = "https://github.com/RizRiyz/luvus"
 
 [features]
 ansi = [

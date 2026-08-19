@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 rust-version = "1.85.0"
-name = "alacritty_terminal"
+name = "luvus-alacritty-terminal"
 version = "0.26.0"
 authors = [
     "Christian Duerr <contact@christianduerr.com>",
@@ -24,11 +24,12 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Library for writing terminal emulators"
-homepage = "https://alacritty.org"
+description = "Luvus-patched Alacritty terminal engine with bounded history allocation"
+exclude = ["/Cargo.toml.orig", "/tests/ref"]
+homepage = "https://luvus.dev"
 readme = "README.md"
 license = "Apache-2.0"
-repository = "https://github.com/alacritty/alacritty"
+repository = "https://github.com/RizRiyz/luvus"
 resolver = "2"
 
 [features]
@@ -83,7 +84,9 @@ optional = true
 version = "0.2.0"
 
 [dependencies.vte]
-version = "0.15.0"
+version = "=0.15.0"
+package = "luvus-vte"
+path = "../vte"
 features = [
     "std",
     "ansi",

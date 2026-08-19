@@ -1188,6 +1188,37 @@ fn agent_start_cmd(args: &[String]) -> Result<i32> {
     Ok(if ready { 0 } else { 2 })
 }
 
+fn confirm_legacy_all_from(
+    command: &str,
+    interactive: bool,
+    input: &mut impl BufRead,
+    output: &mut impl Write,
+) -> Result<bool> {
+    if !interactive {
+        return Err(anyhow!(
+            "deprecated `skill {command} --all` requires an interactive confirmation; use the explicit per-agent commands instead"
+        ));
+    }
+    write!(
+        output,
+        "Apply `skill {command}` to claude, codex, and opencode? [y/N] "
+    )?;
+    output.flush()?;
+    let mut answer = String::new();
+    input.read_line(&mut answer)?;
+    Ok(matches!(
+        answer.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+fn confirm_legacy_all(command: &str) -> Result<bool> {
+    let stdin = std::io::stdin();
+    let mut input = stdin.lock();
+    let mut output = std::io::stderr().lock();
+    confirm_legacy_all_from(command, stdin.is_terminal(), &mut input, &mut output)
+}
+
 /// Manage explicit, per-agent skill installations. No server is required and
 /// no command here changes agent configuration unless the user names an agent
 /// (or passes `--all`).
@@ -1223,22 +1254,6 @@ fn skill_cmd(rest: &[String]) -> Result<i32> {
             ),
             None => println!("{}\tdisabled", status.agent),
         }
-    }
-
-    fn confirm_legacy_all(command: &str) -> Result<bool> {
-        if !std::io::stdin().is_terminal() {
-            return Err(anyhow!(
-                "deprecated `skill {command} --all` requires an interactive confirmation; use the explicit per-agent commands instead"
-            ));
-        }
-        eprint!("Apply `skill {command}` to claude, codex, and opencode? [y/N] ");
-        std::io::stderr().flush()?;
-        let mut answer = String::new();
-        std::io::stdin().read_line(&mut answer)?;
-        Ok(matches!(
-            answer.trim().to_ascii_lowercase().as_str(),
-            "y" | "yes"
-        ))
     }
 
     let mut positionals = Vec::new();
@@ -2745,9 +2760,35 @@ mod tests {
             vec!["show".into()],
             vec!["update".into(), "codex".into()],
             vec!["on".into()],
-            vec!["off".into(), "--all".into()],
         ] {
             assert!(skill_cmd(&args).is_err(), "{args:?}");
+        }
+
+        let mut unused_input = std::io::Cursor::new(b"yes\n");
+        let mut output = Vec::new();
+        let error =
+            confirm_legacy_all_from("off", false, &mut unused_input, &mut output).unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("requires an interactive confirmation"));
+        assert!(output.is_empty());
+
+        for (answer, expected) in [
+            ("yes\n", true),
+            ("Y\n", true),
+            ("no\n", false),
+            ("\n", false),
+        ] {
+            let mut input = std::io::Cursor::new(answer.as_bytes());
+            let mut output = Vec::new();
+            assert_eq!(
+                confirm_legacy_all_from("off", true, &mut input, &mut output).unwrap(),
+                expected
+            );
+            assert_eq!(
+                String::from_utf8(output).unwrap(),
+                "Apply `skill off` to claude, codex, and opencode? [y/N] "
+            );
         }
     }
 }

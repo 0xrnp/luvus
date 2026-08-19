@@ -23,11 +23,26 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo fmt --all --check
+      # Path dependencies retain their upstream formatting; check Luvus itself.
+      - run: cargo fmt --package luvus --check
       # `-D warnings` is scoped to clippy on our own crate — NOT a global
       # RUSTFLAGS, which would also fail on harmless dependency warnings.
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --locked
+      - name: Test terminal support crates
+        run: |
+          cargo test --manifest-path vendor/vte/Cargo.toml --lib
+          cargo test --manifest-path vendor/alacritty_terminal/Cargo.toml --lib
+      # Cargo strips local patches from published manifests. Verify the exact
+      # three-crate registry graph so `cargo install luvus` cannot regress.
+      - name: Verify publishable crate graph
+        run: |
+          cargo package --allow-dirty --manifest-path vendor/vte/Cargo.toml
+          cargo package --allow-dirty --manifest-path vendor/alacritty_terminal/Cargo.toml \
+            --config 'patch.crates-io.luvus-vte.path="vendor/vte"'
+          cargo package --allow-dirty \
+            --config 'patch.crates-io.luvus-vte.path="vendor/vte"' \
+            --config 'patch.crates-io.luvus-alacritty-terminal.path="vendor/alacritty_terminal"'
 
   # macOS is the primary platform (notch companion, Apple-silicon binaries) -
   # run the full test suite there too, not just at release-tag time.
