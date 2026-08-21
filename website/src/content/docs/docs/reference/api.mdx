@@ -12,10 +12,10 @@ directory in `/tmp` to stay within the operating system's path limit.
 The resolved path is injected into every pane as `$LUVUS_SOCKET_PATH`. That
 socket is the authority boundary, so methods do not need a session parameter.
 Use `luvus --session <name> <command>` from outside a pane. Inside a pane, keep
-the inherited socket so commands cannot drift to another server. The CLI is a
-thin wrapper: **every server command maps to one method**, so the easiest way
-to learn the API is to use the CLI and read its JSON output. Session list,
-stop, and delete are local lifecycle helpers that resolve the chosen socket.
+the inherited socket so commands cannot drift to another server. Server-facing
+CLI commands map to these methods. Session lifecycle and theme acquisition are
+local helpers: theme files are validated and installed client-side, then only a
+bounded registry reload is sent to the selected server.
 
 ## Wire format
 
@@ -49,6 +49,7 @@ printf '%s\n' '{"id":"1","method":"ping","params":{}}' | nc -U ~/.luvus/luvus.so
 | worktrees | `worktree.list` · `worktree.create` · `worktree.open` · `worktree.remove` |
 | orchestration | `task.add` · `task.list` · `task.get` · `task.claim` · `task.next` · `task.start` · `task.heartbeat` · `task.update` · `task.done` · `task.merge` · `task.release` · `lease.acquire` · `lease.list` · `lease.release` |
 | modules | `module.list` · `module.info` · `module.link` · `module.unlink` · `module.enable` · `module.disable` · `module.action.list` · `module.action.invoke` · `module.pane.open` · `module.pane.focus` · `module.pane.close` · `module.config_dir` · `module.settings.list` · `module.settings.get` · `module.settings.set` · `module.log.list` |
+| themes | `theme.list` · `theme.path` · `theme.use` · `theme.reload` |
 | ui / server | `ui.sidebar` · `ui.dock.push` · `ui.dock.list` · `ui.dock.move` · `ui.bar.push` · `ui.bar.list` · `ui.bar.move` · `ui.bar.remove` · `ui.notification.push` · `ui.notification.clear` · `ui.toast` · `ping` · `server.stop` · `events.subscribe` |
 
 Parameter shapes mirror the CLI flags (`luvus task add --paths x` →
@@ -154,6 +155,31 @@ Unsupported agents return `unsupported_agent`; a supported agent whose session
 ID cannot be resolved returns `session_unknown`; and PTY launch failure returns
 `spawn_failed`. Validation completes before a new pane is spawned.
 
+## Themes
+
+Theme acquisition does not accept an API URL or path. Use the CLI's bounded,
+client-side `theme install` flow, which validates and writes the shared home
+before asking the selected server to reload.
+
+| Method | Params | Result |
+|---|---|---|
+| `theme.list` | `{}` | `{themes:[...], problems:[...]}` |
+| `theme.path` | `{}` | `{type:"theme_path", path}` |
+| `theme.use` | `{id}` | `{type:"theme_selected", id}` |
+| `theme.reload` | `{}` | `{type:"themes_reloaded", count, selected_available, problems}` |
+
+`theme.list` returns built-in entries first, installed entries sorted by ID,
+and virtual `terminal` last. Every entry includes metadata, source, warnings,
+and whether it is active. Invalid local files are omitted from `themes` and
+reported in `problems`.
+
+`theme.use` validates the ID against the server's current registry before
+changing `config.theme` or rendering. Missing IDs return `not_found` without
+mutation. `theme.reload` scans and parses the home-level `themes/` directory on
+the API connection worker, then sends one validated registry to the
+single-writer app loop. If the configured theme disappeared, Luvus falls back
+visually but preserves its configured ID and reports `selected_available:false`.
+
 ## Sidebar docks
 
 For plugins that contribute a **sidebar dock** (a panel in the left or right
@@ -245,8 +271,8 @@ belong to the widget's enabled module. Clicks expose
 Limits are intentionally small: 16 segments and 256 display columns per
 widget, 16 live widgets per module, 64 live widgets globally, and 30 updates per
 module per second. Text/value fields are capped at 256 bytes and reject control
-characters. Notification TTL is clamped to 500–60,000 ms, the queue is capped
-at 32, and a matching `(owner, dedupe_key)` replaces the older notification.
+characters. A supplied notification TTL must be a positive integer and is
+clamped to 500–60,000 ms; the queue is capped at 32, and a matching `(owner, dedupe_key)` replaces the older notification.
 Top and Bottom rendering are each capped at 100 display columns for the region
 and 100 for one widget. The current viewport may provide less because tabs,
 tab navigation, shortcut guidance, and the fixed version retain their protected
@@ -288,8 +314,8 @@ still spell these `node.created` / `node.closed`) · `tab.created` · `tab.close
 ## Practical notes
 
 - **Prefer the CLI** in scripts (`luvus --verbose`-free, stable JSON to
-  stdout). Talk raw JSON only when embedding (e.g. a native companion app:
-  the macOS notch app is just another socket client).
+  stdout). Talk raw JSON only when embedding Luvus into another local client
+  or integration.
 - The socket is **owner-only** (`0600`, in a `0700` dir). Access equals
   command execution as your user. See the
   [security model](/docs/explanation/security/).

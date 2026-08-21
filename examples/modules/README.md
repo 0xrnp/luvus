@@ -1,6 +1,6 @@
 # Example modules
 
-Three complete, working luvus modules — one per language — each covering a
+Five complete, working luvus modules across three languages, each covering a
 different part of the extension surface. They are meant to be **copied and
 edited**, not installed as-is.
 

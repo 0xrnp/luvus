@@ -17,8 +17,8 @@ fn agent_hook_script(agent: &str) -> String {
     format!(
         r#"#!/usr/bin/env bash
 # luvus {agent} integration — reports the session id for native resume, and
-# (docs/24 NOTCH-6) forwards lifecycle events (permission prompt / turn end) for
-# the notch companion. Branches on the hook's event name.
+# forwards lifecycle events (permission prompt / turn end) to Luvus. Branches
+# on the hook's event name so modules and API clients get precise transitions.
 [ -n "$LUVUS_ENV" ] || exit 0
 [ -n "$LUVUS_SOCKET_PATH" ] || exit 0
 command -v luvus >/dev/null 2>&1 || exit 0
@@ -236,8 +236,8 @@ fn install_shell_hook(agent: &str) -> Result<PathBuf> {
 
 pub fn install_claude() -> Result<PathBuf> {
     let dir = install_shell_hook("claude")?;
-    // Also register the same (branching) script under lifecycle events so the
-    // notch companion gets precise permission/turn-end signals (docs/24 NOTCH-6).
+    // Also register the same branching script under lifecycle events so modules
+    // and API clients get precise permission/turn-end signals.
     let cfg_path = dir.join("settings.json");
     let script = dir.join("luvus-agent-hook.sh");
     let mut cfg: Value = fs::read_to_string(&cfg_path)
@@ -270,7 +270,7 @@ pub fn install_opencode() -> Result<PathBuf> {
 
 /// The Kimi hook events we register (docs/23): `SessionStart` (matcher
 /// `startup|resume`) reports the session id for resume; `Notification` + `Stop`
-/// feed the notch companion precise lifecycle signals. Kimi's `[[hooks]]` table
+/// feed modules and API clients precise lifecycle signals. Kimi's `[[hooks]]` table
 /// accepts only `event`/`matcher`/`command`/`timeout`, so we write nothing else.
 const KIMI_HOOK_EVENTS: &[(&str, Option<&str>)] = &[
     ("SessionStart", Some("startup|resume")),
@@ -356,8 +356,8 @@ pub fn install_grok() -> Result<PathBuf> {
     set_executable(&script)?;
     let cmd = script.to_string_lossy();
 
-    // SessionStart resumes; Notification/Stop/SubagentStop feed the notch
-    // companion (docs/24), matching what install_claude registers.
+    // SessionStart resumes; Notification/Stop/SubagentStop feed event
+    // subscribers, matching what install_claude registers.
     let group = |c: &str| json!({ "hooks": [ { "type": "command", "command": c } ] });
     let doc = json!({
         "hooks": {
@@ -491,7 +491,7 @@ pub fn uninstall(agent: &str) -> Result<()> {
     if let Ok(s) = fs::read_to_string(&cfg_path) {
         if let Ok(mut v) = serde_json::from_str::<Value>(&s) {
             // Strip luvus's entry from the primary event and, for Claude, the
-            // extra lifecycle events install_claude added (docs/24 NOTCH-6).
+            // extra lifecycle events installed alongside session detection.
             let mut events = vec![spec.event];
             if agent == "claude" {
                 events.extend(["Notification", "Stop"]);

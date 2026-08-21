@@ -12,6 +12,7 @@ pub(super) struct SettingsHits {
     pub close: Rect,
     pub tabs: Vec<(SettingsTab, Rect)>,
     pub ctls: Vec<(usize, Rect)>,
+    pub theme_remove: Vec<(String, Rect)>,
     pub arrows: Vec<(usize, i32, Rect)>,
 }
 
@@ -104,7 +105,7 @@ pub(super) fn draw_settings(
         inner.width,
         inner.height.saturating_sub(6),
     );
-    let (ctls, arrows) = draw_content(f, content, tab, cursor, app, t);
+    let (ctls, theme_remove, arrows) = draw_content(f, content, tab, cursor, app, t);
 
     // ── footer hint (Keys tab gets its own rebind/reset hints) ──
     let footer_y = inner.bottom().saturating_sub(1);
@@ -158,11 +159,16 @@ pub(super) fn draw_settings(
         close,
         tabs,
         ctls,
+        theme_remove,
         arrows,
     }
 }
 
-type Content = (Vec<(usize, Rect)>, Vec<(usize, i32, Rect)>);
+type Content = (
+    Vec<(usize, Rect)>,
+    Vec<(String, Rect)>,
+    Vec<(usize, i32, Rect)>,
+);
 
 fn draw_content(
     f: &mut RenderTarget,
@@ -173,6 +179,7 @@ fn draw_content(
     t: &Theme,
 ) -> Content {
     let mut ctls = Vec::new();
+    let mut theme_remove = Vec::new();
     let mut arrows = Vec::new();
     let cat = app.catalog;
     match tab {
@@ -180,20 +187,22 @@ fn draw_content(
             // Scroll the list so the selected theme is always visible (there are
             // more palettes than fit a short modal).
             let avail = area.height.max(1) as usize;
-            let total = theme::THEMES.len();
+            let themes = app.theme_registry.entries();
+            let total = themes.len();
             let scroll = cursor
                 .saturating_sub(avail.saturating_sub(1))
                 .min(total.saturating_sub(avail));
             // Size the name column to the longest registered name, so the swatches
             // and descriptions stay in one straight column however long a palette
             // is called. A fixed width mis-aligned every row once a name outgrew it.
-            let name_w = theme::THEMES
+            let name_w = themes
                 .iter()
-                .map(|n| display_width(n))
+                .map(|entry| display_width(&entry.id))
                 .max()
                 .unwrap_or(9);
             for (vi, i) in (scroll..total).take(avail).enumerate() {
-                let name = theme::THEMES[i];
+                let entry = &themes[i];
+                let name = entry.id.as_str();
                 let row = Rect::new(area.x, area.y + vi as u16, area.width, 1);
                 let sel = i == cursor;
                 if sel {
@@ -206,12 +215,45 @@ fn draw_content(
                 // full RGB; downsample when the active theme is (i.e. on
                 // non-truecolor terminals) so it renders the right color instead of
                 // a mangled truecolor escape.
-                let pal = theme::by_name(name);
+                let pal = &entry.theme;
                 let (mut bg, mut accent) = (pal.base, pal.accent);
                 if app.downsample {
                     bg = crate::ipc::protocol::to_256(bg);
                     accent = crate::ipc::protocol::to_256(accent);
                 }
+                // Local files get the same right-aligned installed/remove affordance
+                // as agent integrations. Bundled and virtual themes never expose a
+                // destructive action. Reserve its cells so descriptions cannot draw
+                // underneath the button.
+                let remove = matches!(
+                    entry.source,
+                    crate::theme::registry::ThemeSource::Local { .. }
+                )
+                .then(|| {
+                    let installed = format!("✓ {} ", cat.act_installed);
+                    let action = "· ⏎ remove";
+                    let width = (display_width(&installed) + display_width(action)) as u16;
+                    let width = width.min(row.width.saturating_sub(1));
+                    let rect = Rect::new(
+                        row.right().saturating_sub(width.saturating_add(1)),
+                        row.y,
+                        width,
+                        1,
+                    );
+                    f.render_widget(
+                        Paragraph::new(Line::from(vec![
+                            Span::styled(installed, Style::new().fg(t.mint)),
+                            Span::styled(action, Style::new().fg(t.overlay0)),
+                        ]))
+                        .alignment(Alignment::Right),
+                        rect,
+                    );
+                    theme_remove.push((entry.id.clone(), rect));
+                    rect
+                });
+                let content_width = remove
+                    .map(|rect| rect.x.saturating_sub(row.x + 1))
+                    .unwrap_or(row.width);
                 f.render_widget(
                     Paragraph::new(Line::from(vec![
                         Span::styled(if sel { " ▸ " } else { "   " }, Style::new().fg(t.accent)),
@@ -223,9 +265,16 @@ fn draw_content(
                         Span::styled("   ", Style::new().bg(bg)),
                         Span::styled("   ", Style::new().bg(accent)),
                         Span::raw("  "),
-                        Span::styled(theme::describe(name), Style::new().fg(t.overlay0)),
+                        Span::styled(
+                            if entry.description.is_empty() {
+                                entry.display_name.as_str()
+                            } else {
+                                entry.description.as_str()
+                            },
+                            Style::new().fg(t.overlay0),
+                        ),
                     ])),
-                    row,
+                    Rect::new(row.x, row.y, content_width, 1),
                 );
                 ctls.push((i, row));
             }
@@ -982,7 +1031,7 @@ fn draw_content(
             }
         }
     }
-    (ctls, arrows)
+    (ctls, theme_remove, arrows)
 }
 
 /// The one-line summary of what a module contributes, e.g. `· 2 actions · 1 dock`.

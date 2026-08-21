@@ -326,8 +326,8 @@ impl App {
                 // The screen-scraped name wins only when it's a *known* agent. If
                 // the banner text doesn't currently show one (so classify fell back
                 // to the bare shell name), don't downgrade a pane that already has a
-                // resolved agent_session: keep its disk/hook identity so the brand —
-                // and the notch logo keyed off it — stays stable across an agent's
+                // resolved agent_session: keep its disk/hook identity so the brand
+                // shown to UI and API consumers stays stable across an agent's
                 // quiet moments (Claude showing "Opus 4.8" but not "claude", etc.).
                 let detected = if self.manifests.is_agent(&det.agent) {
                     det.agent
@@ -397,8 +397,8 @@ impl App {
         };
         for (id, st, agent) in changes {
             // Publishes to subscribers and fires any module `[[events]]` hooks.
-            // Carry the pane's cwd + its node's label/branch so consumers (e.g. the
-            // notch companion, docs/24) can label the row without a second call.
+            // Carry the pane's cwd + its node's label/branch so API consumers can
+            // label the row without a second call.
             // `project` is the **node label**, matching `agent.list` exactly — a
             // consumer that patches rows from both must not see the name change
             // shape (it used to be the cwd basename here, so renaming a node made
@@ -470,6 +470,10 @@ impl App {
             "ui.bar.remove",
             "ui.notification.push",
             "ui.notification.clear",
+            "theme.list",
+            "theme.use",
+            "theme.reload",
+            "theme.path",
         ];
         if self.workspaces.is_empty() && !WITHOUT_NODE.contains(&req.method.as_str()) {
             return json!({ "id": req.id, "error": { "code": "no_session", "message": "no active session" } }).to_string();
@@ -490,6 +494,27 @@ impl App {
                 "protocol":1,
                 "session": crate::session::display_name()
             })),
+            "theme.list" => Ok(self.theme_registry.list_json(&self.config.theme)),
+            "theme.path" => Ok(json!({
+                "type": "theme_path",
+                "path": crate::theme::themes_dir().display().to_string(),
+            })),
+            "theme.use" => {
+                let id = p.get("id").and_then(Value::as_str).ok_or_else(|| {
+                    (
+                        "invalid_request".to_string(),
+                        "theme.use needs an id".to_string(),
+                    )
+                })?;
+                if self.theme_registry.get(id).is_none() {
+                    return Err((
+                        "not_found".to_string(),
+                        format!("theme `{id}` is not installed"),
+                    ));
+                }
+                self.apply_theme(id);
+                Ok(json!({"type": "theme_selected", "id": self.config.theme}))
+            }
             // Re-read `~/.luvus/manifests/` (built-in + managed OTA + user) into
             // the live engine, so `server update-manifest` applies without a
             // restart. Detection uses the new rules on the next tick.
@@ -713,9 +738,9 @@ impl App {
                 self.session_dirty = true;
                 Ok(json!({"type":"ok"}))
             }
-            // A precise agent lifecycle event from an integration hook (docs/24
-            // NOTCH-6): permission prompt, question, turn end. Forwarded verbatim
-            // onto the event bus as `agent.hook` for the notch companion.
+            // A precise agent lifecycle event from an integration hook:
+            // permission prompt, question, turn end. Forwarded verbatim onto the
+            // event bus as `agent.hook` for modules and API clients.
             "pane.report_event" => {
                 let id = self.resolve_pane(p).ok_or_else(not_found)?;
                 let agent = p.get("agent").and_then(|v| v.as_str()).unwrap_or("");
@@ -1510,36 +1535,38 @@ impl App {
                         "an actionable notification requires its module owner".into(),
                     ));
                 }
-                self.bar
-                    .allow_push(
-                        owner
-                            .as_deref()
-                            .unwrap_or(crate::bar::UNOWNED_NOTIFICATION_OWNER),
-                        Instant::now(),
-                    )
-                    .map_err(|error| ("rate_limited".into(), error))?;
                 let ttl_ms = match p.get("ttl_ms") {
                     None => 4_000,
-                    Some(value) => value.as_u64().ok_or_else(|| {
+                    Some(value) => value.as_u64().filter(|ttl| *ttl > 0).ok_or_else(|| {
                         (
                             "invalid_request".into(),
                             "ttl_ms must be a positive integer".into(),
                         )
                     })?,
                 };
+                let notification = crate::bar::NotificationPush {
+                    owner,
+                    text,
+                    level,
+                    ttl_ms,
+                    action,
+                    value: opt_str(p, "value"),
+                    dedupe_key: opt_str(p, "dedupe_key"),
+                };
+                notification
+                    .validate()
+                    .map_err(|error| ("invalid_request".into(), error))?;
                 self.bar
-                    .push_notification(
-                        crate::bar::NotificationPush {
-                            owner,
-                            text,
-                            level,
-                            ttl_ms,
-                            action,
-                            value: opt_str(p, "value"),
-                            dedupe_key: opt_str(p, "dedupe_key"),
-                        },
+                    .allow_push(
+                        notification
+                            .owner
+                            .as_deref()
+                            .unwrap_or(crate::bar::UNOWNED_NOTIFICATION_OWNER),
                         Instant::now(),
                     )
+                    .map_err(|error| ("rate_limited".into(), error))?;
+                self.bar
+                    .push_notification(notification, Instant::now())
                     .map_err(|error| ("invalid_request".into(), error))?;
                 Ok(json!({"type":"ok"}))
             }
@@ -2613,6 +2640,31 @@ mod tests {
     use crate::app::App;
 
     #[test]
+    fn theme_api_lists_validates_and_applies_registry_entries() {
+        let _env = crate::persist::test_env("theme-api");
+        let source = crate::persist::ensure_config_dir().join("api-theme.toml");
+        crate::theme::install::init(&source, "api-theme", Some("noir")).unwrap();
+        crate::theme::install::install(source.to_str().unwrap(), true).unwrap();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+
+        let listed = app.dispatch("theme.list", &json!({})).unwrap();
+        assert!(listed["themes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["id"] == "api-theme"));
+        assert!(app
+            .dispatch("theme.use", &json!({"id": "missing"}))
+            .is_err());
+        let selected = app
+            .dispatch("theme.use", &json!({"id": "api-theme"}))
+            .unwrap();
+        assert_eq!(selected["id"], "api-theme");
+        assert_eq!(app.config.theme, "api-theme");
+    }
+
+    #[test]
     fn bar_api_validates_ownership_and_preserves_the_last_valid_widget() {
         let _env = crate::persist::test_env("bar-api");
         let module =
@@ -2700,6 +2752,17 @@ command = ["true"]
         let mut app = App::new(80, 24, tx).unwrap();
         let request = json!({"text":"build finished"});
 
+        for invalid in [
+            json!({"text":"build finished","ttl_ms":0}),
+            json!({"text":"bad\u{1b}content"}),
+        ] {
+            for _ in 0..40 {
+                let error = app
+                    .dispatch("ui.notification.push", &invalid)
+                    .expect_err("invalid payloads must be rejected before rate limiting");
+                assert_eq!(error.0, "invalid_request");
+            }
+        }
         for _ in 0..30 {
             app.dispatch("ui.notification.push", &request).unwrap();
         }
@@ -2803,7 +2866,7 @@ command = ["true"]
         // `dock_menu_click_spawns_the_action_with_the_clicked_rows_env`.
     }
 
-    /// The notch companion (docs/24) patches its rows from **both** `agent.list`
+    /// External clients patch their rows from **both** `agent.list`
     /// and `pane.agent_status_changed`. If the two disagree about what `project`
     /// means, a renamed node visibly alternates between its label and its folder
     /// basename as snapshots and events interleave. Pin the contract: both carry
@@ -2828,7 +2891,7 @@ command = ["true"]
         let row = &out["agents"][0];
         assert_eq!(row["agent"], "claude");
         assert_eq!(row["status"], "working");
-        // The label the notch renders, and the legacy field it falls back to.
+        // The label an API client renders, and the legacy field it falls back to.
         assert_eq!(row["project"], "renamed-node");
         assert_eq!(row["workspace_name"], "renamed-node");
         assert_eq!(row["branch"], "feat/x");

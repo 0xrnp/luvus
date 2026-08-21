@@ -85,6 +85,16 @@ search:
   search <text...> [--case]  find text across every pane's scrollback (docs/63);
                              --case is case-sensitive; returns matches as JSON
 
+themes:
+  theme list [--json]       list built-in, installed, and virtual themes
+  theme path                print/create the shared themes directory
+  theme init <id> [--extends <id>]   write an editable TOML starter
+  theme validate <path> [--strict] [--json]   validate without installing
+  theme install <source> [--yes]     install a local file, HTTPS URL, or community/<id>
+  theme use <id>            select and persist an installed theme
+  theme uninstall <id>      remove an inactive local theme
+  theme reload              rescan installed themes in the selected server
+
 bars:
   bar list                   list declared Luvus Bar widgets and live content
   bar push --id <id> [--region top-right|bottom-right] --content <json>

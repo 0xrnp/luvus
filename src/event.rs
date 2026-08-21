@@ -117,6 +117,21 @@ pub enum AppEvent {
     /// the same channel as every other event so the loop wakes immediately —
     /// draining it on the idle tick would add a tick's latency to every CLI call.
     Api(crate::ipc::api::ApiRequest),
+    /// A home-level theme scan completed on an API worker. The app loop only
+    /// swaps the validated in-memory registry and applies the selected theme.
+    ThemeReloaded {
+        id: String,
+        registry: crate::theme::ThemeRegistry,
+        reply: Sender<String>,
+    },
+    /// Settings requested removal of an installed theme. Filesystem validation,
+    /// dependency checks, removal, and the follow-up scan all run on a worker;
+    /// the app loop only swaps the completed registry and reports the outcome.
+    ThemeUninstalled {
+        id: String,
+        previous_theme: String,
+        result: Result<crate::theme::ThemeRegistry, String>,
+    },
     /// A `wait.output` request (docs/81): reply once the pane's output contains
     /// the needle, or the deadline elapses. Carries its own reply channel so
     /// the connection can block without ever polling the loop.

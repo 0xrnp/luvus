@@ -23,6 +23,7 @@ pub fn is_cli(args: &[String]) -> bool {
                 | "ui"
                 | "events"
                 | "module"
+                | "theme"
                 | "git"
                 | "files"
                 | "worktree"
@@ -58,6 +59,7 @@ Commands:
   task         Coordinate work across multiple coding agents
   lease        Reserve file paths for active tasks
   module       Find, install, configure, and run extensions
+  theme        List, create, validate, install, and select themes
   bar          Publish and arrange top and bottom status widgets
   ui           Configure sidebars, docks, and notifications
   session      List, attach, stop, and delete server sessions
@@ -160,6 +162,16 @@ panes / agents:
 search:
   search <text...> [--case]  find text across every pane's scrollback (docs/63);
                              --case is case-sensitive; returns matches as JSON
+
+themes:
+  theme list [--json]       list built-in, installed, and virtual themes
+  theme path                print/create the shared themes directory
+  theme init <id> [--extends <id>]   write an editable TOML starter
+  theme validate <path> [--strict] [--json]   validate without installing
+  theme install <source> [--yes]     install a local file, HTTPS URL, or community/<id>
+  theme use <id>            select and persist an installed theme
+  theme uninstall <id>      remove an inactive local theme
+  theme reload              rescan installed themes in the selected server
 
 bars:
   bar list                   list declared Luvus Bar widgets and live content
@@ -296,6 +308,9 @@ pub fn run(args: &[String]) -> Result<i32> {
     if args.get(1).map(String::as_str) == Some("session") {
         return session_cmd(&args[2.min(args.len())..]);
     }
+    if args.get(1).map(String::as_str) == Some("theme") {
+        return theme_cmd(&args[2.min(args.len())..]);
+    }
     // `doctor` is a local environment check — no server needed.
     if args.get(1).map(String::as_str) == Some("doctor") {
         return Ok(doctor());
@@ -419,6 +434,7 @@ fn help_topic_has_subcommands(topic: &str) -> bool {
             | "task"
             | "lease"
             | "module"
+            | "theme"
             | "bar"
             | "ui"
             | "session"
@@ -432,8 +448,8 @@ fn help_topic_has_subcommands(topic: &str) -> bool {
 fn normalize_help_topic(topic: &str) -> Option<&str> {
     match topic {
         "workspace" | "tab" | "pane" | "agent" | "files" | "git" | "worktree" | "task"
-        | "lease" | "module" | "bar" | "ui" | "session" | "server" | "integration" | "skill"
-        | "wait" | "search" | "events" | "ping" | "doctor" | "attach" => Some(topic),
+        | "lease" | "module" | "theme" | "bar" | "ui" | "session" | "server" | "integration"
+        | "skill" | "wait" | "search" | "events" | "ping" | "doctor" | "attach" => Some(topic),
         "node" => Some("pane"),
         "remote" | "--remote" => Some("remote"),
         _ => None,
@@ -491,7 +507,11 @@ fn write_topic_help(
         ),
         "search" => (
             "luvus search <text...> [--case]",
-            detailed_section("search:\n", "\nbars:\n"),
+            detailed_section("search:\n", "\nthemes:\n"),
+        ),
+        "theme" => (
+            "luvus theme <list|path|init|validate|install|use|uninstall|reload> [args]",
+            detailed_section("themes:\n", "\nbars:\n"),
         ),
         "bar" => (
             "luvus bar <list|push|move|remove> [args]",
@@ -763,6 +783,262 @@ fn session_error(code: &str, message: &str, json_output: bool) -> Result<i32> {
         eprintln!("{message}");
     }
     Ok(1)
+}
+
+fn theme_cmd(args: &[String]) -> Result<i32> {
+    let subcommand = args.first().map(String::as_str).unwrap_or("list");
+    let json_output = args.iter().any(|arg| arg == "--json");
+    match subcommand {
+        "list" => {
+            if args.iter().skip(1).any(|arg| arg != "--json") {
+                return Err(anyhow!("usage: luvus theme list [--json]"));
+            }
+            let registry = crate::theme::ThemeRegistry::load();
+            let active = crate::config::load().theme;
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&registry.list_json(&active))?
+                );
+            } else {
+                for entry in registry.entries() {
+                    let marker = if crate::ui::theme::canonical(&active) == entry.id {
+                        '*'
+                    } else {
+                        ' '
+                    };
+                    let source = match &entry.source {
+                        crate::theme::registry::ThemeSource::BuiltIn => "built-in",
+                        crate::theme::registry::ThemeSource::Local { .. } => "local",
+                        crate::theme::registry::ThemeSource::Virtual => "virtual",
+                    };
+                    println!(
+                        "{marker} {:<28} {:<9} {}",
+                        entry.id, source, entry.description
+                    );
+                    for warning in &entry.warnings {
+                        println!("    warning: {warning}");
+                    }
+                }
+                for problem in registry.problems() {
+                    eprintln!("invalid {}: {}", problem.path, problem.message);
+                }
+            }
+            Ok(if registry.problems().is_empty() { 0 } else { 1 })
+        }
+        "path" => {
+            reject_theme_extras(args, 1, "usage: luvus theme path")?;
+            println!("{}", crate::theme::ensure_themes_dir()?.display());
+            Ok(0)
+        }
+        "init" => {
+            let id = args
+                .get(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .ok_or_else(|| anyhow!("usage: luvus theme init <id> [--extends <id>]"))?;
+            if !matches!(args.len(), 2 | 4)
+                || (args.len() == 4 && args.get(2).map(String::as_str) != Some("--extends"))
+            {
+                return Err(anyhow!("usage: luvus theme init <id> [--extends <id>]"));
+            }
+            let parent = flag(args, "--extends");
+            let path = std::path::PathBuf::from(format!("{id}.toml"));
+            crate::theme::install::init(&path, id, parent.as_deref())?;
+            println!("created {}", path.display());
+            Ok(0)
+        }
+        "validate" => {
+            let path = args
+                .get(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .ok_or_else(|| anyhow!("usage: luvus theme validate <path> [--strict] [--json]"))?;
+            if args
+                .iter()
+                .skip(2)
+                .any(|arg| !matches!(arg.as_str(), "--strict" | "--json"))
+            {
+                return Err(anyhow!(
+                    "usage: luvus theme validate <path> [--strict] [--json]"
+                ));
+            }
+            let strict = args.iter().any(|arg| arg == "--strict");
+            let (file, warnings) =
+                match crate::theme::install::validate_path(std::path::Path::new(path), strict) {
+                    Ok(validated) => validated,
+                    Err(error) if json_output => {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&json!({
+                                "valid": false,
+                                "error": format!("{error:#}"),
+                            }))?
+                        );
+                        return Ok(1);
+                    }
+                    Err(error) => return Err(error),
+                };
+            if json_output {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&json!({
+                        "valid": true,
+                        "id": file.id,
+                        "display_name": file.display_name,
+                        "warnings": warnings,
+                    }))?
+                );
+            } else {
+                println!("valid theme: {} ({})", file.display_name, file.id);
+                for warning in warnings {
+                    println!("warning: {warning}");
+                }
+            }
+            Ok(0)
+        }
+        "install" => {
+            let source = args
+                .get(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .ok_or_else(|| {
+                    anyhow!("usage: luvus theme install <path|https-url|community/id> [--yes]")
+                })?;
+            if args
+                .iter()
+                .skip(2)
+                .any(|arg| !matches!(arg.as_str(), "--yes" | "-y"))
+            {
+                return Err(anyhow!(
+                    "usage: luvus theme install <path|https-url|community/id> [--yes]"
+                ));
+            }
+            let yes = args
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "--yes" | "-y"));
+            let installed = crate::theme::install::install(source, yes)?;
+            let reloaded = reload_theme_server()?;
+            println!(
+                "installed {} ({}) from {} to {}{}",
+                installed.display_name,
+                installed.id,
+                installed.source,
+                installed.path.display(),
+                if reloaded {
+                    " and reloaded the selected server"
+                } else {
+                    " — start or reload Luvus to use it"
+                }
+            );
+            for warning in installed.warnings {
+                println!("warning: {warning}");
+            }
+            Ok(0)
+        }
+        "use" => {
+            let id = args
+                .get(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .ok_or_else(|| anyhow!("usage: luvus theme use <id>"))?;
+            reject_theme_extras(args, 2, "usage: luvus theme use <id>")?;
+            let registry = crate::theme::ThemeRegistry::load();
+            let entry = registry
+                .get(id)
+                .ok_or_else(|| anyhow!("theme `{id}` is not installed"))?;
+            let selected = entry.id.clone();
+            match send_request("theme.use", json!({"id": selected})) {
+                Ok(response) => {
+                    ensure_api_success(&response)?;
+                    println!("using theme {}", entry.id);
+                }
+                Err(_) => {
+                    let mut config = crate::config::load();
+                    config.theme = selected;
+                    crate::config::save(&config);
+                    println!("using theme {} — applies when Luvus starts", entry.id);
+                }
+            }
+            Ok(0)
+        }
+        "uninstall" => {
+            let id = args
+                .get(1)
+                .filter(|arg| !arg.starts_with('-'))
+                .ok_or_else(|| anyhow!("usage: luvus theme uninstall <id>"))?;
+            reject_theme_extras(args, 2, "usage: luvus theme uninstall <id>")?;
+            let path = crate::theme::install::uninstall(id)?;
+            let reloaded = reload_theme_server()?;
+            println!(
+                "uninstalled {id} ({}){}",
+                path.display(),
+                if reloaded {
+                    " and reloaded the selected server"
+                } else {
+                    ""
+                }
+            );
+            Ok(0)
+        }
+        "reload" => {
+            reject_theme_extras(args, 1, "usage: luvus theme reload")?;
+            let registry = crate::theme::ThemeRegistry::load();
+            if !registry.problems().is_empty() {
+                for problem in registry.problems() {
+                    eprintln!("invalid {}: {}", problem.path, problem.message);
+                }
+            }
+            if reload_theme_server()? {
+                println!("reloaded {} themes", registry.entries().len());
+            } else {
+                println!(
+                    "validated {} themes — start Luvus to load them",
+                    registry.entries().len()
+                );
+            }
+            Ok(if registry.problems().is_empty() { 0 } else { 1 })
+        }
+        "help" | "--help" | "-h" => {
+            write_topic_help(std::io::stdout().lock(), "theme", None)?;
+            Ok(0)
+        }
+        _ => Err(anyhow!(
+            "usage: luvus theme <list|path|init|validate|install|use|uninstall|reload>"
+        )),
+    }
+}
+
+fn reject_theme_extras(args: &[String], expected: usize, usage: &str) -> Result<()> {
+    if args.len() != expected {
+        return Err(anyhow!(usage.to_string()));
+    }
+    Ok(())
+}
+
+fn ensure_api_success(response: &Value) -> Result<()> {
+    if let Some(error) = response.get("error") {
+        let message = error
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("theme request failed");
+        return Err(anyhow!(message.to_string()));
+    }
+    Ok(())
+}
+
+fn reload_theme_server() -> Result<bool> {
+    match send_request("theme.reload", json!({})) {
+        Ok(response) => {
+            if response
+                .get("error")
+                .and_then(|error| error.get("message"))
+                .and_then(Value::as_str)
+                .is_some_and(|message| message.contains("unknown method: theme.reload"))
+            {
+                return Ok(false);
+            }
+            ensure_api_success(&response)?;
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
 }
 
 /// `luvus module install owner/repo[/sub] [--ref REF] [--yes]` — clone + build
@@ -2641,6 +2917,32 @@ mod tests {
         ] {
             let args = argv(raw);
             assert_eq!(command_help_request(&args), expected, "{raw}");
+        }
+    }
+
+    #[test]
+    fn theme_cli_is_recognized_and_validates_command_shapes() {
+        assert!(is_cli(&argv("luvus theme list")));
+        assert_eq!(
+            command_help_request(&argv("luvus theme install --help")),
+            Some(("theme", Some("install")))
+        );
+        for invalid in [
+            vec!["list".into(), "extra".into()],
+            vec!["path".into(), "extra".into()],
+            vec![
+                "init".into(),
+                "new-theme".into(),
+                "--bad".into(),
+                "noir".into(),
+            ],
+            vec!["validate".into(), "x.toml".into(), "--bad".into()],
+            vec!["install".into(), "x.toml".into(), "--bad".into()],
+            vec!["use".into(), "noir".into(), "extra".into()],
+            vec!["uninstall".into(), "x".into(), "extra".into()],
+            vec!["reload".into(), "extra".into()],
+        ] {
+            assert!(theme_cmd(&invalid).is_err(), "{invalid:?}");
         }
     }
 

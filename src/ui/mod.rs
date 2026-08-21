@@ -143,6 +143,7 @@ pub fn render_projection(f: &mut RenderTarget, app: &mut App) {
     let picker_rects = std::mem::take(&mut app.picker_rects);
     let settings_tab_rects = std::mem::take(&mut app.settings_tab_rects);
     let settings_ctl_rects = std::mem::take(&mut app.settings_ctl_rects);
+    let settings_theme_remove_rects = std::mem::take(&mut app.settings_theme_remove_rects);
     let settings_arrow_rects = std::mem::take(&mut app.settings_arrow_rects);
     let changelog_link_rects = std::mem::take(&mut app.changelog_link_rects);
     let changelog_copy_rects = std::mem::take(&mut app.changelog_copy_rects);
@@ -253,6 +254,7 @@ pub fn render_projection(f: &mut RenderTarget, app: &mut App) {
     app.picker_rects = picker_rects;
     app.settings_tab_rects = settings_tab_rects;
     app.settings_ctl_rects = settings_ctl_rects;
+    app.settings_theme_remove_rects = settings_theme_remove_rects;
     app.settings_arrow_rects = settings_arrow_rects;
     app.changelog_link_rects = changelog_link_rects;
     app.changelog_copy_rects = changelog_copy_rects;
@@ -608,12 +610,14 @@ fn render_into_mode(f: &mut RenderTarget, app: &mut App, resize_panes: bool) {
         app.settings_close_rect = Some(h.close);
         app.settings_tab_rects = h.tabs.clone();
         app.settings_ctl_rects = h.ctls.clone();
+        app.settings_theme_remove_rects = h.theme_remove.clone();
         app.settings_arrow_rects = h.arrows.clone();
     } else {
         app.settings_modal_rect = None;
         app.settings_close_rect = None;
         app.settings_tab_rects.clear();
         app.settings_ctl_rects.clear();
+        app.settings_theme_remove_rects.clear();
         app.settings_arrow_rects.clear();
     }
     // A module-setting prompt sits above the modal it was opened from.

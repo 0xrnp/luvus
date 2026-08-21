@@ -12,6 +12,8 @@ owner-only (`0700`).
 | `session.json` | the auto-saved session snapshot (workspaces → tabs → panes) |
 | `orch.json` | the orchestration task ledger + leases |
 | `modules.json` + `modules/` | installed extensions and their state |
+| `themes/*.toml` | installed data-only themes, shared by named sessions |
+| `themes/*.source.json` | source URL/path, SHA-256 digest, and install timestamp for managed theme installs |
 | `worktrees/` | worktrees created by luvus, nested per repo |
 | `luvus.sock` / `luvus-client.sock` | the control + render sockets (owner-only) |
 
@@ -23,6 +25,7 @@ cleanly across versions because unknown fields get defaults.
 
 | Key | Effect |
 |---|---|
+| `theme` | active bundled, installed, or virtual theme ID. A missing installed ID falls back visually without erasing the stored value. |
 | `layout.scrollback_bytes` | approximate memory budget per pane's retained history; defaults to `10485760` (10 MiB). The legacy `layout.scrollback` line count is read for compatibility. (See [Scrollback](/docs/guides/scrollback/).) |
 | `layout.show_titles` | show the title on each pane border |
 | `layout.resume_in_new_workspace` | resume a session into its own workspace instead of a new tab |

@@ -194,7 +194,7 @@ mod tests {
     }
 
     #[test]
-    fn default_runtime_text_and_fixed_version_keep_the_existing_order() {
+    fn default_guidance_and_fixed_version_keep_the_existing_edges() {
         let _env = crate::persist::test_env("bar-status-default");
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(120, 30, tx).unwrap();
@@ -205,12 +205,20 @@ mod tests {
             .unwrap();
 
         let status = row(&terminal, 29);
+        let prefix = app.prefix.label();
+        let guidance = format!(
+            "  {prefix}   {}  ·  {prefix} ? {}",
+            app.catalog.prefix, app.catalog.all_shortcuts
+        );
         assert!(
-            status.trim_end().ends_with(concat!(
-                "NORMAL  ·  1 pane  ·  tab 1/1  ·  v",
-                env!("CARGO_PKG_VERSION")
-            )),
-            "unexpected status row: {status:?}"
+            status.starts_with(&guidance),
+            "unexpected guidance prefix: {status:?}"
+        );
+        assert!(
+            status
+                .trim_end()
+                .ends_with(concat!("v", env!("CARGO_PKG_VERSION"))),
+            "unexpected version suffix: {status:?}"
         );
         let version = app.version_rect.expect("version stays clickable");
         assert_eq!(version.right(), 119);
