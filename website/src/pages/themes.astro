@@ -108,7 +108,6 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
               <label>Display name <input id="display-name" value="Warm Copper" /></label>
               <label>Description <input id="theme-description" value="A dark brown palette with a restrained copper accent." maxlength="512" /></label>
               <label>Author <input id="theme-author" placeholder="Your GitHub username" maxlength="128" /></label>
-              <label>License <input id="theme-license" value="MIT" maxlength="128" /></label>
               <label>Appearance
                 <select id="appearance"><option value="dark">Dark</option><option value="light">Light</option></select>
               </label>
@@ -208,7 +207,7 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
           <div class="diagnostics">
             <div id="quality" class="quality" role="status" aria-live="polite"></div>
             <div class="export-head">
-              <div><p class="panel-kicker">Portable theme file</p><p>Install downloads with <code>luvus theme install ./theme.toml</code>, or publish them to the reviewed community registry.</p></div>
+              <div><p class="panel-kicker">Portable theme file</p><p>Install downloads with <code>luvus theme install ./theme.toml</code>, or publish them to the reviewed community registry. <a href="https://github.com/RizRiyz/luvus/blob/main/community/themes/README.md" target="_blank" rel="noreferrer">Read the contribution guide.</a></p></div>
               <div class="export-actions">
                 <button type="button" class="small-button" id="copy-btn">Copy TOML</button>
                 <button type="button" class="small-button publish-button" id="publish-btn" title="Open GitHub's fork and pull request flow">Publish theme</button>
@@ -264,7 +263,6 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
       const displayName = document.getElementById('display-name') as HTMLInputElement;
       const themeDescription = document.getElementById('theme-description') as HTMLInputElement;
       const themeAuthor = document.getElementById('theme-author') as HTMLInputElement;
-      const themeLicense = document.getElementById('theme-license') as HTMLInputElement;
       const appearance = document.getElementById('appearance') as HTMLSelectElement;
       const output = document.getElementById('toml-output') as HTMLTextAreaElement;
       const quality = document.getElementById('quality') as HTMLElement;
@@ -300,14 +298,13 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
         return true;
       }
 
-      function load(values: Record<string, string>, id: string, name: string, mode: string, metadata?: { description?: string; author?: string; license?: string }) {
+      function load(values: Record<string, string>, id: string, name: string, mode: string, metadata?: { description?: string; author?: string }) {
         base = { ...values };
         draft = {};
         themeId.value = id;
         displayName.value = name;
         themeDescription.value = metadata?.description ?? '';
         themeAuthor.value = metadata?.author ?? '';
-        themeLicense.value = metadata?.license ?? 'MIT';
         appearance.value = mode;
         THEME_FIELDS.forEach((field) => setColor(field.id, values[field.id], false));
         refreshOutput();
@@ -320,11 +317,11 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
         }
         const maker = MAKER_THEMES.find((theme) => theme.id === id);
         if (maker) {
-          load(maker.colors, maker.id, maker.name, maker.appearance, { description: maker.description, author: 'Luvus', license: 'MIT' });
+          load(maker.colors, maker.id, maker.name, maker.appearance, { description: maker.description, author: 'Luvus' });
           return;
         }
         const found = THEMES.find((theme) => theme.id === id);
-        load(readBuiltIn(id), `${id}-custom`, `${found?.label ? titleCase(found.label) : titleCase(id)} Custom`, modeOf(id), { description: found?.note ?? '', author: 'Luvus', license: 'MIT' });
+        load(readBuiltIn(id), `${id}-custom`, `${found?.label ? titleCase(found.label) : titleCase(id)} Custom`, modeOf(id), { description: found?.note ?? '', author: 'Luvus' });
       }
 
       function makeToml() {
@@ -336,9 +333,8 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
           `display_name = "${esc(name)}"`,
           `description = "${esc(themeDescription.value.trim())}"`,
           `author = "${esc(themeAuthor.value.trim())}"`,
-          `license = "${esc(themeLicense.value.trim())}"`,
           'version = "1.0.0"',
-          'requires_luvus = ">=0.11.0"',
+          'requires_luvus = ">=0.12.0"',
           `appearance = "${appearance.value}"`,
           '',
           '[colors]',
@@ -398,7 +394,6 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
           mode: value('appearance') === 'light' ? 'light' : 'dark',
           description: value('description') || '',
           author: value('author') || '',
-          license: value('license') || 'MIT',
         };
       }
 
@@ -438,7 +433,7 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
         });
       });
       document.querySelectorAll<HTMLInputElement>('[data-hex]').forEach((input) => input.addEventListener('focusout', () => preview.querySelectorAll('.token-active').forEach((node) => node.classList.remove('token-active'))));
-      [themeId, displayName, themeDescription, themeAuthor, themeLicense, appearance].forEach((input) => input.addEventListener('input', refreshOutput));
+      [themeId, displayName, themeDescription, themeAuthor, appearance].forEach((input) => input.addEventListener('input', refreshOutput));
       document.getElementById('reset-btn')?.addEventListener('click', () => load(base, themeId.value, displayName.value, appearance.value));
       document.querySelectorAll<HTMLButtonElement>('[data-size]').forEach((button) => button.addEventListener('click', () => {
         preview.dataset.size = button.dataset.size;
@@ -479,7 +474,6 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
         const missing = [
           [themeDescription, 'description'],
           [themeAuthor, 'author'],
-          [themeLicense, 'license'],
         ].find(([input]) => !(input as HTMLInputElement).value.trim());
         if (missing) {
           quality.classList.add('warn');
@@ -642,7 +636,7 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
   @keyframes token-pulse { 50% { filter: brightness(1.35); } }
   .diagnostics { margin-top: 1rem; display: grid; gap: .75rem; }
   .quality { border: 1px solid var(--green); background: rgb(from var(--green) r g b / .08); color: var(--sub2); padding: .8rem .9rem; font-size: .85rem; line-height: 1.55; }.quality strong { color: var(--green); }.quality.warn { border-color: var(--amber); background: rgb(from var(--amber) r g b / .08); }.quality.warn strong { color: var(--amber); }.quality ul { margin: .45rem 0 0; padding-left: 1.25rem; }
-  .export-head { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }.export-head p { margin: 0; }.export-head .panel-kicker { color: var(--accent); font-size: .7rem; margin-bottom: .45rem; }.export-head p:not(.panel-kicker) { color: var(--sub); font-size: .88rem; line-height: 1.6; }.export-head code { color: var(--accent); }
+  .export-head { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }.export-head p { margin: 0; }.export-head .panel-kicker { color: var(--accent); font-size: .7rem; margin-bottom: .45rem; }.export-head p:not(.panel-kicker) { color: var(--sub); font-size: .88rem; line-height: 1.6; }.export-head code, .export-head a { color: var(--accent); }
   .export-actions { display: flex; gap: .55rem; flex-shrink: 0; }
   .publish-button { color: var(--bg); background: var(--accent); border-color: var(--accent); }
   #toml-output { width: 100%; min-height: 230px; resize: vertical; overflow: auto; white-space: pre; background: var(--bg2); color: var(--sub2); border: 1px solid var(--line); padding: .9rem; font-size: .78rem; line-height: 1.6; scrollbar-width: thin; scrollbar-color: var(--overlay0) transparent; }

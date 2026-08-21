@@ -636,7 +636,39 @@ accent = "#123456"
 
     #[test]
     fn community_theme_files_are_valid() {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("community/themes");
+        let source_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("community/themes");
+        let dir = std::env::temp_dir().join(format!(
+            "luvus-community-theme-validation-{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // The registry targets the next public release while Cargo.toml remains
+        // at the last released version until the release workflow bumps it. Keep
+        // the checked-in >=0.12 contract, but substitute this test binary's version
+        // only while exercising schema resolution and website drift checks.
+        for item in fs::read_dir(&source_dir).unwrap().flatten() {
+            let path = item.path();
+            if path.extension().and_then(|extension| extension.to_str()) != Some("toml") {
+                continue;
+            }
+            let source = fs::read_to_string(&path).unwrap();
+            assert!(
+                source.contains("requires_luvus = \">=0.12.0\""),
+                "{} must require Luvus 0.12 or newer",
+                path.display()
+            );
+            assert!(
+                !source.contains("\nlicense ="),
+                "{} should use the repository license",
+                path.display()
+            );
+            let compatible = source.replace(
+                "requires_luvus = \">=0.12.0\"",
+                concat!("requires_luvus = \">=", env!("CARGO_PKG_VERSION"), "\""),
+            );
+            fs::write(dir.join(path.file_name().unwrap()), compatible).unwrap();
+        }
         let registry = ThemeRegistry::load_from(&dir);
         assert!(
             registry.problems().is_empty(),
@@ -697,5 +729,6 @@ accent = "#123456"
                 entry.warnings
             );
         }
+        fs::remove_dir_all(dir).unwrap();
     }
 }

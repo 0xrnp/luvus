@@ -3,9 +3,8 @@ id = "solar-ash"
 display_name = "Solar Ash"
 description = "Charcoal surfaces with a warm solar-yellow accent."
 author = "Luvus"
-license = "MIT"
 version = "1.0.0"
-requires_luvus = ">=0.11.0"
+requires_luvus = ">=0.12.0"
 appearance = "dark"
 
 [colors]

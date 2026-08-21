@@ -373,9 +373,6 @@ impl ThemeFile {
         if self.author.trim().is_empty() {
             warnings.push("author is empty".to_string());
         }
-        if self.license.trim().is_empty() {
-            warnings.push("license is empty".to_string());
-        }
         if self.version.trim().is_empty() {
             warnings.push("version is empty".to_string());
         }
@@ -589,6 +586,17 @@ accent = "#123456"
                 "website schema is missing {field}"
             );
         }
+    }
+
+    #[test]
+    fn website_maker_emits_the_012_contract_without_a_license_prompt() {
+        let path =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("website/src/pages/themes.astro");
+        let source = std::fs::read_to_string(path).unwrap();
+        assert!(source.contains("'requires_luvus = \">=0.12.0\"'"));
+        assert!(!source.contains("theme-license"));
+        assert!(source
+            .contains("https://github.com/RizRiyz/luvus/blob/main/community/themes/README.md"));
     }
 
     #[test]

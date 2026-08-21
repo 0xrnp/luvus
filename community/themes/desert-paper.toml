@@ -3,9 +3,8 @@ id = "desert-paper"
 display_name = "Desert Paper"
 description = "Warm light paper with a restrained clay accent."
 author = "Luvus"
-license = "MIT"
 version = "1.0.0"
-requires_luvus = ">=0.11.0"
+requires_luvus = ">=0.12.0"
 appearance = "light"
 
 [colors]

@@ -25,7 +25,9 @@ submission must not shadow a bundled theme or the virtual `terminal` theme.
 
 Theme files may contain metadata and the 18 documented semantic colors only.
 They cannot contain scripts, CSS, keybindings, terminal commands, or other
-executable behavior. Complete themes are preferred for portability. A partial
+executable behavior. Reviewed files require Luvus 0.12 or newer and use this
+repository's license, so contributors do not add a per-theme `license` field.
+Complete themes are preferred for portability. A partial
 theme must declare one installed `extends` parent; inheritance is limited to
 eight levels and cycles are rejected.
 
