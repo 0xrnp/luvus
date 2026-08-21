@@ -84,6 +84,99 @@ pub struct Config {
     /// or restart. This set keeps an off dock off; re-placing it clears the flag.
     #[serde(default)]
     pub docks_off: Vec<String>,
+    /// Luvus Bar placement groups. Dynamic content is never persisted here;
+    /// only presentation preferences survive a restart.
+    #[serde(default)]
+    pub bars: BarConfig,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BarConfig {
+    #[serde(default)]
+    pub top_right: Vec<String>,
+    #[serde(default = "default_bottom_bars")]
+    pub bottom_right: Vec<String>,
+    #[serde(default)]
+    pub off: Vec<String>,
+}
+
+fn default_bottom_bars() -> Vec<String> {
+    vec![crate::bar::CORE_RUNTIME.to_string()]
+}
+
+impl Default for BarConfig {
+    fn default() -> Self {
+        Self {
+            top_right: Vec::new(),
+            bottom_right: default_bottom_bars(),
+            off: Vec::new(),
+        }
+    }
+}
+
+impl BarConfig {
+    pub fn order(&self, region: crate::bar::BarRegion) -> &[String] {
+        match region {
+            crate::bar::BarRegion::TopRight => &self.top_right,
+            crate::bar::BarRegion::BottomRight => &self.bottom_right,
+        }
+    }
+
+    pub fn region_for(
+        &self,
+        key: &str,
+        fallback: crate::bar::BarRegion,
+    ) -> Option<crate::bar::BarRegion> {
+        if self.off.iter().any(|candidate| candidate == key) {
+            None
+        } else if self.top_right.iter().any(|candidate| candidate == key) {
+            Some(crate::bar::BarRegion::TopRight)
+        } else if self.bottom_right.iter().any(|candidate| candidate == key) {
+            Some(crate::bar::BarRegion::BottomRight)
+        } else {
+            Some(fallback)
+        }
+    }
+
+    /// Whether `key` already has exactly this persisted placement.
+    ///
+    /// This deliberately differs from [`Self::region_for`]: an undeclared
+    /// preference can currently resolve to the requested fallback, but the
+    /// first explicit move still needs to be saved so a later module-default
+    /// change does not move the user's bar.
+    pub fn is_explicitly_placed(&self, key: &str, region: Option<crate::bar::BarRegion>) -> bool {
+        let top = self
+            .top_right
+            .iter()
+            .filter(|candidate| candidate.as_str() == key)
+            .count();
+        let bottom = self
+            .bottom_right
+            .iter()
+            .filter(|candidate| candidate.as_str() == key)
+            .count();
+        let off = self
+            .off
+            .iter()
+            .filter(|candidate| candidate.as_str() == key)
+            .count();
+        match region {
+            Some(crate::bar::BarRegion::TopRight) => top == 1 && bottom == 0 && off == 0,
+            Some(crate::bar::BarRegion::BottomRight) => top == 0 && bottom == 1 && off == 0,
+            None => top == 0 && bottom == 0 && off == 1,
+        }
+    }
+
+    pub fn place(&mut self, key: &str, region: Option<crate::bar::BarRegion>) {
+        self.top_right.retain(|candidate| candidate != key);
+        self.bottom_right.retain(|candidate| candidate != key);
+        self.off.retain(|candidate| candidate != key);
+        match region {
+            Some(crate::bar::BarRegion::TopRight) => self.top_right.push(key.to_string()),
+            Some(crate::bar::BarRegion::BottomRight) => self.bottom_right.push(key.to_string()),
+            None => self.off.push(key.to_string()),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -282,6 +375,7 @@ impl Default for Config {
             mission_pricing: std::collections::HashMap::new(),
             mission_budget: None,
             docks_off: Vec::new(),
+            bars: BarConfig::default(),
         }
     }
 }
@@ -422,6 +516,12 @@ mod tests {
         let from_empty: Config = serde_json::from_str("{}").unwrap();
         assert_eq!(from_empty.theme, "quattro-rally");
         assert_eq!(from_empty.sidebar_width, SIDEBAR_WIDTH_DEFAULT);
+        assert_eq!(
+            from_empty.bars.bottom_right,
+            vec![crate::bar::CORE_RUNTIME.to_string()],
+            "old configs gain the default runtime bar"
+        );
+        assert!(from_empty.bars.top_right.is_empty());
         // Round-trip preserves values.
         // Scrollback defaults to a per-pane 10 MiB budget. The legacy line
         // field remains only so old config can migrate safely.
@@ -461,5 +561,32 @@ mod tests {
         assert_eq!(back.theme, "mono");
         assert!(back.notifications.sound_on_done);
         assert!(!back.notifications.sound_on_blocked);
+    }
+
+    #[test]
+    fn explicit_bar_placement_is_distinct_from_a_default_fallback() {
+        let mut bars = BarConfig {
+            top_right: Vec::new(),
+            bottom_right: Vec::new(),
+            off: Vec::new(),
+        };
+        let key = "you.ci:status";
+
+        assert_eq!(
+            bars.region_for(key, crate::bar::BarRegion::TopRight),
+            Some(crate::bar::BarRegion::TopRight)
+        );
+        assert!(
+            !bars.is_explicitly_placed(key, Some(crate::bar::BarRegion::TopRight)),
+            "an effective default is not yet a persisted user preference"
+        );
+
+        bars.place(key, Some(crate::bar::BarRegion::TopRight));
+        assert!(bars.is_explicitly_placed(key, Some(crate::bar::BarRegion::TopRight)));
+
+        // A malformed duplicate is not treated as idempotent: the next place
+        // operation should be allowed to normalize it back to one entry.
+        bars.top_right.push(key.to_string());
+        assert!(!bars.is_explicitly_placed(key, Some(crate::bar::BarRegion::TopRight)));
     }
 }

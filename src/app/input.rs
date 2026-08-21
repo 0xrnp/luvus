@@ -476,7 +476,15 @@ impl App {
         let first = |rects: &[Rect]| rects.iter().copied().find(|rect| hit(*rect));
 
         if self.changelog_open {
-            return self.changelog_check_rect.filter(|rect| hit(*rect));
+            return self
+                .changelog_check_rect
+                .filter(|rect| hit(*rect))
+                .or_else(|| {
+                    self.changelog_copy_rects
+                        .iter()
+                        .map(|(rect, _)| *rect)
+                        .find(|rect| hit(*rect))
+                });
         }
         if let Some(menu) = &self.tab_menu {
             return menu
@@ -518,13 +526,18 @@ impl App {
         if let Some(menu) = &self.dock_menu {
             return first(&menu.rects);
         }
-
-        let modal = [self.modal_commit_rect, self.modal_cancel_rect]
-            .into_iter()
-            .flatten()
-            .find(|rect| hit(*rect));
-        if modal.is_some() {
-            return modal;
+        let modal_owns_mouse = self.file_prompt.is_some()
+            || self.file_delete.is_some()
+            || self.worktree_delete.is_some()
+            || self.worktree_prompt.is_some()
+            || self.tab_rename.is_some()
+            || self.ws_rename.is_some()
+            || self.pane_rename.is_some();
+        if modal_owns_mouse {
+            return [self.modal_commit_rect, self.modal_cancel_rect]
+                .into_iter()
+                .flatten()
+                .find(|rect| hit(*rect));
         }
 
         if self.switcher {
@@ -534,6 +547,20 @@ impl App {
                 .map(|(_, rect)| *rect)
                 .chain(self.switcher_scope_rects.iter().map(|(_, rect)| *rect))
                 .find(|rect| hit(*rect));
+        }
+
+        if let Some(popup) = self.bar.overflow.as_ref() {
+            return hit(popup.rect).then_some(popup.rect);
+        }
+        if let Some(rect) = self
+            .bar
+            .hits
+            .iter()
+            .map(|hit| hit.rect)
+            .chain(self.bar.overflow_hits.iter().map(|hit| hit.rect))
+            .find(|rect| hit(*rect))
+        {
+            return Some(rect);
         }
 
         self.file_tree_rects
@@ -590,6 +617,19 @@ impl App {
                     // answer lands where it was asked for.
                     if self.changelog_check_rect.is_some_and(hit_rect) {
                         crate::update::check_now_reporting(self.app_tx.clone());
+                        return;
+                    }
+                    // Installer/update rows copy the exact command, even when a
+                    // narrow modal clips its visual representation.
+                    if let Some(command) = self
+                        .changelog_copy_rects
+                        .iter()
+                        .find(|(rect, _)| hit_rect(*rect))
+                        .map(|(_, command)| command.clone())
+                    {
+                        self.pending_clipboard = Some(command);
+                        let message = self.catalog.copied;
+                        self.show_toast(message);
                         return;
                     }
                     // A click on a commit/PR reference (or the website row at the
@@ -815,6 +855,16 @@ impl App {
             if let Some(k) = self.modal_button_key(&m) {
                 self.handle_pane_rename_key(k);
             }
+            return;
+        }
+        // Bar actions and the read-only overflow popup own their rendered
+        // rectangles. This sits below every modal guard: while a modal is open,
+        // it owns the screen and a click must never invoke a hidden bar action.
+        // An open overflow popup still consumes the next click, closing when it
+        // is outside, so input never falls through to a pane behind it.
+        let bar_press = matches!(m.kind, MouseEventKind::Down(MouseButton::Left))
+            || (self.bar.overflow.is_some() && matches!(m.kind, MouseEventKind::Down(_)));
+        if bar_press && self.bar_click(m.column, m.row) {
             return;
         }
         // Track which divider (if any) the cursor is over, for the hover
@@ -1963,6 +2013,9 @@ impl App {
         if key.kind == KeyEventKind::Release {
             return false; // ignored — nothing changed
         }
+        if self.bar.overflow.take().is_some() {
+            return true;
+        }
         // Scroll mode belongs to one pane, not to the whole tab. A focus change
         // must never let the next key snap and type into the previously scrolled
         // pane. Pointer focus clears this eagerly below; this guard also covers
@@ -2491,6 +2544,21 @@ fn csi_tilde_key(code: u8, modifiers: KeyModifiers) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn text_modal_suppresses_hover_from_covered_bar_geometry() {
+        let _env = crate::persist::test_env("modal-bar-hover");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::new(80, 24, tx).unwrap();
+        app.worktree_prompt = Some(String::new());
+        app.bar.overflow = Some(crate::bar::OverflowPopup {
+            region: crate::bar::BarRegion::BottomRight,
+            keys: vec![crate::bar::CORE_RUNTIME.to_string()],
+            rect: Rect::new(60, 20, 10, 3),
+        });
+
+        assert!(app.rendered_hover_rect(Some((61, 21))).is_none());
+    }
 
     /// A resize event forces the next frame to be a full repaint, so a terminal
     /// damaged by a window move/resize/expose heals instead of keeping stale cells

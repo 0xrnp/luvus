@@ -19,6 +19,7 @@ pub fn is_cli(args: &[String]) -> bool {
                 | "workspace"
                 | "tab"
                 | "agent"
+                | "bar"
                 | "ui"
                 | "events"
                 | "module"
@@ -57,6 +58,7 @@ Commands:
   task         Coordinate work across multiple coding agents
   lease        Reserve file paths for active tasks
   module       Find, install, configure, and run extensions
+  bar          Publish and arrange top and bottom status widgets
   ui           Configure sidebars, docks, and notifications
   session      List, attach, stop, and delete server sessions
   server       Inspect and manage the selected background server
@@ -159,6 +161,14 @@ search:
   search <text...> [--case]  find text across every pane's scrollback (docs/63);
                              --case is case-sensitive; returns matches as JSON
 
+bars:
+  bar list                   list declared Luvus Bar widgets and live content
+  bar push --id <id> [--region top-right|bottom-right] --content <json>
+                             publish validated live widget segments;
+                             --content-file, --compact-content, --text and --state supported
+  bar move --id <id> --region top-right|bottom-right|off
+  bar remove --id <id>       clear live widget content, preserving placement
+
 appearance:
   ui sidebar [--side left|right] --width <n>     set a sidebar's width (columns)
   ui sidebar [--side left|right] --hide|--show   toggle a sidebar
@@ -167,6 +177,8 @@ appearance:
   ui dock push --id <id> [--title <t>] [--side left|right] [--rows <json>]
                              feed a module's sidebar dock its rows (JSON array,
                              or piped on stdin). See docs/29 + the website
+  ui notification push --text <text> [--level info|success|warning|error]
+  ui notification clear [--dedupe-key <key>]
   ui toast <text>            flash a one-line message in the UI
 
 modules (extensions):
@@ -407,6 +419,7 @@ fn help_topic_has_subcommands(topic: &str) -> bool {
             | "task"
             | "lease"
             | "module"
+            | "bar"
             | "ui"
             | "session"
             | "server"
@@ -419,8 +432,8 @@ fn help_topic_has_subcommands(topic: &str) -> bool {
 fn normalize_help_topic(topic: &str) -> Option<&str> {
     match topic {
         "workspace" | "tab" | "pane" | "agent" | "files" | "git" | "worktree" | "task"
-        | "lease" | "module" | "ui" | "session" | "server" | "integration" | "skill" | "wait"
-        | "search" | "events" | "ping" | "doctor" | "attach" => Some(topic),
+        | "lease" | "module" | "bar" | "ui" | "session" | "server" | "integration" | "skill"
+        | "wait" | "search" | "events" | "ping" | "doctor" | "attach" => Some(topic),
         "node" => Some("pane"),
         "remote" | "--remote" => Some("remote"),
         _ => None,
@@ -478,10 +491,14 @@ fn write_topic_help(
         ),
         "search" => (
             "luvus search <text...> [--case]",
-            detailed_section("search:\n", "\nappearance:\n"),
+            detailed_section("search:\n", "\nbars:\n"),
+        ),
+        "bar" => (
+            "luvus bar <list|push|move|remove> [args]",
+            detailed_section("bars:\n", "\nappearance:\n"),
         ),
         "ui" => (
-            "luvus ui <sidebar|dock|toast> [args]",
+            "luvus ui <sidebar|dock|notification|toast> [args]",
             detailed_section("appearance:\n", "\nmodules (extensions):\n"),
         ),
         "module" => (
@@ -1862,6 +1879,156 @@ fn parse(args: &[String]) -> Result<(String, Value)> {
                 _ => ("ui.dock.list".into(), json!({})),
             }
         }
+        ("bar", sub) => {
+            let mut obj = serde_json::Map::new();
+            if let Ok(owner) = std::env::var("LUVUS_MODULE_ID") {
+                obj.insert("owner".into(), json!(owner));
+            }
+            match sub {
+                "push" => {
+                    let usage = "usage: luvus bar push --id <id> [--region top-right|bottom-right] (--content <json>|--content-file <path>|--text <text>|--state <state>)";
+                    let id = flag(args, "--id").ok_or_else(|| anyhow!(usage))?;
+                    obj.insert("id".into(), json!(id));
+                    if let Some(region) = flag(args, "--region") {
+                        if !matches!(
+                            region.as_str(),
+                            "top" | "top-right" | "bottom" | "bottom-right"
+                        ) {
+                            return Err(anyhow!("--region must be top-right or bottom-right"));
+                        }
+                        obj.insert("region".into(), json!(region));
+                    }
+                    if let Some(priority) = flag(args, "--priority") {
+                        let priority = priority
+                            .parse::<u8>()
+                            .map_err(|_| anyhow!("--priority must be 0..255"))?;
+                        obj.insert("priority".into(), json!(priority));
+                    }
+                    let inline = flag(args, "--content");
+                    let file = flag(args, "--content-file");
+                    if inline.is_some() && file.is_some() {
+                        return Err(anyhow!("use only one of --content and --content-file"));
+                    }
+                    let content = if let Some(raw) = inline {
+                        serde_json::from_str(&raw).map_err(|error| {
+                            anyhow!("--content must be a JSON segment array: {error}")
+                        })?
+                    } else if let Some(path) = file {
+                        let raw = std::fs::read_to_string(&path)
+                            .map_err(|error| anyhow!("cannot read {path}: {error}"))?;
+                        serde_json::from_str(&raw).map_err(|error| {
+                            anyhow!("{path} must contain a JSON segment array: {error}")
+                        })?
+                    } else {
+                        let mut segments = Vec::new();
+                        if let Some(text) = flag(args, "--text") {
+                            segments.push(json!({"type":"text","text":text}));
+                        }
+                        if let Some(state) = flag(args, "--state") {
+                            segments.push(json!({"type":"state","state":state}));
+                        }
+                        if segments.is_empty() {
+                            return Err(anyhow!(usage));
+                        }
+                        if let Some(last) = segments.last_mut().and_then(Value::as_object_mut) {
+                            if let Some(action) = flag(args, "--action") {
+                                last.insert("action".into(), json!(action));
+                            }
+                            if let Some(value) = flag(args, "--value") {
+                                last.insert("value".into(), json!(value));
+                            }
+                        }
+                        Value::Array(segments)
+                    };
+                    if !content.is_array() {
+                        return Err(anyhow!("bar content must be a JSON segment array"));
+                    }
+                    obj.insert("content".into(), content);
+                    if let Some(raw) = flag(args, "--compact-content") {
+                        let compact: Value = serde_json::from_str(&raw).map_err(|error| {
+                            anyhow!("--compact-content must be a JSON segment array: {error}")
+                        })?;
+                        if !compact.is_array() {
+                            return Err(anyhow!(
+                                "compact bar content must be a JSON segment array"
+                            ));
+                        }
+                        obj.insert("compact_content".into(), compact);
+                    }
+                    ("ui.bar.push".into(), Value::Object(obj))
+                }
+                "move" => {
+                    let id = flag(args, "--id").ok_or_else(|| {
+                        anyhow!(
+                            "usage: luvus bar move --id <id> --region top-right|bottom-right|off"
+                        )
+                    })?;
+                    let region =
+                        flag(args, "--region").ok_or_else(|| anyhow!("--region is required"))?;
+                    if !matches!(
+                        region.as_str(),
+                        "top" | "top-right" | "bottom" | "bottom-right" | "off"
+                    ) {
+                        return Err(anyhow!("--region must be top-right, bottom-right, or off"));
+                    }
+                    obj.insert("id".into(), json!(id));
+                    obj.insert("region".into(), json!(region));
+                    ("ui.bar.move".into(), Value::Object(obj))
+                }
+                "remove" => {
+                    let id = flag(args, "--id")
+                        .ok_or_else(|| anyhow!("usage: luvus bar remove --id <id>"))?;
+                    obj.insert("id".into(), json!(id));
+                    ("ui.bar.remove".into(), Value::Object(obj))
+                }
+                "" | "list" => ("ui.bar.list".into(), Value::Object(obj)),
+                _ => return Err(anyhow!("usage: luvus bar list|push|move|remove")),
+            }
+        }
+        ("ui", "notification") => {
+            let sub = rest.first().map(String::as_str).unwrap_or("push");
+            let mut obj = serde_json::Map::new();
+            if let Ok(owner) = std::env::var("LUVUS_MODULE_ID") {
+                obj.insert("owner".into(), json!(owner));
+            }
+            match sub {
+                "push" => {
+                    let text = flag(args, "--text").ok_or_else(|| anyhow!("usage: luvus ui notification push --text <text> [--level info|success|warning|error] [--ttl-ms <n>]"))?;
+                    obj.insert("text".into(), json!(text));
+                    if let Some(level) = flag(args, "--level") {
+                        if !matches!(level.as_str(), "info" | "success" | "warning" | "error") {
+                            return Err(anyhow!("unknown notification level {level}"));
+                        }
+                        obj.insert("level".into(), json!(level));
+                    }
+                    if let Some(ttl) = flag(args, "--ttl-ms") {
+                        obj.insert(
+                            "ttl_ms".into(),
+                            json!(ttl
+                                .parse::<u64>()
+                                .map_err(|_| anyhow!("--ttl-ms must be a positive integer"))?),
+                        );
+                    }
+                    for (flag_name, key) in [
+                        ("--action", "action"),
+                        ("--value", "value"),
+                        ("--dedupe-key", "dedupe_key"),
+                    ] {
+                        if let Some(value) = flag(args, flag_name) {
+                            obj.insert(key.into(), json!(value));
+                        }
+                    }
+                    ("ui.notification.push".into(), Value::Object(obj))
+                }
+                "clear" => {
+                    if let Some(key) = flag(args, "--dedupe-key") {
+                        obj.insert("dedupe_key".into(), json!(key));
+                    }
+                    ("ui.notification.clear".into(), Value::Object(obj))
+                }
+                _ => return Err(anyhow!("usage: luvus ui notification push|clear")),
+            }
+        }
 
         ("workspace" | "node", "new") => ("workspace.new".into(), json!({})),
         ("workspace" | "node", "open") => ("workspace.open".into(), one("path", arg0())),
@@ -2706,6 +2873,50 @@ mod tests {
         let (m, p) = parse(&argv("luvus ui sidebar --side right --width 30")).unwrap();
         assert_eq!(m, "ui.sidebar");
         assert_eq!(p.get("side").and_then(|v| v.as_str()), Some("right"));
+    }
+
+    #[test]
+    fn maps_luvus_bar_and_notification_commands() {
+        let _env = crate::persist::test_env("cli-bar");
+        std::env::set_var("LUVUS_MODULE_ID", "you.ci");
+        let args = vec![
+            "luvus".into(),
+            "bar".into(),
+            "push".into(),
+            "--id".into(),
+            "status".into(),
+            "--region".into(),
+            "top-right".into(),
+            "--content".into(),
+            r#"[{"type":"text","text":"CI"},{"type":"state","state":"done"}]"#.into(),
+        ];
+        let (method, params) = parse(&args).unwrap();
+        assert_eq!(method, "ui.bar.push");
+        assert_eq!(params["owner"], "you.ci");
+        assert_eq!(params["content"].as_array().unwrap().len(), 2);
+
+        let (method, params) =
+            parse(&argv("luvus bar move --id status --region bottom-right")).unwrap();
+        assert_eq!(method, "ui.bar.move");
+        assert_eq!(params["region"], "bottom-right");
+
+        let (method, params) = parse(&argv(
+            "luvus ui notification push --text failed --level error --ttl-ms 6000",
+        ))
+        .unwrap();
+        assert_eq!(method, "ui.notification.push");
+        assert_eq!(params["ttl_ms"], 6000);
+        assert_eq!(params["owner"], "you.ci");
+        std::env::remove_var("LUVUS_MODULE_ID");
+
+        for bad in [
+            "luvus bar push --id status",
+            "luvus bar move --id status --region middle",
+            "luvus ui bar list",
+            "luvus ui notification push --text bad --level urgent",
+        ] {
+            assert!(parse(&argv(bad)).is_err(), "{bad} must be rejected");
+        }
     }
 
     #[test]
