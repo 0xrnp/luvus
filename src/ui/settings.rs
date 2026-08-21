@@ -225,10 +225,10 @@ fn draw_content(
                 // as agent integrations. Bundled and virtual themes never expose a
                 // destructive action. Reserve its cells so descriptions cannot draw
                 // underneath the button.
-                let remove = matches!(
+                let remove = (matches!(
                     entry.source,
                     crate::theme::registry::ThemeSource::Local { .. }
-                )
+                ) && !app.theme_uninstall_pending(&entry.id))
                 .then(|| {
                     let installed = format!("✓ {} ", cat.act_installed);
                     let action = "· ⏎ remove";

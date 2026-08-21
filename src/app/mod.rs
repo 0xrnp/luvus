@@ -1530,6 +1530,11 @@ pub struct App {
     /// Right-aligned remove actions for installed theme rows. Store the stable
     /// theme ID rather than its registry index so a reload cannot retarget a click.
     pub settings_theme_remove_rects: Vec<(String, Rect)>,
+    /// Installed themes with an off-loop uninstall worker in flight. An optional
+    /// `(previous theme, selection revision)` restores an automatically replaced
+    /// active theme only when the user has not selected another theme meanwhile.
+    pub(crate) pending_theme_uninstalls: HashMap<String, Option<(String, u64)>>,
+    pub(crate) theme_selection_revision: u64,
     /// Slider arrows in the modal: (control index, ±1 direction, rect).
     pub settings_arrow_rects: Vec<(usize, i32, Rect)>,
     /// Installed modules (docs/13) and the ring buffer of their command logs.
@@ -1784,6 +1789,8 @@ impl App {
             settings_tab_rects: Vec::new(),
             settings_ctl_rects: Vec::new(),
             settings_theme_remove_rects: Vec::new(),
+            pending_theme_uninstalls: HashMap::new(),
+            theme_selection_revision: 0,
             settings_arrow_rects: Vec::new(),
             modules,
             module_logs: Vec::new(),
@@ -2222,6 +2229,8 @@ impl App {
             settings_tab_rects: Vec::new(),
             settings_ctl_rects: Vec::new(),
             settings_theme_remove_rects: Vec::new(),
+            pending_theme_uninstalls: HashMap::new(),
+            theme_selection_revision: 0,
             settings_arrow_rects: Vec::new(),
             modules,
             module_logs: Vec::new(),

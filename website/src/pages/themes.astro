@@ -8,7 +8,7 @@ import '@fontsource/orbit/400.css';
 import '../styles/themes.css';
 import { NAV_MARK } from '../lib/mark';
 import { THEMES, DEFAULT_THEME } from '../lib/themes';
-import { MAKER_THEMES, THEME_FIELDS, THEME_GROUPS } from '../lib/theme-schema';
+import { MAKER_THEMES, THEME_FIELDS, THEME_GROUPS, THEME_FILE_VERSION, THEME_MIN_LUVUS } from '../lib/theme-schema';
 
 const makerStyle = (theme: (typeof MAKER_THEMES)[number]) =>
   THEME_FIELDS.map((field) => `${field.css}:${theme.colors[field.id]}`).join(';');
@@ -108,6 +108,7 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
               <label>Display name <input id="display-name" value="Warm Copper" /></label>
               <label>Description <input id="theme-description" value="A dark brown palette with a restrained copper accent." maxlength="512" /></label>
               <label>Author <input id="theme-author" placeholder="Your GitHub username" maxlength="128" /></label>
+              <label>Version <input id="theme-version" value={THEME_FILE_VERSION} maxlength="64" spellcheck="false" /></label>
               <label>Appearance
                 <select id="appearance"><option value="dark">Dark</option><option value="light">Light</option></select>
               </label>
@@ -263,6 +264,7 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
       const displayName = document.getElementById('display-name') as HTMLInputElement;
       const themeDescription = document.getElementById('theme-description') as HTMLInputElement;
       const themeAuthor = document.getElementById('theme-author') as HTMLInputElement;
+      const themeVersion = document.getElementById('theme-version') as HTMLInputElement;
       const appearance = document.getElementById('appearance') as HTMLSelectElement;
       const output = document.getElementById('toml-output') as HTMLTextAreaElement;
       const quality = document.getElementById('quality') as HTMLElement;
@@ -278,7 +280,10 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
         const previous = root.getAttribute('data-bh-theme') || DEFAULT_THEME;
         root.setAttribute('data-bh-theme', id);
         const style = getComputedStyle(root);
-        const colors = Object.fromEntries(THEME_FIELDS.map((field) => [field.id, normalize(style.getPropertyValue(field.css))]));
+        const colors = Object.fromEntries(THEME_FIELDS.map((field) => {
+          const value = normalize(style.getPropertyValue(field.css));
+          return [field.id, validHex.test(value) ? value : WARM_COPPER[field.id]];
+        }));
         root.setAttribute('data-bh-theme', previous);
         return colors;
       }
@@ -298,13 +303,14 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
         return true;
       }
 
-      function load(values: Record<string, string>, id: string, name: string, mode: string, metadata?: { description?: string; author?: string }) {
+      function load(values: Record<string, string>, id: string, name: string, mode: string, metadata?: { description?: string; author?: string; version?: string }) {
         base = { ...values };
         draft = {};
         themeId.value = id;
         displayName.value = name;
         themeDescription.value = metadata?.description ?? '';
         themeAuthor.value = metadata?.author ?? '';
+        themeVersion.value = metadata?.version ?? THEME_FILE_VERSION;
         appearance.value = mode;
         THEME_FIELDS.forEach((field) => setColor(field.id, values[field.id], false));
         refreshOutput();
@@ -333,8 +339,8 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
           `display_name = "${esc(name)}"`,
           `description = "${esc(themeDescription.value.trim())}"`,
           `author = "${esc(themeAuthor.value.trim())}"`,
-          'version = "1.0.0"',
-          'requires_luvus = ">=0.12.0"',
+          `version = "${esc(themeVersion.value.trim() || THEME_FILE_VERSION)}"`,
+          `requires_luvus = ">=${THEME_MIN_LUVUS}"`,
           `appearance = "${appearance.value}"`,
           '',
           '[colors]',
@@ -358,6 +364,7 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
       function assess() {
         const warnings: string[] = [];
         if (!/^[a-z0-9][a-z0-9._-]*$/.test(themeId.value.trim())) warnings.push('Theme ID should use lowercase letters, numbers, dots, dashes, or underscores.');
+        if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(themeVersion.value.trim())) warnings.push('Version should be valid semantic versioning, such as 1.0.0.');
         const textRatio = contrast(draft.text, draft.mantle);
         const subRatio = contrast(draft.subtext1, draft.mantle);
         if (textRatio < 4.5) warnings.push(`Primary text contrast is ${textRatio.toFixed(1)}:1; aim for at least 4.5:1.`);
@@ -394,6 +401,7 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
           mode: value('appearance') === 'light' ? 'light' : 'dark',
           description: value('description') || '',
           author: value('author') || '',
+          version: value('version') || THEME_FILE_VERSION,
         };
       }
 
@@ -433,11 +441,16 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
         });
       });
       document.querySelectorAll<HTMLInputElement>('[data-hex]').forEach((input) => input.addEventListener('focusout', () => preview.querySelectorAll('.token-active').forEach((node) => node.classList.remove('token-active'))));
-      [themeId, displayName, themeDescription, themeAuthor, appearance].forEach((input) => input.addEventListener('input', refreshOutput));
-      document.getElementById('reset-btn')?.addEventListener('click', () => load(base, themeId.value, displayName.value, appearance.value));
-      document.querySelectorAll<HTMLButtonElement>('[data-size]').forEach((button) => button.addEventListener('click', () => {
+      [themeId, displayName, themeDescription, themeAuthor, themeVersion, appearance].forEach((input) => input.addEventListener('input', refreshOutput));
+      document.getElementById('reset-btn')?.addEventListener('click', () => load(base, themeId.value, displayName.value, appearance.value, {
+        description: themeDescription.value,
+        author: themeAuthor.value,
+        version: themeVersion.value,
+      }));
+      const sizeButtons = document.querySelectorAll<HTMLButtonElement>('.viewport-switch [data-size]');
+      sizeButtons.forEach((button) => button.addEventListener('click', () => {
         preview.dataset.size = button.dataset.size;
-        document.querySelectorAll('[data-size]').forEach((item) => item.classList.toggle('on', item === button));
+        sizeButtons.forEach((item) => item.classList.toggle('on', item === button));
       }));
 
       async function copyToml() {
@@ -457,6 +470,11 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
         if (!/^[a-z0-9][a-z0-9._-]*$/.test(id)) {
           assess();
           themeId.focus();
+          return;
+        }
+        if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(themeVersion.value.trim())) {
+          assess();
+          themeVersion.focus();
           return;
         }
         if (id === 'terminal' || THEMES.some((theme) => theme.id === id)) {
@@ -494,7 +512,7 @@ const GITHUB = 'https://github.com/RizRiyz/luvus';
         link.href = url;
         link.download = `${safe}.toml`;
         link.click();
-        URL.revokeObjectURL(url);
+        setTimeout(() => URL.revokeObjectURL(url), 0);
       });
       const importFile = document.getElementById('import-file') as HTMLInputElement;
       document.getElementById('import-btn')?.addEventListener('click', () => importFile.click());

@@ -149,51 +149,32 @@ pub struct ThemeColorsFile {
 }
 
 impl ThemeColorsFile {
-    pub const FIELDS: [&'static str; 18] = [
-        "crust",
-        "mantle",
-        "base",
-        "surface0",
-        "surface1",
-        "overlay0",
-        "overlay1",
-        "subtext0",
-        "subtext1",
-        "text",
-        "accent",
-        "sel_bg",
-        "border",
-        "border_focus",
-        "green",
-        "mint",
-        "amber",
-        "coral",
-    ];
+    fn entries(&self) -> [(&'static str, Option<ColorSpec>); 18] {
+        [
+            ("crust", self.crust),
+            ("mantle", self.mantle),
+            ("base", self.base),
+            ("surface0", self.surface0),
+            ("surface1", self.surface1),
+            ("overlay0", self.overlay0),
+            ("overlay1", self.overlay1),
+            ("subtext0", self.subtext0),
+            ("subtext1", self.subtext1),
+            ("text", self.text),
+            ("accent", self.accent),
+            ("sel_bg", self.sel_bg),
+            ("border", self.border),
+            ("border_focus", self.border_focus),
+            ("green", self.green),
+            ("mint", self.mint),
+            ("amber", self.amber),
+            ("coral", self.coral),
+        ]
+    }
 
     fn missing(&self) -> Vec<&'static str> {
-        let values = [
-            self.crust,
-            self.mantle,
-            self.base,
-            self.surface0,
-            self.surface1,
-            self.overlay0,
-            self.overlay1,
-            self.subtext0,
-            self.subtext1,
-            self.text,
-            self.accent,
-            self.sel_bg,
-            self.border,
-            self.border_focus,
-            self.green,
-            self.mint,
-            self.amber,
-            self.coral,
-        ];
-        Self::FIELDS
+        self.entries()
             .into_iter()
-            .zip(values)
             .filter_map(|(name, value)| value.is_none().then_some(name))
             .collect()
     }
@@ -266,29 +247,10 @@ impl ThemeColorsFile {
     }
 
     pub fn contains_reset(&self) -> bool {
-        [
-            self.crust,
-            self.mantle,
-            self.base,
-            self.surface0,
-            self.surface1,
-            self.overlay0,
-            self.overlay1,
-            self.subtext0,
-            self.subtext1,
-            self.text,
-            self.accent,
-            self.sel_bg,
-            self.border,
-            self.border_focus,
-            self.green,
-            self.mint,
-            self.amber,
-            self.coral,
-        ]
-        .into_iter()
-        .flatten()
-        .any(|value| value == ColorSpec::Reset)
+        self.entries()
+            .into_iter()
+            .filter_map(|(_, value)| value)
+            .any(|value| value == ColorSpec::Reset)
     }
 }
 
@@ -576,11 +538,9 @@ accent = "#123456"
             .split("export const WARM_COPPER")
             .next()
             .expect("field declaration precedes examples");
-        assert_eq!(
-            fields.matches("id: '").count(),
-            ThemeColorsFile::FIELDS.len()
-        );
-        for field in ThemeColorsFile::FIELDS {
+        let runtime_fields = ThemeColorsFile::default().entries();
+        assert_eq!(fields.matches("id: '").count(), runtime_fields.len());
+        for (field, _) in runtime_fields {
             assert!(
                 fields.contains(&format!("id: '{field}'")),
                 "website schema is missing {field}"
@@ -593,7 +553,13 @@ accent = "#123456"
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("website/src/pages/themes.astro");
         let source = std::fs::read_to_string(path).unwrap();
-        assert!(source.contains("'requires_luvus = \">=0.12.0\"'"));
+        let schema = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("website/src/lib/theme-schema.ts"),
+        )
+        .unwrap();
+        assert!(schema.contains("THEME_MIN_LUVUS = '0.12.0'"));
+        assert!(source.contains("`requires_luvus = \">=${THEME_MIN_LUVUS}\"`"));
         assert!(!source.contains("theme-license"));
         assert!(source
             .contains("https://github.com/RizRiyz/luvus/blob/main/community/themes/README.md"));

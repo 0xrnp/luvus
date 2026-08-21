@@ -293,6 +293,7 @@ impl App {
             KeyCode::Down => self.settings_move(1),
             KeyCode::Left => self.settings_adjust(cursor, -1),
             KeyCode::Right => self.settings_adjust(cursor, 1),
+            KeyCode::Enter if tab == SettingsTab::Theme => self.settings_enter_theme(cursor),
             KeyCode::Enter | KeyCode::Char(' ') => self.settings_activate(cursor),
             // In the Keys tab, Backspace/Delete resets a binding to its default:
             // the prefix row back to Ctrl+Space, a command row to its default key
@@ -701,12 +702,34 @@ impl App {
         }
     }
 
+    fn settings_enter_theme(&mut self, cursor: usize) {
+        let index = cursor.min(self.theme_registry.entries().len().saturating_sub(1));
+        if let Some((id, removable)) = self.theme_registry.entries().get(index).map(|entry| {
+            (
+                entry.id.clone(),
+                matches!(
+                    entry.source,
+                    crate::theme::registry::ThemeSource::Local { .. }
+                ),
+            )
+        }) {
+            if removable {
+                self.request_theme_uninstall(&id);
+            } else {
+                self.apply_theme(&id);
+            }
+        }
+    }
+
     // ── apply helpers (mutate config, apply live, persist) ───────────────────
 
     /// Remove one installed theme from Settings without blocking the app loop on
     /// directory scans or filesystem writes. If it is active, first move to the
     /// bundled default so the install layer's active-theme guard remains intact.
     fn request_theme_uninstall(&mut self, id: &str) {
+        if self.pending_theme_uninstalls.contains_key(id) {
+            return;
+        }
         let removable = self.theme_registry.get(id).is_some_and(|entry| {
             matches!(
                 &entry.source,
@@ -719,14 +742,19 @@ impl App {
         }
 
         let previous_theme = self.config.theme.clone();
-        if theme::canonical(&previous_theme) == id {
+        let restore = if theme::canonical(&previous_theme) == id {
             self.apply_theme(theme::THEMES[0]);
-        }
+            Some((previous_theme, self.theme_selection_revision))
+        } else {
+            None
+        };
 
-        // Retire the rendered action immediately so repeated clicks cannot start
-        // competing workers. A failed removal redraws the still-installed entry.
+        // Retire the rendered action immediately and record the in-flight worker
+        // so subsequent repaints cannot recreate an actionable remove hitbox.
         self.settings_theme_remove_rects
             .retain(|(theme_id, _)| theme_id != id);
+        self.pending_theme_uninstalls
+            .insert(id.to_string(), restore);
         let tx = self.app_tx.clone();
         let id = id.to_string();
         self.show_toast(format!("Removing theme {id}…"));
@@ -734,11 +762,7 @@ impl App {
             let result = crate::theme::install::uninstall(&id)
                 .map(|_| crate::theme::ThemeRegistry::load())
                 .map_err(|error| format!("{error:#}"));
-            let _ = tx.send(crate::event::AppEvent::ThemeUninstalled {
-                id,
-                previous_theme,
-                result,
-            });
+            let _ = tx.send(crate::event::AppEvent::ThemeUninstalled { id, result });
         });
     }
 
@@ -746,9 +770,9 @@ impl App {
     pub(crate) fn finish_theme_uninstall(
         &mut self,
         id: String,
-        previous_theme: String,
         result: Result<crate::theme::ThemeRegistry, String>,
     ) {
+        let restore = self.pending_theme_uninstalls.remove(&id).flatten();
         match result {
             Ok(registry) => {
                 self.replace_theme_registry(registry);
@@ -758,10 +782,18 @@ impl App {
                 self.show_toast(format!("Removed theme {id}"));
             }
             Err(error) => {
-                self.apply_theme(&previous_theme);
+                if let Some((previous_theme, fallback_revision)) = restore {
+                    if self.theme_selection_revision == fallback_revision {
+                        self.apply_theme(&previous_theme);
+                    }
+                }
                 self.show_toast(format!("Could not remove {id}: {error}"));
             }
         }
+    }
+
+    pub(crate) fn theme_uninstall_pending(&self, id: &str) -> bool {
+        self.pending_theme_uninstalls.contains_key(id)
     }
 
     pub(crate) fn apply_theme(&mut self, name: &str) {
@@ -769,6 +801,7 @@ impl App {
             return;
         };
         self.config.theme = theme::canonical(name).to_string();
+        self.theme_selection_revision = self.theme_selection_revision.wrapping_add(1);
         if self.downsample {
             selected = selected.to_256();
         }
@@ -1438,6 +1471,15 @@ mod tests {
                 .all(|(id, _)| id != "custom-remove"),
             "the action is retired before the worker completes"
         );
+        terminal
+            .draw(|frame| crate::ui::render(frame, &mut app))
+            .unwrap();
+        assert!(
+            app.settings_theme_remove_rects
+                .iter()
+                .all(|(id, _)| id != "custom-remove"),
+            "a repaint cannot recreate an action while removal is pending"
+        );
 
         let event = loop {
             match rx.recv_timeout(Duration::from_secs(2)).unwrap() {
@@ -1472,9 +1514,12 @@ mod tests {
         app.apply_theme("custom-restore");
         let previous = app.config.theme.clone();
         app.apply_theme(theme::THEMES[0]);
+        app.pending_theme_uninstalls.insert(
+            "custom-restore".into(),
+            Some((previous, app.theme_selection_revision)),
+        );
         app.finish_theme_uninstall(
             "custom-restore".into(),
-            previous,
             Err("still required by child-theme".into()),
         );
 
@@ -1483,6 +1528,56 @@ mod tests {
             .toast
             .as_ref()
             .is_some_and(|(message, _)| message.contains("still required by child-theme")));
+    }
+
+    #[test]
+    fn enter_routes_an_installed_theme_through_removal() {
+        let _env = crate::persist::test_env("installed-theme-enter-remove");
+        let source = crate::persist::ensure_config_dir().join("custom-enter.toml");
+        crate::theme::install::init(&source, "custom-enter", None).unwrap();
+        crate::theme::install::install(source.to_str().unwrap(), true).unwrap();
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::new(80, 24, tx).unwrap();
+        app.apply_theme("custom-enter");
+        app.open_settings();
+        app.settings_set_tab(SettingsTab::Theme);
+        let index = app.theme_registry.index_of("custom-enter").unwrap();
+        app.settings_activate(index);
+        assert!(!app.theme_uninstall_pending("custom-enter"));
+        app.settings_enter_theme(index);
+
+        assert_eq!(app.config.theme, theme::THEMES[0]);
+        assert!(app.theme_uninstall_pending("custom-enter"));
+        let event = rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        app.handle_event(event);
+        assert!(app.theme_registry.get("custom-enter").is_none());
+    }
+
+    #[test]
+    fn failed_theme_removal_preserves_a_newer_selection() {
+        let _env = crate::persist::test_env("failed-theme-remove-newer-selection");
+        let source = crate::persist::ensure_config_dir().join("custom-pending.toml");
+        crate::theme::install::init(&source, "custom-pending", None).unwrap();
+        crate::theme::install::install(source.to_str().unwrap(), true).unwrap();
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = crate::app::App::new(80, 24, tx).unwrap();
+        app.apply_theme("custom-pending");
+        let previous = app.config.theme.clone();
+        app.apply_theme(theme::THEMES[0]);
+        let fallback_revision = app.theme_selection_revision;
+        app.pending_theme_uninstalls
+            .insert("custom-pending".into(), Some((previous, fallback_revision)));
+        app.apply_theme("noir");
+
+        app.finish_theme_uninstall(
+            "custom-pending".into(),
+            Err("still required by child-theme".into()),
+        );
+
+        assert_eq!(app.config.theme, "noir");
+        assert!(!app.theme_uninstall_pending("custom-pending"));
     }
 
     #[test]

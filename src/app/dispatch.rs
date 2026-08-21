@@ -472,7 +472,6 @@ impl App {
             "ui.notification.clear",
             "theme.list",
             "theme.use",
-            "theme.reload",
             "theme.path",
         ];
         if self.workspaces.is_empty() && !WITHOUT_NODE.contains(&req.method.as_str()) {

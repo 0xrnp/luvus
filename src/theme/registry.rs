@@ -185,7 +185,12 @@ impl ThemeRegistry {
         }
         local_entries.sort_by(|a, b| a.id.cmp(&b.id));
 
-        let terminal = registry.entries.pop().expect("terminal built-in entry");
+        let terminal_index = registry
+            .entries
+            .iter()
+            .position(|entry| entry.id == "terminal")
+            .expect("terminal built-in entry");
+        let terminal = registry.entries.remove(terminal_index);
         registry.entries.extend(local_entries);
         registry.entries.push(terminal);
         registry.reindex();

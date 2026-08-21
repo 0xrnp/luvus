@@ -156,6 +156,27 @@ fn extract_rows_selection(
 }
 
 impl App {
+    fn handle_theme_reloaded(
+        &mut self,
+        id: String,
+        registry: crate::theme::ThemeRegistry,
+        reply: std::sync::mpsc::Sender<String>,
+    ) -> bool {
+        let count = registry.entries().len();
+        let problems = registry.problems().to_vec();
+        let selected = self.replace_theme_registry(registry);
+        let _ = reply.send(
+            json!({"id": id, "result": {
+                "type": "themes_reloaded",
+                "count": count,
+                "selected_available": selected,
+                "problems": problems,
+            }})
+            .to_string(),
+        );
+        true
+    }
+
     /// Apply an event; returns whether it changed the rendered UI (→ the loop
     /// should redraw). Input forwarded to a pane returns `false` — the screen only
     /// changes when the pane echoes (a separate `PtyData` event), so we don't waste
@@ -165,12 +186,8 @@ impl App {
         // off-loop. Apply its completed registry before the empty-workspace guard
         // so the single writer always observes the result.
         let ev = match ev {
-            AppEvent::ThemeUninstalled {
-                id,
-                previous_theme,
-                result,
-            } => {
-                self.finish_theme_uninstall(id, previous_theme, result);
+            AppEvent::ThemeUninstalled { id, result } => {
+                self.finish_theme_uninstall(id, result);
                 return true;
             }
             other => other,
@@ -186,21 +203,7 @@ impl App {
                     id,
                     registry,
                     reply,
-                } => {
-                    let count = registry.entries().len();
-                    let problems = registry.problems().to_vec();
-                    let selected = self.replace_theme_registry(registry);
-                    let _ = reply.send(
-                        json!({"id": id, "result": {
-                            "type": "themes_reloaded",
-                            "count": count,
-                            "selected_available": selected,
-                            "problems": problems,
-                        }})
-                        .to_string(),
-                    );
-                    return true;
-                }
+                } => return self.handle_theme_reloaded(id, registry, reply),
                 AppEvent::Api(req) => {
                     let resp = self.handle_api(&req);
                     let _ = req.reply.send(resp);
@@ -283,21 +286,7 @@ impl App {
                 id,
                 registry,
                 reply,
-            } => {
-                let count = registry.entries().len();
-                let problems = registry.problems().to_vec();
-                let selected = self.replace_theme_registry(registry);
-                let _ = reply.send(
-                    json!({"id": id, "result": {
-                        "type": "themes_reloaded",
-                        "count": count,
-                        "selected_available": selected,
-                        "problems": problems,
-                    }})
-                    .to_string(),
-                );
-                true
-            }
+            } => self.handle_theme_reloaded(id, registry, reply),
             // A `wait.output` connection parks its reply here and blocks until
             // the pane's output matches (docs/81) — no polling on either side.
             AppEvent::WaitOutput {

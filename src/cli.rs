@@ -169,7 +169,7 @@ themes:
   theme init <id> [--extends <id>]   write an editable TOML starter
   theme validate <path> [--strict] [--json]   validate without installing
   theme install <source> [--yes]     install a local file, HTTPS URL, or community/<id>
-  theme use <id>            select and persist an installed theme
+  theme use <id>            select and persist a registered theme
   theme uninstall <id>      remove an inactive local theme
   theme reload              rescan installed themes in the selected server
 
@@ -945,11 +945,11 @@ fn theme_cmd(args: &[String]) -> Result<i32> {
                 .ok_or_else(|| anyhow!("theme `{id}` is not installed"))?;
             let selected = entry.id.clone();
             match send_request("theme.use", json!({"id": selected})) {
-                Ok(response) => {
+                Ok(response) if !is_unknown_method(&response, "theme.use") => {
                     ensure_api_success(&response)?;
                     println!("using theme {}", entry.id);
                 }
-                Err(_) => {
+                Ok(_) | Err(_) => {
                     let mut config = crate::config::load();
                     config.theme = selected;
                     crate::config::save(&config);
@@ -1012,6 +1012,15 @@ fn reject_theme_extras(args: &[String], expected: usize, usage: &str) -> Result<
     Ok(())
 }
 
+fn is_unknown_method(response: &Value, method: &str) -> bool {
+    response
+        .get("error")
+        .and_then(|error| error.get("message"))
+        .and_then(Value::as_str)
+        .and_then(|message| message.strip_prefix("unknown method: "))
+        == Some(method)
+}
+
 fn ensure_api_success(response: &Value) -> Result<()> {
     if let Some(error) = response.get("error") {
         let message = error
@@ -1026,12 +1035,7 @@ fn ensure_api_success(response: &Value) -> Result<()> {
 fn reload_theme_server() -> Result<bool> {
     match send_request("theme.reload", json!({})) {
         Ok(response) => {
-            if response
-                .get("error")
-                .and_then(|error| error.get("message"))
-                .and_then(Value::as_str)
-                .is_some_and(|message| message.contains("unknown method: theme.reload"))
-            {
+            if is_unknown_method(&response, "theme.reload") {
                 return Ok(false);
             }
             ensure_api_success(&response)?;
@@ -3423,6 +3427,20 @@ mod tests {
     // `luvus help all` text VERBATIM — this guard fails CI if a command changes
     // without the docs page being regenerated, so the two can never drift.
     // Regenerate with:  luvus help all  →  the page's ```txt block.
+    #[test]
+    fn unknown_method_detection_is_method_specific() {
+        let response = json!({"error": {
+            "code": "invalid_request",
+            "message": "unknown method: theme.use"
+        }});
+        assert!(is_unknown_method(&response, "theme.use"));
+        assert!(!is_unknown_method(&response, "theme.reload"));
+        assert!(!is_unknown_method(
+            &json!({"error": {"message": "theme.use failed"}}),
+            "theme.use"
+        ));
+    }
+
     #[test]
     fn docs_cli_reference_matches_help() {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))

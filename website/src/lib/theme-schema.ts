@@ -1,5 +1,16 @@
+export type ThemeFieldId =
+  | 'crust' | 'mantle' | 'base' | 'surface0' | 'surface1'
+  | 'overlay0' | 'overlay1' | 'subtext0' | 'subtext1' | 'text'
+  | 'accent' | 'sel_bg' | 'border' | 'border_focus'
+  | 'green' | 'mint' | 'amber' | 'coral';
+
+export type ThemePalette = Record<ThemeFieldId, string>;
+
+export const THEME_FILE_VERSION = '1.0.0';
+export const THEME_MIN_LUVUS = '0.12.0';
+
 export type ThemeField = {
-  id: string;
+  id: ThemeFieldId;
   label: string;
   group: 'Surfaces' | 'Text' | 'Interaction' | 'Agent states';
   css: string;
@@ -35,7 +46,7 @@ export const THEME_FIELDS: ThemeField[] = [
 export const THEME_GROUPS = ['Surfaces', 'Text', 'Interaction', 'Agent states'] as const;
 
 /** A complete example draft offered by the editor, not a bundled Luvus theme. */
-export const WARM_COPPER: Record<string, string> = {
+export const WARM_COPPER: ThemePalette = {
   crust: '#100b08',
   mantle: '#1c1210',
   base: '#281a15',
@@ -61,7 +72,7 @@ export type MakerTheme = {
   name: string;
   appearance: 'dark' | 'light';
   description: string;
-  colors: Record<string, string>;
+  colors: ThemePalette;
 };
 
 /** Reviewed community palettes, also offered as complete editable examples on /themes. */

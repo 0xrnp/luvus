@@ -129,7 +129,6 @@ pub enum AppEvent {
     /// the app loop only swaps the completed registry and reports the outcome.
     ThemeUninstalled {
         id: String,
-        previous_theme: String,
         result: Result<crate::theme::ThemeRegistry, String>,
     },
     /// A `wait.output` request (docs/81): reply once the pane's output contains
