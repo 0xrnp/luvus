@@ -161,6 +161,20 @@ impl App {
     /// changes when the pane echoes (a separate `PtyData` event), so we don't waste
     /// a full render per keystroke.
     pub fn handle_event(&mut self, ev: AppEvent) -> bool {
+        // Theme removal starts in Settings but performs bounded filesystem work
+        // off-loop. Apply its completed registry before the empty-workspace guard
+        // so the single writer always observes the result.
+        let ev = match ev {
+            AppEvent::ThemeUninstalled {
+                id,
+                previous_theme,
+                result,
+            } => {
+                self.finish_theme_uninstall(id, previous_theme, result);
+                return true;
+            }
+            other => other,
+        };
         // Control-API requests and parked `wait.output` replies must be answered
         // even with no workspace open. A server that has closed its last node
         // stays alive (docs/43 §3.3), and the methods that reopen one are the
@@ -168,6 +182,25 @@ impl App {
         // reading EOF instead of a `workspace.open` / `server.stop` answer.
         if self.workspaces.is_empty() {
             match ev {
+                AppEvent::ThemeReloaded {
+                    id,
+                    registry,
+                    reply,
+                } => {
+                    let count = registry.entries().len();
+                    let problems = registry.problems().to_vec();
+                    let selected = self.replace_theme_registry(registry);
+                    let _ = reply.send(
+                        json!({"id": id, "result": {
+                            "type": "themes_reloaded",
+                            "count": count,
+                            "selected_available": selected,
+                            "problems": problems,
+                        }})
+                        .to_string(),
+                    );
+                    return true;
+                }
                 AppEvent::Api(req) => {
                     let resp = self.handle_api(&req);
                     let _ = req.reply.send(resp);
@@ -244,6 +277,25 @@ impl App {
             AppEvent::Api(req) => {
                 let resp = self.handle_api(&req);
                 let _ = req.reply.send(resp);
+                true
+            }
+            AppEvent::ThemeReloaded {
+                id,
+                registry,
+                reply,
+            } => {
+                let count = registry.entries().len();
+                let problems = registry.problems().to_vec();
+                let selected = self.replace_theme_registry(registry);
+                let _ = reply.send(
+                    json!({"id": id, "result": {
+                        "type": "themes_reloaded",
+                        "count": count,
+                        "selected_available": selected,
+                        "problems": problems,
+                    }})
+                    .to_string(),
+                );
                 true
             }
             // A `wait.output` connection parks its reply here and blocks until
@@ -366,6 +418,8 @@ impl App {
             AppEvent::ClientConnected { .. }
             | AppEvent::ClientDetach { .. }
             | AppEvent::ClientInput { .. } => false,
+            // Consumed by the pre-dispatch worker-result branch above.
+            AppEvent::ThemeUninstalled { .. } => unreachable!(),
         }
     }
 

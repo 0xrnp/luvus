@@ -1548,7 +1548,7 @@ mod tests {
     /// happens to be on screen. `amp` is a substring of "example", "sample",
     /// "stamped" and "implementation", so a Claude pane printing ordinary prose
     /// renamed itself to the amp agent; listing `~/.kiro` renamed a shell to
-    /// kiro. Both then propagated to the sidebar, the AGENTS list and the notch.
+    /// kiro. Both then propagated to the sidebar, the AGENTS list, and API clients.
     #[test]
     fn ordinary_words_do_not_name_an_agent() {
         let m = Manifests::builtin();

@@ -325,6 +325,33 @@ pub struct NotificationPush {
     pub dedupe_key: Option<String>,
 }
 
+impl NotificationPush {
+    /// Validate the complete structured payload without mutating bar state. API
+    /// dispatch uses this before consuming an owner's push-rate allowance, while
+    /// `push_notification` repeats it to keep direct callers safe.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(key) = self.dedupe_key.as_deref() {
+            if key.is_empty() || key.len() > MAX_TEXT_BYTES || key.chars().any(char::is_control) {
+                return Err("dedupe_key is empty, too long, or contains controls".into());
+            }
+        }
+        let mut segment = BarSegment::text(self.text.clone(), self.level.tone());
+        segment.action = self.action.clone();
+        segment.value = self.value.clone();
+        BarWidget::new(
+            BarWidgetKey::new(
+                self.owner.as_deref().unwrap_or(UNOWNED_NOTIFICATION_OWNER),
+                "validation",
+            ),
+            BarRegion::BottomRight,
+            vec![segment],
+            Vec::new(),
+            90,
+        )?;
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BarHit {
     pub key: BarWidgetKey,
@@ -480,6 +507,7 @@ impl BarState {
         request: NotificationPush,
         now: Instant,
     ) -> Result<(), String> {
+        request.validate()?;
         let NotificationPush {
             owner,
             text,
@@ -489,11 +517,6 @@ impl BarState {
             value,
             dedupe_key,
         } = request;
-        if let Some(key) = dedupe_key.as_deref() {
-            if key.is_empty() || key.len() > MAX_TEXT_BYTES || key.chars().any(char::is_control) {
-                return Err("dedupe_key is empty, too long, or contains controls".into());
-            }
-        }
         let mut segment = BarSegment::text(text, level.tone());
         segment.action = action;
         segment.value = value;
@@ -621,6 +644,9 @@ impl BarState {
         let mut ordered = Vec::new();
         let configured = config.order(region);
         for key in configured {
+            if key == CORE_AGENTS && !show_compact_agent_summary {
+                continue;
+            }
             if let Some(widget) = self.widgets.get(key) {
                 if config.region_for(key, widget.region) == Some(region) {
                     ordered.push(WidgetCandidate {
@@ -1127,6 +1153,33 @@ mod tests {
         assert!(state.has_visible_working(&config, false));
         config.place("test:job", None);
         assert!(!state.has_visible_working(&config, false));
+    }
+
+    #[test]
+    fn configured_core_agent_summary_still_obeys_compact_visibility() {
+        let mut state = BarState::default();
+        state
+            .push_widget(
+                BarWidget::new(
+                    BarWidgetKey::new("core", "agent-summary"),
+                    BarRegion::TopRight,
+                    vec![BarSegment::text("agents", BarTone::Normal)],
+                    Vec::new(),
+                    100,
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut config = crate::config::BarConfig::default();
+        config.top_right.push(CORE_AGENTS.into());
+
+        assert!(state
+            .widgets_for(BarRegion::TopRight, &config, false)
+            .is_empty());
+        assert_eq!(
+            state.widgets_for(BarRegion::TopRight, &config, true).len(),
+            1
+        );
     }
 
     #[test]

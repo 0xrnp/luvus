@@ -1142,6 +1142,10 @@ pub struct App {
     pub workspaces: Vec<Workspace>,
     pub active_ws: usize,
     pub theme: Theme,
+    /// Built-in, installed, and virtual themes in Settings display order.
+    /// Loaded from the shared home-level `themes/` directory; rendering reads
+    /// this in-memory snapshot and never touches the filesystem.
+    pub theme_registry: crate::theme::ThemeRegistry,
     /// Active UI-language catalog (docs/21), resolved from `config.language`.
     pub catalog: &'static crate::i18n::Catalog,
     /// Persisted user configuration (theme, layout, notifications, keys).
@@ -1523,6 +1527,9 @@ pub struct App {
     pub settings_modal_rect: Option<Rect>,
     pub settings_tab_rects: Vec<(SettingsTab, Rect)>,
     pub settings_ctl_rects: Vec<(usize, Rect)>,
+    /// Right-aligned remove actions for installed theme rows. Store the stable
+    /// theme ID rather than its registry index so a reload cannot retarget a click.
+    pub settings_theme_remove_rects: Vec<(String, Rect)>,
     /// Slider arrows in the modal: (control index, ±1 direction, rect).
     pub settings_arrow_rects: Vec<(usize, i32, Rect)>,
     /// Installed modules (docs/13) and the ring buffer of their command logs.
@@ -1555,7 +1562,8 @@ impl App {
         let config = crate::config::load();
         let files_show_hidden = config.layout.files_show_hidden;
         crate::layout::set_gaps(config.layout.col_gap, config.layout.row_gap);
-        let theme = crate::ui::theme::by_name(&config.theme);
+        let theme_registry = crate::theme::ThemeRegistry::load();
+        let theme = theme_registry.theme_or_default(&config.theme);
         let catalog = crate::i18n::by_code(&config.language);
         let sidebars = Sidebars::from_config(&config.sidebars());
         let shell = crate::platform::resolve_shell(&config.shell);
@@ -1599,6 +1607,7 @@ impl App {
             }],
             active_ws: 0,
             theme,
+            theme_registry,
             catalog,
             config,
             keymap,
@@ -1774,6 +1783,7 @@ impl App {
             settings_modal_rect: None,
             settings_tab_rects: Vec::new(),
             settings_ctl_rects: Vec::new(),
+            settings_theme_remove_rects: Vec::new(),
             settings_arrow_rects: Vec::new(),
             modules,
             module_logs: Vec::new(),
@@ -2015,7 +2025,8 @@ impl App {
         let active_ws = snap.active_ws.min(workspaces.len() - 1);
 
         crate::layout::set_gaps(config.layout.col_gap, config.layout.row_gap);
-        let theme = crate::ui::theme::by_name(&config.theme);
+        let theme_registry = crate::theme::ThemeRegistry::load();
+        let theme = theme_registry.theme_or_default(&config.theme);
         let catalog = crate::i18n::by_code(&config.language);
         let sidebars = Sidebars::from_config(&config.sidebars());
         let mut bar = crate::bar::BarState::default();
@@ -2034,6 +2045,7 @@ impl App {
             workspaces,
             active_ws,
             theme,
+            theme_registry,
             catalog,
             config,
             keymap,
@@ -2209,6 +2221,7 @@ impl App {
             settings_modal_rect: None,
             settings_tab_rects: Vec::new(),
             settings_ctl_rects: Vec::new(),
+            settings_theme_remove_rects: Vec::new(),
             settings_arrow_rects: Vec::new(),
             modules,
             module_logs: Vec::new(),
@@ -6310,7 +6323,7 @@ mod tests {
         // hook / disk discovery) must keep its brand — e.g. "claude" — even when
         // the on-screen banner doesn't contain the word "claude" that moment, so
         // classify() falls back to the bare shell name. Otherwise the reported
-        // agent (and the notch logo keyed off it) flaps to "zsh".
+        // agent identity shown to UI/API consumers flaps to "zsh".
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(80, 24, tx).unwrap();
         let focus = app.layout().focus;

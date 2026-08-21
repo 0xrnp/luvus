@@ -173,6 +173,14 @@ fn tone_color(tone: BarTone, t: &Theme) -> Color {
     }
 }
 
+fn overflow_height(rows: usize, area_height: u16, region: BarRegion) -> u16 {
+    let requested = (rows as u16 + 4).clamp(5, 18);
+    match region {
+        BarRegion::TopRight => requested.min(area_height.saturating_sub(1)),
+        BarRegion::BottomRight => requested.min(area_height),
+    }
+}
+
 pub fn draw_overflow(f: &mut RenderTarget, area: Rect, state: &mut BarState, t: &Theme) {
     let Some(open) = state.overflow.as_ref() else {
         return;
@@ -186,7 +194,10 @@ pub fn draw_overflow(f: &mut RenderTarget, area: Rect, state: &mut BarState, t: 
         .max()
         .unwrap_or(12);
     let width = (widest as u16 + 6).clamp(24, 60).min(area.width);
-    let height = (rows.len() as u16 + 4).clamp(5, 18).min(area.height);
+    // The top popup starts one row below the bar, so that anchor row is not
+    // available to its height. Keeping the offset in this cap prevents the modal
+    // from crossing the viewport bottom by one cell.
+    let height = overflow_height(rows.len(), area.height, region);
     let x = area.right().saturating_sub(width + 2).max(area.x);
     let y = match region {
         BarRegion::TopRight => area.y.saturating_add(1),
@@ -235,5 +246,23 @@ pub fn draw_overflow(f: &mut RenderTarget, area: Rect, state: &mut BarState, t: 
     );
     if let Some(open) = state.overflow.as_mut() {
         open.rect = modal;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn top_overflow_reserves_its_anchor_row_without_losing_a_fitting_item() {
+        let height = overflow_height(5, 10, BarRegion::TopRight);
+        assert_eq!(height, 9);
+        assert_eq!(1 + height, 10, "popup ends exactly at area.bottom()");
+        assert_eq!(height.saturating_sub(4), 5, "all five list rows fit");
+        assert_eq!(
+            overflow_height(20, 10, BarRegion::BottomRight),
+            10,
+            "bottom behavior still uses the full available height"
+        );
     }
 }

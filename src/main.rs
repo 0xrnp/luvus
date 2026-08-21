@@ -27,6 +27,7 @@ mod platform;
 mod session;
 mod skill;
 mod terminal;
+mod theme;
 mod ui;
 mod update;
 
