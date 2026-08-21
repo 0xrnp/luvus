@@ -226,7 +226,10 @@ fn copy_and_flush<R: Read, W: Write>(reader: &mut R, writer: &mut W) -> std::io:
     let mut copied = 0u64;
 
     loop {
-        let read = reader.read(&mut buf)?;
+        let read = match reader.read(&mut buf) {
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
         if read == 0 {
             writer.flush()?;
             return Ok(copied);
@@ -354,8 +357,10 @@ where
 #[cfg(all(test, unix))]
 mod tests {
     use super::{copy_and_flush, relay};
+    use std::cell::RefCell;
     use std::io::{Cursor, Read, Write};
     use std::os::unix::net::UnixStream;
+    use std::rc::Rc;
     use std::thread;
 
     /// The blit skips wide-char continuation cells (empty symbol) instead of
@@ -420,35 +425,76 @@ mod tests {
     }
 
     #[test]
-    fn streaming_copy_flushes_each_available_chunk() {
+    fn streaming_copy_flushes_each_chunk_and_retries_interrupts() {
         #[derive(Default)]
-        struct BufferedWriter {
+        struct WriterState {
             pending: Vec<u8>,
             visible: Vec<u8>,
             flushes: usize,
         }
 
+        struct BufferedWriter(Rc<RefCell<WriterState>>);
+
         impl Write for BufferedWriter {
             fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-                self.pending.extend_from_slice(buf);
+                self.0.borrow_mut().pending.extend_from_slice(buf);
                 Ok(buf.len())
             }
 
             fn flush(&mut self) -> std::io::Result<()> {
-                self.visible.append(&mut self.pending);
-                self.flushes += 1;
+                let mut state = self.0.borrow_mut();
+                let pending = std::mem::take(&mut state.pending);
+                state.visible.extend_from_slice(&pending);
+                state.flushes += 1;
                 Ok(())
             }
         }
 
-        let mut reader = Cursor::new(b"interactive frame".to_vec());
-        let mut writer = BufferedWriter::default();
+        struct ControlledReader {
+            step: u8,
+            writer: Rc<RefCell<WriterState>>,
+        }
+
+        impl Read for ControlledReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                let chunk = match self.step {
+                    0 => b"interactive ".as_slice(),
+                    1 => {
+                        let state = self.writer.borrow();
+                        assert_eq!(state.visible, b"interactive ");
+                        assert_eq!(state.flushes, 1, "first chunk flushed before next read");
+                        self.step += 1;
+                        return Err(std::io::ErrorKind::Interrupted.into());
+                    }
+                    2 => b"frame".as_slice(),
+                    3 => {
+                        let state = self.writer.borrow();
+                        assert_eq!(state.visible, b"interactive frame");
+                        assert_eq!(state.flushes, 2, "second chunk flushed before EOF");
+                        self.step += 1;
+                        return Ok(0);
+                    }
+                    _ => return Ok(0),
+                };
+                buf[..chunk.len()].copy_from_slice(chunk);
+                self.step += 1;
+                Ok(chunk.len())
+            }
+        }
+
+        let state = Rc::new(RefCell::new(WriterState::default()));
+        let mut reader = ControlledReader {
+            step: 0,
+            writer: Rc::clone(&state),
+        };
+        let mut writer = BufferedWriter(Rc::clone(&state));
         let copied = copy_and_flush(&mut reader, &mut writer).unwrap();
 
         assert_eq!(copied, 17);
-        assert_eq!(writer.visible, b"interactive frame");
-        assert!(writer.pending.is_empty());
-        assert!(writer.flushes >= 1, "frame must be visible before EOF");
+        let state = state.borrow();
+        assert_eq!(state.visible, b"interactive frame");
+        assert!(state.pending.is_empty());
+        assert_eq!(state.flushes, 3, "two chunk flushes plus the EOF flush");
     }
 
     /// A real scratch server must negotiate a client-owned terminal palette and
