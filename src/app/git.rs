@@ -1191,11 +1191,46 @@ mod tests {
     /// first change. Arrow navigation and Status-row clicks both set it.
     #[test]
     fn status_selection_tracks_the_exact_file_for_diff_activation() {
+        use crate::diff::{DiffFile, DiffFileStatus, DiffKey, DiffLayer, DiffSnapshot, RepoPath};
         use crate::git::model::{FileChange, RepoStatus};
+        use std::path::Path;
+
+        fn diff_file(path: &str, layer: DiffLayer) -> DiffFile {
+            DiffFile {
+                key: DiffKey {
+                    repo_id: "test-repo".into(),
+                    worktree_id: "test-worktree".into(),
+                    layer,
+                    old_path: None,
+                    new_path: Some(RepoPath::from_path(Path::new(path)).unwrap()),
+                },
+                status: DiffFileStatus::Modified,
+                additions: Some(1),
+                deletions: Some(0),
+                binary: false,
+                unresolved_notes: 0,
+                viewed_fingerprint: None,
+                fingerprint: format!("fingerprint-{path}"),
+            }
+        }
 
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(80, 24, tx).unwrap();
-        let mut view = GitView::new(std::env::current_dir().unwrap());
+        let root = app.ws().cwd.clone();
+        let staged_diff = diff_file("staged-first.rs", DiffLayer::Staged);
+        let worktree_diff = diff_file("worktree.rs", DiffLayer::Worktree);
+        app.diff.snapshot = Some(DiffSnapshot {
+            generation: 1,
+            fingerprint: "test-snapshot".into(),
+            repo_id: "test-repo".into(),
+            worktree_id: "test-worktree".into(),
+            visible_root: root.clone(),
+            repo_root: root.clone(),
+            branch: "main".into(),
+            files: vec![staged_diff.clone(), worktree_diff.clone()],
+            omitted_files: 0,
+        });
+        let mut view = GitView::new(root);
         view.section = Section::Status;
         view.status = Load::Loaded(RepoStatus {
             staged: vec![
@@ -1223,6 +1258,7 @@ mod tests {
             name: None,
         });
         app.workspaces[0].active_tab = app.workspaces[0].tabs.len() - 1;
+        let git_tab = app.ws().active_tab;
 
         // Enter with no explicit Status selection must not silently open the
         // first file or start a DIFF refresh for a guessed file.
@@ -1245,12 +1281,19 @@ mod tests {
             Some(("worktree.rs".into(), false))
         );
 
-        // The mouse path passes its row identity through this same selection
-        // helper before it opens DIFF, including while a snapshot is loading.
-        app.git_select_status_file(("staged-first.rs".into(), true));
-        assert_eq!(
-            app.git_status_selected_file(),
-            Some(("staged-first.rs".into(), true))
+        // Mouse selection and keyboard activation resolve the exact native
+        // layer, rather than a viewport row or a generic worktree diff.
+        app.git_open_status_diff_with(Some(("staged-first.rs".into(), true)));
+        assert!(
+            app.diff_view_showing(&staged_diff.key).is_some(),
+            "the staged file opened in the staged native DIFF layer"
+        );
+        app.workspaces[0].active_tab = git_tab;
+        app.git_select_status_file(("worktree.rs".into(), false));
+        app.handle_git_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE));
+        assert!(
+            app.diff_view_showing(&worktree_diff.key).is_some(),
+            "the worktree file opened in the worktree native DIFF layer"
         );
     }
 
