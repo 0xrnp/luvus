@@ -94,7 +94,7 @@ pub enum DockKind {
 }
 
 impl DockKind {
-    /// Stable id used in `config.json` and the socket API.
+    /// Stable id used in `config.json` and the UHP.
     pub fn id(&self) -> &str {
         match self {
             DockKind::Workspaces => "workspaces",
@@ -3015,7 +3015,7 @@ impl App {
     }
 
     /// Change only a workspace's display label. The folder on disk remains
-    /// untouched. The same validation is shared by the TUI and socket API.
+    /// untouched. The same validation is shared by the TUI and UHP.
     pub fn rename_workspace(
         &mut self,
         index: usize,
@@ -5706,7 +5706,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// With no node open, the socket API must answer with an error rather than
+    /// With no node open, the UHP must answer with an error rather than
     /// indexing an empty `workspaces` and taking the server down. `handle_api`
     /// already guards this centrally; the session can now *stay* empty rather
     /// than being a brief pre-quit window, so this pins that guard in place.
@@ -7455,7 +7455,7 @@ mod tests {
         );
         assert_eq!(app.workspaces.len(), before, "no half-built node is added");
         assert_eq!(app.active_ws, active_before, "focus must not move");
-        // The socket API must not answer with the *previously* active node, which
+        // The UHP must not answer with the *previously* active node, which
         // read as success to `luvus` itself and to any scripting agent.
         let (reply, _r) = std::sync::mpsc::channel();
         let resp = app.handle_api(&crate::ipc::api::ApiRequest {

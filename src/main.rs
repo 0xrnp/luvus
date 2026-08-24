@@ -26,7 +26,6 @@ mod module;
 mod orch;
 mod persist;
 mod platform;
-mod runtime_api;
 mod search;
 mod session;
 mod skill;
@@ -119,7 +118,7 @@ fn is_backend_discovery_request(args: &[String]) -> bool {
         args,
         [_, session, list, json]
             if session == "session" && list == "list" && json == "--json"
-    ) || matches!(args, [_, api, schema] if api == "api" && matches!(schema.as_str(), "schema" | "runtime-schema" | "socket-schema"))
+    ) || matches!(args, [_, uhp, schema] if uhp == "uhp" && schema == "schema")
 }
 
 /// After `ratatui::init()` (which restores raw mode + alt-screen on panic), also
@@ -995,17 +994,7 @@ mod tests {
             "luvus", "session", "list", "--json", "extra"
         ])));
         assert!(is_backend_discovery_request(&strings(&[
-            "luvus", "api", "schema"
-        ])));
-        assert!(is_backend_discovery_request(&strings(&[
-            "luvus",
-            "api",
-            "runtime-schema"
-        ])));
-        assert!(is_backend_discovery_request(&strings(&[
-            "luvus",
-            "api",
-            "socket-schema"
+            "luvus", "uhp", "schema"
         ])));
     }
 

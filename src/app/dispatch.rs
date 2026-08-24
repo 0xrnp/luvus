@@ -834,8 +834,7 @@ impl App {
         // *server's* cwd — the very thing §3.3 removed.
         const WITHOUT_NODE: &[&str] = &[
             "ping",
-            "socket.capabilities",
-            "runtime.capabilities",
+            "uhp.capabilities",
             "session.snapshot",
             "search.capabilities",
             "server.stop",
@@ -863,10 +862,7 @@ impl App {
             return json!({ "id": req.id, "error": { "code": "no_session", "message": "no active session" } }).to_string();
         }
         let read_only = crate::api::capabilities::is_read_only(&req.method);
-        let revisioned = !matches!(
-            req.method.as_str(),
-            "runtime.capabilities" | "session.snapshot"
-        );
+        let revisioned = !matches!(req.method.as_str(), "uhp.capabilities" | "session.snapshot");
         let mut params = req.params.clone();
         let expected_revision = revisioned
             .then(|| {
@@ -915,11 +911,18 @@ impl App {
                 "protocol":1,
                 "session": crate::session::display_name()
             })),
-            "socket.capabilities" => {
+            "uhp.capabilities" => {
                 reject_api_fields(p, &[])?;
-                Ok(crate::api::capabilities(crate::ipc::api::current_sequence(
-                    &self.events,
-                )))
+                let mut capabilities =
+                    crate::api::capabilities(crate::ipc::api::current_sequence(&self.events));
+                if let Some(object) = capabilities.as_object_mut() {
+                    object.insert("session".into(), json!(crate::session::display_name()));
+                    object.insert(
+                        "server_generation".into(),
+                        json!(self.backend_server_generation),
+                    );
+                }
+                Ok(capabilities)
             }
             "config.get" => {
                 reject_api_fields(p, &[])?;
@@ -958,32 +961,6 @@ impl App {
                 self.apply_socket_manifests(manifests);
                 let rules = self.manifests.rule_count();
                 Ok(json!({"type":"agent_manifests_reloaded","rules":rules}))
-            }
-            "runtime.capabilities" => {
-                reject_api_fields(p, &[])?;
-                Ok(json!({
-                "type":"runtime_capabilities",
-                "protocol":{
-                    "name":crate::runtime_api::PROTOCOL_NAME,
-                    "major":crate::runtime_api::PROTOCOL_MAJOR,
-                    "minor":crate::runtime_api::PROTOCOL_MINOR,
-                },
-                "session":crate::session::display_name(),
-                "event_sequence":crate::ipc::api::current_sequence(&self.events),
-                "methods":crate::runtime_api::METHODS,
-                "agent_authorities":["integration_report", "process_tree", "launch_command", "osc_title", "screen_text", "prior_identity", "command_fallback"],
-                "agent_states":["idle", "working", "blocked", "done"],
-                "limits":{
-                    "agent_wait_timeout_s":MAX_AGENT_WAIT.as_secs(),
-                    "agent_prompt_characters":MAX_AGENT_PROMPT_CHARS,
-                    "agent_prompt_quiet_ms":AGENT_PROMPT_QUIET.as_millis(),
-                    "agent_start_arguments":MAX_AGENT_START_ARGS,
-                    "agent_report_ttl_s":MAX_AGENT_REPORT_TTL_S,
-                    "agent_report_message_characters":MAX_AGENT_REPORT_MESSAGE_CHARS,
-                    "agent_waits_per_pane":MAX_AGENT_WAITS_PER_PANE,
-                    "agent_waits_total":MAX_AGENT_WAITS_TOTAL,
-                }
-                }))
             }
             "session.snapshot" => {
                 reject_api_fields(p, &[])?;
@@ -3782,9 +3759,9 @@ impl App {
         json!({
             "type":"session_snapshot",
             "protocol":{
-                "name":crate::runtime_api::PROTOCOL_NAME,
-                "major":crate::runtime_api::PROTOCOL_MAJOR,
-                "minor":crate::runtime_api::PROTOCOL_MINOR,
+                "name":crate::api::PROTOCOL_NAME,
+                "major":crate::api::PROTOCOL_MAJOR,
+                "minor":crate::api::PROTOCOL_MINOR,
             },
             "session":crate::session::display_name(),
             "server_generation":self.backend_server_generation,
@@ -6401,7 +6378,7 @@ command = ["true"]
 
         let snapshot = app.dispatch("session.snapshot", &json!({})).unwrap();
         assert_eq!(snapshot["type"], "session_snapshot");
-        assert_eq!(snapshot["protocol"]["name"], "luvus-runtime");
+        assert_eq!(snapshot["protocol"]["name"], "luvus-uhp");
         assert_eq!(
             snapshot["workspaces"][0]["tabs"][0]["panes"][0]["pane_id"],
             pane.0.to_string()

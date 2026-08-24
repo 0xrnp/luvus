@@ -22,7 +22,11 @@ pub fn is_cli(args: &[String]) -> bool {
                 | "bar"
                 | "ui"
                 | "events"
+                // Reserved so the removed, unreleased command family fails as
+                // an unknown command instead of accidentally opening the TUI.
                 | "api"
+                | "uhp"
+                | "socket"
                 | "module"
                 | "theme"
                 | "git"
@@ -73,7 +77,7 @@ Commands:
   wait         Wait for pane output or an agent state
   search       Search across pane scrollback
   events       Stream live status changes
-  api          Inspect the automation protocol and live capabilities
+  uhp          Discover and use Universal Harness Protocol 1.0
   attach       Open the TUI focused on one pane
   doctor       Check optional external tools
   update       Check for and install a newer Luvus release
@@ -283,17 +287,12 @@ orchestration (multiple agents on one project, docs/22):
 events:
   events                     stream live status changes
 
-api:
-  api schema                 print the installed UHP Terminal JSON Schema bundle
-  api runtime-schema         print the installed UHP Runtime JSON Schema bundle
-  api socket-schema          print the complete installed Socket API schema bundle
-  api capabilities           negotiate and print UHP Terminal capabilities
-  api snapshot               print a fenced UHP Terminal inventory
-  api events                 stream sequenced UHP Terminal events
-  api runtime                print UHP Runtime capabilities and limits
-  api session                print a fenced UHP Runtime session snapshot
-  api socket-capabilities    print live Socket API methods and limits
-  api proxy                  forward one JSON request from stdin to the local server
+universal harness protocol:
+  uhp capabilities          print live methods, contracts, limits, and protocol identity
+  uhp schema                print the complete installed UHP JSON Schema bundle
+  uhp snapshot              print a fenced session snapshot for harness bootstrap
+  uhp events                stream sequenced UHP events
+  uhp proxy                 forward one JSON request from stdin to the selected server
 
 sessions:
   session list [--json]      list default and named server sessions
@@ -346,6 +345,10 @@ pub fn run(args: &[String]) -> Result<i32> {
         write_topic_help(std::io::stdout().lock(), topic, command)?;
         return Ok(0);
     }
+    if args.get(1).map(String::as_str) == Some("uhp") && args.len() == 2 {
+        write_topic_help(std::io::stdout().lock(), args[1].as_str(), None)?;
+        return Ok(0);
+    }
     if args.get(1).map(String::as_str) == Some("skill") {
         return skill_cmd(&args[2.min(args.len())..]);
     }
@@ -355,35 +358,11 @@ pub fn run(args: &[String]) -> Result<i32> {
     if args.get(1).map(String::as_str) == Some("theme") {
         return theme_cmd(&args[2.min(args.len())..]);
     }
-    if args.get(1).map(String::as_str) == Some("api")
+    if args.get(1).map(String::as_str) == Some("uhp")
         && args.get(2).map(String::as_str) == Some("schema")
     {
         if args.len() != 3 {
-            return Err(anyhow!("usage: luvus api schema"));
-        }
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&crate::terminal::backend::schema_bundle())?
-        );
-        return Ok(0);
-    }
-    if args.get(1).map(String::as_str) == Some("api")
-        && args.get(2).map(String::as_str) == Some("runtime-schema")
-    {
-        if args.len() != 3 {
-            return Err(anyhow!("usage: luvus api runtime-schema"));
-        }
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&crate::runtime_api::schema_bundle())?
-        );
-        return Ok(0);
-    }
-    if args.get(1).map(String::as_str) == Some("api")
-        && args.get(2).map(String::as_str) == Some("socket-schema")
-    {
-        if args.len() != 3 {
-            return Err(anyhow!("usage: luvus api socket-schema"));
+            return Err(anyhow!("usage: luvus uhp schema"));
         }
         println!(
             "{}",
@@ -391,13 +370,13 @@ pub fn run(args: &[String]) -> Result<i32> {
         );
         return Ok(0);
     }
-    if args.get(1).map(String::as_str) == Some("api")
+    if args.get(1).map(String::as_str) == Some("uhp")
         && args.get(2).map(String::as_str) == Some("proxy")
     {
         if args.len() != 3 {
-            return Err(anyhow!("usage: luvus api proxy"));
+            return Err(anyhow!("usage: luvus uhp proxy"));
         }
-        return api_proxy();
+        return uhp_proxy();
     }
     // Explicit update requests are local and never require a running server.
     if args.get(1).map(String::as_str) == Some("update") {
@@ -537,7 +516,7 @@ fn help_topic_has_subcommands(topic: &str) -> bool {
             | "integration"
             | "skill"
             | "wait"
-            | "api"
+            | "uhp"
     )
 }
 
@@ -545,7 +524,7 @@ fn normalize_help_topic(topic: &str) -> Option<&str> {
     match topic {
         "workspace" | "tab" | "pane" | "agent" | "files" | "git" | "worktree" | "task"
         | "lease" | "module" | "theme" | "bar" | "ui" | "session" | "server" | "integration"
-        | "diff" | "skill" | "wait" | "search" | "events" | "api" | "ping" | "doctor"
+        | "diff" | "skill" | "wait" | "search" | "events" | "uhp" | "ping" | "doctor"
         | "update" | "attach" => Some(topic),
         "node" => Some("pane"),
         "remote" | "--remote" => Some("remote"),
@@ -665,11 +644,11 @@ fn write_topic_help(
         ),
         "events" => (
             "luvus events",
-            detailed_section("events:\n", "\napi:\n"),
+            detailed_section("events:\n", "\nuniversal harness protocol:\n"),
         ),
-        "api" => (
-            "luvus api <schema|runtime-schema|socket-schema|capabilities|snapshot|events|runtime|session|socket-capabilities|proxy>",
-            detailed_section("api:\n", "\nsessions:\n"),
+        "uhp" => (
+            "luvus uhp <capabilities|schema|snapshot|events|proxy>",
+            detailed_section("universal harness protocol:\n", "\nsessions:\n"),
         ),
         "remote" => (
             "luvus [--session <name>] --remote <host> [ssh args]",
@@ -2059,8 +2038,8 @@ pub(crate) fn send_request(method: &str, params: Value) -> Result<Value> {
 /// sockets or Windows named pipes directly. This is intentionally not a shell
 /// wrapper: it forwards one bounded protocol frame to the selected session and
 /// writes one bounded response. It composes over SSH as
-/// `ssh host luvus api proxy` without opening a network listener.
-fn api_proxy() -> Result<i32> {
+/// `ssh host luvus uhp proxy` without opening a network listener.
+fn uhp_proxy() -> Result<i32> {
     let mut input = std::io::BufReader::new(std::io::stdin().lock());
     let request = crate::ipc::api::read_request_frame(&mut input)
         .map_err(|error| anyhow!("invalid request frame: {error}"))?;
@@ -2129,14 +2108,20 @@ fn parse(args: &[String]) -> Result<(String, Value)> {
     let noun = args.get(1).map(String::as_str).unwrap_or("");
     let verb = args.get(2).map(String::as_str).unwrap_or("");
     let rest = &args[3.min(args.len())..];
-    if noun == "api"
-        && matches!(
-            verb,
-            "capabilities" | "snapshot" | "events" | "runtime" | "session" | "socket-capabilities"
-        )
-        && !rest.is_empty()
-    {
-        return Err(anyhow!("luvus api {verb} does not accept arguments"));
+    if noun == "uhp" {
+        if !rest.is_empty() {
+            return Err(anyhow!(
+                "usage: luvus uhp <capabilities|schema|snapshot|events|proxy>"
+            ));
+        }
+        return match verb {
+            "capabilities" => Ok(("uhp.capabilities".into(), json!({}))),
+            "snapshot" => Ok(("session.snapshot".into(), json!({}))),
+            "events" => Ok(("events.subscribe".into(), json!({}))),
+            _ => Err(anyhow!(
+                "usage: luvus uhp <capabilities|schema|snapshot|events|proxy>"
+            )),
+        };
     }
 
     // The pane id is the first numeric positional, else $LUVUS_PANE_ID.
@@ -2200,24 +2185,6 @@ fn parse(args: &[String]) -> Result<(String, Value)> {
     Ok(match (noun, verb) {
         ("ping", _) => ("ping".into(), json!({})),
         ("events", _) => ("events.subscribe".into(), json!({})),
-        ("api", "capabilities") => (
-            "terminal.backend.capabilities".into(),
-            json!({"protocol":{
-                "name":crate::terminal::backend::PROTOCOL_NAME,
-                "major":crate::terminal::backend::PROTOCOL_MAJOR,
-                "minor":crate::terminal::backend::PROTOCOL_MINOR,
-            }}),
-        ),
-        ("api", "snapshot") => ("terminal.backend.snapshot".into(), json!({})),
-        ("api", "events") => ("terminal.backend.events.subscribe".into(), json!({})),
-        ("api", "runtime") => ("runtime.capabilities".into(), json!({})),
-        ("api", "session") => ("session.snapshot".into(), json!({})),
-        ("api", "socket-capabilities") => ("socket.capabilities".into(), json!({})),
-        ("api", _) => {
-            return Err(anyhow!(
-                "usage: luvus api schema|runtime-schema|socket-schema|capabilities|snapshot|events|runtime|session|socket-capabilities|proxy"
-            ));
-        }
         // Exact scrollback search remains the default for script compatibility.
         // The universal finder is deliberately opt-in through `--fuzzy`.
         ("search", _) => {
@@ -3487,7 +3454,7 @@ mod tests {
             ("task", "task"),
             ("lease", "lease"),
             ("events", "events"),
-            ("api", "api"),
+            ("uhp", "uhp"),
             ("remote", "--remote"),
             ("server", "server"),
             ("integration", "integration"),
@@ -3546,42 +3513,36 @@ mod tests {
     }
 
     #[test]
-    fn terminal_backend_api_commands_are_first_class_cli_routes() {
-        assert!(is_cli(&argv("luvus api schema")));
-        let (method, params) = parse(&argv("luvus api capabilities")).unwrap();
-        assert_eq!(method, "terminal.backend.capabilities");
-        assert_eq!(params["protocol"]["major"], 1);
-        assert_eq!(params["protocol"]["minor"], 0);
-        let (method, params) = parse(&argv("luvus api snapshot")).unwrap();
-        assert_eq!(method, "terminal.backend.snapshot");
-        assert_eq!(params, json!({}));
-        let (method, _) = parse(&argv("luvus api events")).unwrap();
-        assert_eq!(method, "terminal.backend.events.subscribe");
+    fn uhp_is_the_single_public_protocol_cli_route() {
+        assert!(is_cli(&argv("luvus uhp capabilities")));
         assert_eq!(
-            parse(&argv("luvus api runtime")).unwrap().0,
-            "runtime.capabilities"
+            parse(&argv("luvus uhp capabilities")).unwrap().0,
+            "uhp.capabilities"
         );
         assert_eq!(
-            parse(&argv("luvus api session")).unwrap().0,
+            parse(&argv("luvus uhp snapshot")).unwrap().0,
             "session.snapshot"
         );
         assert_eq!(
-            parse(&argv("luvus api socket-capabilities")).unwrap().0,
-            "socket.capabilities"
+            parse(&argv("luvus uhp events")).unwrap().0,
+            "events.subscribe"
         );
-        for command in [
-            "capabilities",
-            "snapshot",
-            "events",
-            "runtime",
-            "session",
-            "socket-capabilities",
-        ] {
-            assert!(
-                parse(&argv(&format!("luvus api {command} unexpected"))).is_err(),
-                "api {command} must reject trailing arguments"
-            );
-        }
+        assert!(parse(&argv("luvus uhp capabilities extra")).is_err());
+        assert_eq!(
+            parse(&argv("luvus socket capabilities"))
+                .unwrap_err()
+                .to_string(),
+            "unknown command. Try `luvus --help`."
+        );
+    }
+
+    #[test]
+    fn unreleased_api_aliases_are_rejected() {
+        assert!(is_cli(&argv("luvus api schema")));
+        assert_eq!(
+            parse(&argv("luvus api schema")).unwrap_err().to_string(),
+            "unknown command. Try `luvus --help`."
+        );
     }
 
     #[test]
