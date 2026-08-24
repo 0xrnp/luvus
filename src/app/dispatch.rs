@@ -2,7 +2,17 @@
 //! per-pane agent-detection tick. Methods on [`App`](super::App).
 
 use super::*;
-use std::sync::mpsc::Sender;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc::Sender, Arc};
+
+pub(crate) const MAX_AGENT_WAIT: Duration = Duration::from_secs(3600);
+pub(crate) const MAX_AGENT_WAITS_TOTAL: usize = 1024;
+pub(crate) const MAX_AGENT_WAITS_PER_PANE: usize = 64;
+pub(crate) const MAX_AGENT_REPORT_TTL_S: u64 = 86400;
+pub(crate) const MAX_AGENT_REPORT_MESSAGE_CHARS: usize = 4096;
+pub(crate) const MAX_AGENT_PROMPT_CHARS: usize = 262_144;
+pub(crate) const MAX_AGENT_START_ARGS: usize = 64;
+const AGENT_PROMPT_QUIET: Duration = Duration::from_millis(1200);
 
 /// A parked `wait.output` request (docs/81): reply when the pane's recent
 /// output contains `needle`, or the optional deadline passes.
@@ -11,6 +21,45 @@ pub struct OutputWait {
     pub needle: String,
     pub reply: Sender<String>,
     pub deadline: Option<Instant>,
+    pub cancelled: Arc<AtomicBool>,
+}
+
+/// A parked `agent.wait` request. State transitions resolve these directly on
+/// the app loop; no client polling and no subscribe-then-snapshot race.
+pub struct AgentWait {
+    pub request_id: String,
+    pub state: State,
+    pub reply: Sender<String>,
+    pub deadline: Instant,
+    pub cancelled: Arc<AtomicBool>,
+}
+
+/// One launch whose pane and command have already been committed, waiting only
+/// for Luvus to recognize the requested agent as interactive.
+pub struct AgentStart {
+    request_id: String,
+    name: String,
+    kind: String,
+    reply: Sender<String>,
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
+}
+
+/// A submitted prompt waiting for post-submission evidence. `saw_output`
+/// closes the fast-turn gap where an agent starts and settles between two
+/// semantic detection ticks; the quiet window prevents prompt echo alone from
+/// being reported as completion immediately.
+pub struct AgentPrompt {
+    request_id: String,
+    until: Vec<State>,
+    baseline_revision: u64,
+    last_revision: u64,
+    last_output_at: Instant,
+    saw_output: bool,
+    saw_working: bool,
+    reply: Sender<String>,
+    deadline: Instant,
+    cancelled: Arc<AtomicBool>,
 }
 
 /// The canonical `wait.output` response: `matched` says whether the marker
@@ -21,6 +70,51 @@ fn wait_response(request_id: &str, matched: bool, pane: Option<PaneId>) -> Strin
         None => json!({ "type": "wait", "matched": matched }),
     };
     json!({ "id": request_id, "result": result }).to_string()
+}
+
+fn agent_wait_response(
+    request_id: &str,
+    matched: bool,
+    pane: Option<PaneId>,
+    state: Option<State>,
+) -> String {
+    json!({
+        "id": request_id,
+        "result": {
+            "type": "agent_wait",
+            "matched": matched,
+            "pane": pane.map(|id| id.0.to_string()),
+            "status": state.map(state_str),
+        }
+    })
+    .to_string()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn agent_prompt_response(
+    request_id: &str,
+    pane: PaneId,
+    submitted: bool,
+    matched: bool,
+    state: Option<State>,
+    baseline_revision: u64,
+    content_revision: u64,
+    evidence: &str,
+) -> String {
+    json!({
+        "id":request_id,
+        "result":{
+            "type":"agent_prompt",
+            "pane":pane.0.to_string(),
+            "submitted":submitted,
+            "matched":matched,
+            "status":state.map(state_str),
+            "baseline_revision":baseline_revision,
+            "content_revision":content_revision,
+            "evidence":evidence,
+        }
+    })
+    .to_string()
 }
 
 /// Debounce dwell for committing a newly-desired agent state (hysteresis).
@@ -200,10 +294,27 @@ impl App {
         // the state remains Idle. Keep this separate from `agent_appeared`:
         // non-resumable agents still need a repaint, but not a persisted session.
         let mut visible_identity_changed = false;
+        let mut expired_reports: Vec<(PaneId, String)> = Vec::new();
         for id in ids {
             let Some(pane) = self.panes.get(&id) else {
                 continue;
             };
+            if let Some(status) = self.status.get_mut(&id) {
+                if status
+                    .agent_report
+                    .as_ref()
+                    .is_some_and(|report| now >= report.expires_at)
+                {
+                    if let Some(report) = status.agent_report.take() {
+                        expired_reports.push((id, report.source));
+                    }
+                    status.force_detect = true;
+                }
+            }
+            let report = self
+                .status
+                .get(&id)
+                .and_then(|status| status.agent_report.clone());
             let detection_rows = detect::screen_rows(
                 self.status
                     .get(&id)
@@ -220,20 +331,26 @@ impl App {
                 .get(&id)
                 .map(|s| (s.last_detect_generation, s.force_detect))
                 .unwrap_or((None, true));
-            let inspected = match pane.engine.lock() {
-                Ok(engine) => {
-                    let generation = engine.output_generation();
-                    if force_detect || last_generation != Some(generation) {
-                        Some((
-                            generation,
-                            engine.title().map(Arc::<str>::from),
-                            Arc::<str>::from(engine.detection_text(detection_rows)),
-                        ))
-                    } else {
-                        None
+            let inspected = if report.is_some() {
+                // An explicit lease is the state authority. Keep the cached
+                // screen untouched and avoid a needless VT lock/extraction.
+                None
+            } else {
+                match pane.engine.lock() {
+                    Ok(engine) => {
+                        let generation = engine.output_generation();
+                        if force_detect || last_generation != Some(generation) {
+                            Some((
+                                generation,
+                                engine.title().map(Arc::<str>::from),
+                                Arc::<str>::from(engine.detection_text(detection_rows)),
+                            ))
+                        } else {
+                            None
+                        }
                     }
+                    Err(_) => None,
                 }
-                Err(_) => None,
             };
             if let Some(s) = self.status.get_mut(&id) {
                 if let Some((generation, title, bottom)) = inspected {
@@ -287,18 +404,32 @@ impl App {
                 .get(&id)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let det = detect::classify(
-                title.as_deref(),
-                &bottom,
-                recent,
-                recent_input,
-                base,
-                &known,
-                running,
-                &self.manifests,
-            );
+            let det = match report.as_ref() {
+                Some(report) => detect::Detection {
+                    state: report.state,
+                    agent: report.agent.clone(),
+                    identity_source: "integration_report",
+                    state_source: "integration_report",
+                    rule_priority: None,
+                    rule_region: None,
+                },
+                None => detect::classify(
+                    title.as_deref(),
+                    &bottom,
+                    recent,
+                    recent_input,
+                    base,
+                    &known,
+                    running,
+                    &self.manifests,
+                ),
+            };
 
             if let Some(s) = self.status.get_mut(&id) {
+                s.identity_source = det.identity_source;
+                s.state_source = det.state_source;
+                s.rule_priority = det.rule_priority;
+                s.rule_region = det.rule_region;
                 let focused = id == focus;
                 if focused {
                     s.seen = true;
@@ -337,11 +468,13 @@ impl App {
                         _ => det.agent,
                     }
                 };
-                let was_visible_agent =
-                    self.manifests.is_agent(&s.agent) || s.agent_session.is_some();
+                let was_visible_agent = self.manifests.is_agent(&s.agent)
+                    || s.agent_session.is_some()
+                    || s.agent_report.is_some();
                 let agent_changed = s.agent != detected;
-                let is_visible_agent =
-                    self.manifests.is_agent(&detected) || s.agent_session.is_some();
+                let is_visible_agent = self.manifests.is_agent(&detected)
+                    || s.agent_session.is_some()
+                    || s.agent_report.is_some();
                 s.agent = detected;
                 if agent_changed {
                     visible_identity_changed |= was_visible_agent || is_visible_agent;
@@ -365,7 +498,11 @@ impl App {
                     s.candidate = desired;
                     s.candidate_since = now;
                 }
-                let dwell = commit_dwell(desired);
+                let dwell = if report.is_some() {
+                    Duration::ZERO
+                } else {
+                    commit_dwell(desired)
+                };
                 if s.state != desired && now.duration_since(s.candidate_since) >= dwell {
                     let was_working = s.state == State::Working;
                     s.state = desired;
@@ -414,15 +551,21 @@ impl App {
                 .unwrap_or_default();
             self.emit_event(
                 "pane.agent_status_changed",
-                json!({ "pane": id.0.to_string(), "status": state_str(st), "agent": agent, "cwd": cwd, "project": project, "branch": branch }),
+                json!({
+                    "pane": id.0.to_string(), "status": state_str(st), "agent": agent,
+                    "cwd": cwd, "project": project, "branch": branch,
+                    "authority":self.status.get(&id).map(|status| status.identity_source),
+                    "state_source":self.status.get(&id).map(|status| status.state_source),
+                }),
             );
+            self.check_agent_waits(id);
             // The optional retro chime (off by default). A plain shell going
             // quiet or blocking is not an agent, so it stays silent either way.
             let is_agent_pane = self.manifests.is_agent(&agent)
                 || self
                     .status
                     .get(&id)
-                    .is_some_and(|s| s.agent_session.is_some());
+                    .is_some_and(|s| s.agent_session.is_some() || s.agent_report.is_some());
             // *Done*: one chime per real finish of a working stretch — the
             // debounce already absorbs mid-turn pauses, and it rings whether or
             // not the pane is focused (that's the point: you looked away).
@@ -440,12 +583,21 @@ impl App {
                 }
             }
         }
+        for (id, source) in expired_reports {
+            self.emit_event(
+                "agent.authority_released",
+                json!({"pane":id.0.to_string(), "source":source, "reason":"expired"}),
+            );
+        }
         changed
     }
 
     // ── api dispatch ──────────────────────────────────────────────────────────
 
     pub fn handle_api(&mut self, req: &ApiRequest) -> String {
+        if Self::is_terminal_backend_method(&req.method) {
+            return self.handle_terminal_backend(req);
+        }
         // No node open: most methods reach `layout()`, which would index an empty
         // `workspaces`. This was written when an empty session only ever existed
         // for the moment before the app quit; since docs/43 §3.3 a server *stays*
@@ -458,6 +610,8 @@ impl App {
         // *server's* cwd — the very thing §3.3 removed.
         const WITHOUT_NODE: &[&str] = &[
             "ping",
+            "runtime.capabilities",
+            "session.snapshot",
             "search.capabilities",
             "server.stop",
             "workspace.open",
@@ -494,6 +648,36 @@ impl App {
                 "protocol":1,
                 "session": crate::session::display_name()
             })),
+            "runtime.capabilities" => {
+                reject_api_fields(p, &[])?;
+                Ok(json!({
+                "type":"runtime_capabilities",
+                "protocol":{
+                    "name":crate::runtime_api::PROTOCOL_NAME,
+                    "major":crate::runtime_api::PROTOCOL_MAJOR,
+                    "minor":crate::runtime_api::PROTOCOL_MINOR,
+                },
+                "session":crate::session::display_name(),
+                "event_sequence":crate::ipc::api::current_sequence(&self.events),
+                "methods":crate::runtime_api::METHODS,
+                "agent_authorities":["integration_report", "process_tree", "launch_command", "osc_title", "screen_text", "prior_identity", "command_fallback"],
+                "agent_states":["idle", "working", "blocked", "done"],
+                "limits":{
+                    "agent_wait_timeout_s":MAX_AGENT_WAIT.as_secs(),
+                    "agent_prompt_characters":MAX_AGENT_PROMPT_CHARS,
+                    "agent_prompt_quiet_ms":AGENT_PROMPT_QUIET.as_millis(),
+                    "agent_start_arguments":MAX_AGENT_START_ARGS,
+                    "agent_report_ttl_s":MAX_AGENT_REPORT_TTL_S,
+                    "agent_report_message_characters":MAX_AGENT_REPORT_MESSAGE_CHARS,
+                    "agent_waits_per_pane":MAX_AGENT_WAITS_PER_PANE,
+                    "agent_waits_total":MAX_AGENT_WAITS_TOTAL,
+                }
+                }))
+            }
+            "session.snapshot" => {
+                reject_api_fields(p, &[])?;
+                Ok(self.runtime_snapshot())
+            }
             "search.capabilities" => Ok(json!({
                 "type": "search_capabilities",
                 "version": 1,
@@ -704,14 +888,22 @@ impl App {
             // scoped to the active workspace, so `luvus wait agent-status` polls this.
             "pane.status" => {
                 let id = self.resolve_pane(p).ok_or_else(not_found)?;
-                let (agent, status) = self
+                let (agent, status, authority, state_source) = self
                     .status
                     .get(&id)
-                    .map(|s| (s.agent.clone(), state_str(s.state).to_string()))
-                    .unwrap_or_else(|| (String::new(), "unknown".to_string()));
+                    .map(|s| {
+                        (
+                            s.agent.clone(),
+                            state_str(s.state).to_string(),
+                            s.identity_source,
+                            s.state_source,
+                        )
+                    })
+                    .unwrap_or_else(|| (String::new(), "unknown".to_string(), "none", "none"));
                 let history = self.panes.get(&id).map(|p| p.history_metrics());
                 Ok(json!({
                     "type":"pane_status","pane": id.0.to_string(), "agent": agent, "status": status,
+                    "authority":authority, "state_source":state_source,
                     "scroll_offset": history.map(|m| m.offset).unwrap_or(0),
                     "history_rows": history.map(|m| m.retained_rows).unwrap_or(0),
                     "history_budget_bytes": history.map(|m| m.budget_bytes).unwrap_or(0),
@@ -723,6 +915,11 @@ impl App {
                     "history_exact": history.map(|m| m.exact_bytes).unwrap_or(false),
                     "history_bytes_kind": if history.is_some_and(|m| m.exact_bytes) { "exact" } else { "estimated" },
                 }))
+            }
+            "pane.processes" => {
+                reject_api_fields(p, &["pane"])?;
+                let id = self.resolve_pane(p).ok_or_else(not_found)?;
+                Ok(self.pane_processes(id))
             }
             "pane.report_session" => {
                 let id = self.resolve_pane(p).ok_or_else(not_found)?;
@@ -1034,7 +1231,10 @@ impl App {
                                 continue;
                             };
                             // Only real agent sessions, not the shells behind tabs.
-                            if !(self.manifests.is_agent(&s.agent) || s.agent_session.is_some()) {
+                            if !(self.manifests.is_agent(&s.agent)
+                                || s.agent_session.is_some()
+                                || s.agent_report.is_some())
+                            {
                                 continue;
                             }
                             let cwd = self
@@ -1052,6 +1252,8 @@ impl App {
                                 "pane": id.0.to_string(), "agent": s.agent,
                                 "name": self.agent_name_for(id),
                                 "status": state_str(s.state),
+                                "authority":s.identity_source,
+                                "state_source":s.state_source,
                                 "session": session,
                                 "workspace": wi.to_string(), "workspace_name": ws.name,
                                 "project": ws.name, "cwd": cwd,
@@ -1217,15 +1419,221 @@ impl App {
                     .get(&id)
                     .map(|pn| pn.cwd.display().to_string())
                     .unwrap_or_default();
-                let (agent, status) = s
-                    .map(|s| (s.agent.clone(), state_str(s.state).to_string()))
+                let (agent, status, authority, state_source) = s
+                    .map(|s| {
+                        (
+                            s.agent.clone(),
+                            state_str(s.state).to_string(),
+                            s.identity_source,
+                            s.state_source,
+                        )
+                    })
                     .unwrap_or_default();
                 let session =
                     s.and_then(|s| s.agent_session.as_ref().map(|a| a.session_id.clone()));
                 Ok(json!({"type":"agent","pane": id.0.to_string(),
                           "name": self.agent_name_for(id), "agent": agent,
-                          "status": status, "session": session, "cwd": cwd}))
+                          "status": status, "authority":authority,
+                          "state_source":state_source, "session": session, "cwd": cwd}))
             }
+            "agent.explain" => {
+                reject_api_fields(p, &["target", "pane"])?;
+                if p.get("target").is_some() == p.get("pane").is_some() {
+                    return Err((
+                        "invalid_request".to_string(),
+                        "agent.explain needs exactly one of target or pane".to_string(),
+                    ));
+                }
+                if let Some(target) = p.get("target") {
+                    let valid = target
+                        .as_str()
+                        .is_some_and(|target| !target.is_empty() && target.chars().count() <= 128);
+                    if !valid {
+                        return Err((
+                            "invalid_request".to_string(),
+                            "target must be a non-empty string of at most 128 characters"
+                                .to_string(),
+                        ));
+                    }
+                }
+                let id = self
+                    .resolve_agent_pane(p)
+                    .or_else(|| self.resolve_pane(p))
+                    .ok_or_else(not_found)?;
+                Ok(self.agent_explanation(id))
+            }
+            "agent.report" => {
+                reject_api_fields(
+                    p,
+                    &[
+                        "pane",
+                        "source",
+                        "agent",
+                        "status",
+                        "message",
+                        "session_id",
+                        "sequence",
+                        "ttl_s",
+                    ],
+                )?;
+                let id = self
+                    .resolve_agent_pane(p)
+                    .or_else(|| self.resolve_pane(p))
+                    .ok_or_else(not_found)?;
+                let source = required_report_source(p)?;
+                let agent = p.get("agent").and_then(Value::as_str).ok_or_else(|| {
+                    (
+                        "invalid_request".to_string(),
+                        "agent.report needs an agent".to_string(),
+                    )
+                })?;
+                if !valid_agent_name(agent) {
+                    return Err((
+                        "invalid_request".to_string(),
+                        "agent must match [a-z][a-z0-9_-]{0,31}".to_string(),
+                    ));
+                }
+                let state = p
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .and_then(parse_agent_wait_state)
+                    .ok_or_else(|| {
+                        (
+                            "invalid_request".to_string(),
+                            "status must be idle, working, blocked, or done".to_string(),
+                        )
+                    })?;
+                let message =
+                    optional_bounded_string(p, "message", MAX_AGENT_REPORT_MESSAGE_CHARS)?;
+                let session_id = optional_bounded_string(p, "session_id", 512)?;
+                let ttl_s = p.get("ttl_s").and_then(Value::as_u64).unwrap_or(3600);
+                if !(1..=MAX_AGENT_REPORT_TTL_S).contains(&ttl_s) {
+                    return Err((
+                        "invalid_request".to_string(),
+                        "ttl_s must be between 1 and 86400".to_string(),
+                    ));
+                }
+                let now = Instant::now();
+                let current = self
+                    .status
+                    .get(&id)
+                    .and_then(|status| status.agent_report.as_ref());
+                if current.is_some_and(|report| report.source != source) {
+                    return Err((
+                        "authority_conflict".to_string(),
+                        "another integration owns this pane; release it first".to_string(),
+                    ));
+                }
+                let sequence = match p.get("sequence") {
+                    Some(Value::Number(number)) => number.as_u64().ok_or_else(|| {
+                        (
+                            "invalid_request".to_string(),
+                            "sequence must be a non-negative integer".to_string(),
+                        )
+                    })?,
+                    Some(_) => {
+                        return Err((
+                            "invalid_request".to_string(),
+                            "sequence must be a non-negative integer".to_string(),
+                        ))
+                    }
+                    None => current.map_or(1, |report| report.sequence.saturating_add(1)),
+                };
+                if current.is_some_and(|report| sequence <= report.sequence) {
+                    return Err((
+                        "stale_report".to_string(),
+                        "sequence must increase for this authority".to_string(),
+                    ));
+                }
+                let (changed, cwd, project, branch) = {
+                    let status = self.status.get_mut(&id).ok_or_else(not_found)?;
+                    let changed = status.state != state || status.agent != agent;
+                    status.agent = agent.to_string();
+                    status.state = state;
+                    status.candidate = state;
+                    status.candidate_since = now;
+                    status.prev_working = state == State::Working;
+                    status.done = state == State::Done;
+                    status.identity_source = "integration_report";
+                    status.state_source = "integration_report";
+                    status.rule_priority = None;
+                    status.rule_region = None;
+                    status.blocked_hint =
+                        (state == State::Blocked).then(|| message.clone()).flatten();
+                    status.agent_report = Some(AgentReport {
+                        source: source.clone(),
+                        agent: agent.to_string(),
+                        state,
+                        message: message.clone(),
+                        sequence,
+                        expires_at: now + Duration::from_secs(ttl_s),
+                    });
+                    if let Some(session_id) = session_id.as_ref() {
+                        status.agent_session = Some(AgentSession {
+                            agent: agent.to_string(),
+                            session_id: session_id.clone(),
+                        });
+                    }
+                    let cwd = self
+                        .panes
+                        .get(&id)
+                        .map(|pane| pane.cwd.display().to_string())
+                        .unwrap_or_default();
+                    let (project, branch) = self
+                        .workspace_of_pane(id)
+                        .map(|workspace| (workspace.name.clone(), workspace.branch.clone()))
+                        .unwrap_or_default();
+                    (changed, cwd, project, branch)
+                };
+                self.emit_event(
+                    "agent.authority_reported",
+                    json!({"pane":id.0.to_string(), "source":source, "agent":agent, "status":state_str(state), "sequence":sequence, "ttl_s":ttl_s}),
+                );
+                if changed {
+                    self.emit_event(
+                        "pane.agent_status_changed",
+                        json!({"pane":id.0.to_string(), "status":state_str(state), "agent":agent, "cwd":cwd, "project":project, "branch":branch, "authority":"integration_report"}),
+                    );
+                }
+                self.check_agent_waits(id);
+                Ok(json!({
+                    "type":"agent_report", "pane":id.0.to_string(),
+                    "agent":agent, "status":state_str(state), "source":source,
+                    "sequence":sequence, "ttl_s":ttl_s,
+                }))
+            }
+            "agent.release" => {
+                reject_api_fields(p, &["pane", "source"])?;
+                let id = self
+                    .resolve_agent_pane(p)
+                    .or_else(|| self.resolve_pane(p))
+                    .ok_or_else(not_found)?;
+                let source = required_report_source(p)?;
+                let status = self.status.get_mut(&id).ok_or_else(not_found)?;
+                let Some(report) = status.agent_report.as_ref() else {
+                    return Err((
+                        "not_found".to_string(),
+                        "pane has no integration authority".to_string(),
+                    ));
+                };
+                if report.source != source {
+                    return Err((
+                        "authority_conflict".to_string(),
+                        "source does not own this pane".to_string(),
+                    ));
+                }
+                status.agent_report = None;
+                status.force_detect = true;
+                self.emit_event(
+                    "agent.authority_released",
+                    json!({"pane":id.0.to_string(), "source":source, "reason":"released"}),
+                );
+                Ok(json!({"type":"agent_release", "pane":id.0.to_string()}))
+            }
+            "agent.wait" => Err((
+                "internal".to_string(),
+                "agent.wait must be dispatched through the event-driven waiter".to_string(),
+            )),
             // Resumable sessions discovered on disk (the AGENTS sidebar list).
             "agent.sessions" => {
                 self.refresh_resumable();
@@ -2555,6 +2963,164 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// One coherent, sequence-fenced model for orchestrators. Unlike the
+    /// presentation-oriented list methods this spans every workspace and tab,
+    /// includes non-terminal views explicitly, and never reads terminal text.
+    pub(crate) fn runtime_snapshot(&self) -> Value {
+        let mut workspaces = Vec::with_capacity(self.workspaces.len());
+        for (workspace_index, workspace) in self.workspaces.iter().enumerate() {
+            let mut tabs = Vec::with_capacity(workspace.tabs.len());
+            for (tab_index, tab) in workspace.tabs.iter().enumerate() {
+                let kind = if tab.is_git() {
+                    "git"
+                } else if tab.is_orch() {
+                    "orchestration"
+                } else if tab.is_mission() {
+                    "mission_control"
+                } else {
+                    "panes"
+                };
+                let panes: Vec<Value> = tab
+                    .layout
+                    .leaves()
+                    .into_iter()
+                    .map(|pane_id| {
+                        if let Some(pane) = self.panes.get(&pane_id) {
+                            let runtime = pane.terminal_runtime();
+                            let status = self.status.get(&pane_id);
+                            json!({
+                                "pane_id":pane_id.0.to_string(),
+                                "kind":"terminal",
+                                "focused":workspace_index == self.active_ws
+                                    && tab_index == workspace.active_tab
+                                    && tab.layout.focus == pane_id,
+                                "cwd":pane.cwd.display().to_string(),
+                                "terminal_id":runtime.as_ref().map(|runtime| runtime.terminal_id.clone()),
+                                "root_process":runtime.as_ref().map(|runtime| json!({
+                                    "pid":runtime.pid,
+                                    "start_marker":runtime.start_marker,
+                                })),
+                                "content_revision":pane.content_revision(),
+                                "agent":status.map(|status| status.agent.clone()),
+                                "agent_status":status.map(|status| state_str(status.state)),
+                                "agent_authority":status.map(|status| status.identity_source),
+                                "agent_session":status.and_then(|status| status.agent_session.as_ref().map(|session| session.session_id.clone())),
+                            })
+                        } else {
+                            json!({
+                                "pane_id":pane_id.0.to_string(),
+                                "kind":"view",
+                                "focused":workspace_index == self.active_ws
+                                    && tab_index == workspace.active_tab
+                                    && tab.layout.focus == pane_id,
+                            })
+                        }
+                    })
+                    .collect();
+                tabs.push(json!({
+                    "index":tab_index + 1,
+                    "name":tab.name,
+                    "kind":kind,
+                    "active":tab_index == workspace.active_tab,
+                    "panes":panes,
+                }));
+            }
+            workspaces.push(json!({
+                "index":workspace_index + 1,
+                "name":workspace.name,
+                "cwd":workspace.cwd.display().to_string(),
+                "branch":workspace.branch,
+                "pinned":workspace.pinned,
+                "active":workspace_index == self.active_ws,
+                "tabs":tabs,
+            }));
+        }
+        json!({
+            "type":"session_snapshot",
+            "protocol":{
+                "name":crate::runtime_api::PROTOCOL_NAME,
+                "major":crate::runtime_api::PROTOCOL_MAJOR,
+                "minor":crate::runtime_api::PROTOCOL_MINOR,
+            },
+            "session":crate::session::display_name(),
+            "server_generation":self.backend_server_generation,
+            "event_sequence":crate::ipc::api::current_sequence(&self.events),
+            "workspaces":workspaces,
+        })
+    }
+
+    /// Cached process identity for a pane. The process scan already runs once
+    /// for all panes off-loop; this endpoint does no spawn or filesystem IO and
+    /// deliberately returns executable names rather than full argv, which may
+    /// contain credentials or prompts.
+    pub(crate) fn pane_processes(&self, id: PaneId) -> Value {
+        let runtime = self
+            .panes
+            .get(&id)
+            .and_then(crate::terminal::pty::Pane::terminal_runtime);
+        let observed = self.proc_commands.get(&id);
+        let executables = observed
+            .map(|commands| process_executables(commands))
+            .unwrap_or_default();
+        json!({
+            "type":"pane_processes",
+            "pane":id.0.to_string(),
+            "terminal_id":runtime.as_ref().map(|runtime| runtime.terminal_id.clone()),
+            "root_process":runtime.as_ref().map(|runtime| json!({
+                "pid":runtime.pid,
+                "start_marker":runtime.start_marker,
+            })),
+            "scan":if observed.is_some() { "observed" } else { "unavailable" },
+            "executables":executables,
+            "arguments_exposed":false,
+        })
+    }
+
+    pub(crate) fn agent_explanation(&self, id: PaneId) -> Value {
+        let Some(status) = self.status.get(&id) else {
+            return json!({"type":"agent_explanation", "pane":id.0.to_string(), "available":false});
+        };
+        let now = Instant::now();
+        let report = status.agent_report.as_ref();
+        let identity_confidence = match status.identity_source {
+            "integration_report" | "process_tree" => "authoritative",
+            "launch_command" | "osc_title" => "high",
+            "screen_text" | "prior_identity" => "heuristic",
+            _ => "none",
+        };
+        let state_confidence = match status.state_source {
+            "integration_report" => "authoritative",
+            "manifest_rule" => "high",
+            "shell_activity" => "heuristic",
+            _ => "none",
+        };
+        json!({
+            "type":"agent_explanation",
+            "pane":id.0.to_string(),
+            "available":true,
+            "agent":status.agent,
+            "status":state_str(status.state),
+            "identity":{"source":status.identity_source, "confidence":identity_confidence},
+            "state_evidence":{
+                "source":status.state_source,
+                "confidence":state_confidence,
+                "rule_priority":status.rule_priority,
+                "rule_region":status.rule_region,
+                "blocked_hint":status.blocked_hint,
+            },
+            "authority":report.map(|report| json!({
+                "source":report.source,
+                "sequence":report.sequence,
+                "message":report.message,
+                "expires_in_ms":report.expires_at.saturating_duration_since(now).as_millis().min(u64::MAX as u128) as u64,
+            })),
+            "session":status.agent_session.as_ref().map(|session| json!({
+                "agent":session.agent,
+                "id":session.session_id,
+            })),
+        })
+    }
+
     /// Register a server-side `wait.output` (docs/81). An already-visible
     /// marker replies immediately; otherwise the waiter is parked and answered
     /// by the pane's next output event — no polling on either side.
@@ -2565,16 +3131,19 @@ impl App {
         needle: String,
         reply: Sender<String>,
         timeout: Option<Duration>,
+        cancelled: Arc<AtomicBool>,
     ) {
+        if cancelled.load(Ordering::Acquire) {
+            return;
+        }
         let recent = self.pane_recent_text(id);
         if recent.contains(&needle) {
             let _ = reply.send(wait_response(&request_id, true, Some(id)));
             return;
         }
-        // Always bound the wait: a client that disconnects cannot be detected on
-        // the reply channel, so an uncapped waiter would be re-scanned forever.
-        // A shorter caller-specified timeout still wins; a longer one (or none)
-        // is capped so an abandoned waiter is reclaimed within an hour.
+        // Always bound the wait as a second line of defence. Socket workers mark
+        // disconnected clients immediately; this cap also protects against a
+        // worker failure or a client that stays connected but never consumes.
         const MAX_WAIT: Duration = Duration::from_secs(3600);
         let deadline = Some(Instant::now() + timeout.unwrap_or(MAX_WAIT).min(MAX_WAIT));
         self.output_waits.entry(id).or_default().push(OutputWait {
@@ -2582,6 +3151,7 @@ impl App {
             needle,
             reply,
             deadline,
+            cancelled,
         });
     }
 
@@ -2597,7 +3167,9 @@ impl App {
         };
         let mut keep = Vec::with_capacity(waiters.len());
         for waiter in waiters.drain(..) {
-            if text.contains(&waiter.needle) {
+            if waiter.cancelled.load(Ordering::Acquire) {
+                continue;
+            } else if text.contains(&waiter.needle) {
                 let _ = waiter
                     .reply
                     .send(wait_response(&waiter.request_id, true, Some(id)));
@@ -2637,7 +3209,9 @@ impl App {
         }
         for waiters in self.output_waits.values_mut() {
             waiters.retain(|waiter| {
-                if waiter.deadline.is_some_and(|d| now >= d) {
+                if waiter.cancelled.load(Ordering::Acquire) {
+                    false
+                } else if waiter.deadline.is_some_and(|d| now >= d) {
                     let _ = waiter
                         .reply
                         .send(wait_response(&waiter.request_id, false, None));
@@ -2662,12 +3236,565 @@ impl App {
         }
     }
 
-    /// The live alias pointing at `pane`, if any (set by `agent.name`). Reverse of
-    /// the `agent_names` map; the map is small, so a linear scan is fine.
+    /// Begin one server-owned launch. Pane selection/creation, command queueing,
+    /// alias reservation, and readiness observation are committed on this app
+    /// loop turn, so no other client can target a half-configured workflow.
+    pub(crate) fn start_agent_launch(
+        &mut self,
+        request_id: String,
+        p: Value,
+        reply: Sender<String>,
+        cancelled: Arc<AtomicBool>,
+    ) {
+        let fail = |code: &str, message: String| {
+            let _ = reply
+                .send(json!({"id":request_id,"error":{"code":code,"message":message}}).to_string());
+        };
+        if cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        if let Err((code, message)) = reject_api_fields(
+            &p,
+            &[
+                "name",
+                "kind",
+                "pane",
+                "anchor",
+                "direction",
+                "args",
+                "timeout_s",
+            ],
+        ) {
+            fail(&code, message);
+            return;
+        }
+        let name = p.get("name").and_then(Value::as_str).unwrap_or("");
+        let kind = p.get("kind").and_then(Value::as_str).unwrap_or("");
+        if !valid_agent_name(name) || !valid_agent_name(kind) {
+            fail(
+                "invalid_request",
+                "name and kind must match [a-z][a-z0-9_-]{0,31}".to_string(),
+            );
+            return;
+        }
+        if !self.manifests.is_agent(kind) {
+            fail("unsupported_agent", format!("unknown agent kind: {kind}"));
+            return;
+        }
+        if self.agent_names.contains_key(name) {
+            fail("name_in_use", format!("agent name already exists: {name}"));
+            return;
+        }
+        let timeout = match agent_timeout(&p, 30.0) {
+            Ok(timeout) => timeout,
+            Err(message) => {
+                fail("invalid_request", message);
+                return;
+            }
+        };
+        let args = match agent_start_args(&p) {
+            Ok(args) => args,
+            Err(message) => {
+                fail("invalid_request", message);
+                return;
+            }
+        };
+        if !matches!(
+            p.get("direction").and_then(Value::as_str),
+            None | Some("right" | "down")
+        ) {
+            fail(
+                "invalid_request",
+                "direction must be right or down".to_string(),
+            );
+            return;
+        }
+        let (pane, created) = match (p.get("pane"), p.get("anchor")) {
+            (Some(_), Some(_)) => {
+                fail(
+                    "invalid_request",
+                    "agent.start accepts either pane or anchor, not both".to_string(),
+                );
+                return;
+            }
+            (Some(_), None) => match self.resolve_pane(&json!({"pane":p["pane"]})) {
+                Some(id) => (id, false),
+                None => {
+                    fail("not_found", "pane not found".to_string());
+                    return;
+                }
+            },
+            (_, _) => {
+                let mut split = serde_json::Map::new();
+                if let Some(anchor) = p.get("anchor") {
+                    let Some(anchor) = self.resolve_pane(&json!({"pane":anchor})) else {
+                        fail("not_found", "anchor pane not found".to_string());
+                        return;
+                    };
+                    split.insert("pane".into(), json!(anchor.0.to_string()));
+                }
+                split.insert("focus".into(), json!(false));
+                if let Some(direction) = p.get("direction") {
+                    split.insert("direction".into(), direction.clone());
+                }
+                match self.dispatch("pane.split", &Value::Object(split)) {
+                    Ok(value) => match value["pane"]
+                        .as_str()
+                        .and_then(|pane| pane.parse::<u32>().ok())
+                        .map(PaneId)
+                    {
+                        Some(id) => (id, true),
+                        None => {
+                            fail("spawn_failed", "agent pane was not created".to_string());
+                            return;
+                        }
+                    },
+                    Err((code, message)) => {
+                        fail(&code, message);
+                        return;
+                    }
+                }
+            }
+        };
+        if self.is_agent_pane(pane) || self.agent_starts.contains_key(&pane) {
+            fail(
+                "agent_pane_busy",
+                "target pane already hosts or is starting an agent".to_string(),
+            );
+            return;
+        }
+        let Some(target) = self.panes.get(&pane) else {
+            fail("not_found", "pane not found".to_string());
+            return;
+        };
+        let shell = target.command.clone();
+        let mut command = match shell_word(kind, &shell) {
+            Ok(word) => word,
+            Err(message) => {
+                if created {
+                    self.close_pane(pane);
+                }
+                fail("invalid_request", message);
+                return;
+            }
+        };
+        for arg in args {
+            command.push(' ');
+            let word = match shell_word(&arg, &shell) {
+                Ok(word) => word,
+                Err(message) => {
+                    if created {
+                        self.close_pane(pane);
+                    }
+                    fail("invalid_request", message);
+                    return;
+                }
+            };
+            command.push_str(&word);
+        }
+        if let Err(message) = target.try_submit_text(&command) {
+            if created {
+                self.close_pane(pane);
+            }
+            fail("send_failed", message);
+            return;
+        }
+        self.set_agent_name(pane, Some(name));
+        self.agent_starts.insert(
+            pane,
+            AgentStart {
+                request_id,
+                name: name.to_string(),
+                kind: kind.to_string(),
+                reply,
+                deadline: Instant::now() + timeout,
+                cancelled,
+            },
+        );
+    }
+
+    /// Atomically submit a prompt and, when requested, retain the response until
+    /// the post-submission lifecycle has settled. The single queued PTY action
+    /// guarantees that paste and Enter cannot be accepted independently.
+    pub(crate) fn start_agent_prompt(
+        &mut self,
+        request_id: String,
+        p: Value,
+        reply: Sender<String>,
+        cancelled: Arc<AtomicBool>,
+    ) {
+        let fail = |code: &str, message: String| {
+            let _ = reply
+                .send(json!({"id":request_id,"error":{"code":code,"message":message}}).to_string());
+        };
+        if cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        if let Err((code, message)) =
+            reject_api_fields(&p, &["target", "text", "wait", "until", "timeout_s"])
+        {
+            fail(&code, message);
+            return;
+        }
+        let pane = match self.resolve_agent_target(&p) {
+            Ok(pane) if self.is_agent_pane(pane) => pane,
+            Ok(_) => {
+                fail(
+                    "agent_not_ready",
+                    "target pane is not a running agent".to_string(),
+                );
+                return;
+            }
+            Err((code, message)) => {
+                fail(&code, message);
+                return;
+            }
+        };
+        let text = p.get("text").and_then(Value::as_str).unwrap_or("");
+        if text.is_empty() || text.chars().count() > MAX_AGENT_PROMPT_CHARS {
+            fail(
+                "invalid_request",
+                format!("text must contain 1 to {MAX_AGENT_PROMPT_CHARS} characters"),
+            );
+            return;
+        }
+        let wait = match p.get("wait") {
+            None => false,
+            Some(Value::Bool(wait)) => *wait,
+            Some(_) => {
+                fail("invalid_request", "wait must be a boolean".to_string());
+                return;
+            }
+        };
+        if !wait && (p.get("until").is_some() || p.get("timeout_s").is_some()) {
+            fail(
+                "invalid_request",
+                "until and timeout_s require wait=true".to_string(),
+            );
+            return;
+        }
+        let until = match prompt_states(&p) {
+            Ok(states) => states,
+            Err(message) => {
+                fail("invalid_request", message);
+                return;
+            }
+        };
+        let timeout = match agent_timeout(&p, 300.0) {
+            Ok(timeout) => timeout,
+            Err(message) => {
+                fail("invalid_request", message);
+                return;
+            }
+        };
+        if wait {
+            let total: usize = self.agent_prompts.values().map(Vec::len).sum();
+            if total >= MAX_AGENT_WAITS_TOTAL {
+                fail(
+                    "unavailable",
+                    "agent prompt wait capacity is full".to_string(),
+                );
+                return;
+            }
+            // A terminal stream has no turn identifier. Refuse a second
+            // server-owned turn instead of letting both callers claim the same
+            // state/output transition as their completion evidence.
+            if self.agent_prompts.contains_key(&pane) {
+                fail(
+                    "agent_prompt_busy",
+                    "target agent already has a prompt waiting for completion".to_string(),
+                );
+                return;
+            }
+        }
+        let Some(target) = self.panes.get(&pane) else {
+            fail("not_found", "pane not found".to_string());
+            return;
+        };
+        let baseline_revision = target.content_revision();
+        if let Err(message) = target.try_submit_text(text) {
+            fail("send_failed", message);
+            return;
+        }
+        let status = self.status.get(&pane).map(|status| status.state);
+        if !wait {
+            let _ = reply.send(agent_prompt_response(
+                &request_id,
+                pane,
+                true,
+                false,
+                status,
+                baseline_revision,
+                baseline_revision,
+                "queued",
+            ));
+            return;
+        }
+        let now = Instant::now();
+        self.agent_prompts
+            .entry(pane)
+            .or_default()
+            .push(AgentPrompt {
+                request_id,
+                until,
+                baseline_revision,
+                last_revision: baseline_revision,
+                last_output_at: now,
+                saw_output: false,
+                saw_working: status == Some(State::Working),
+                reply,
+                deadline: now + timeout,
+                cancelled,
+            });
+    }
+
+    /// Progress only active launch/prompt workflows. With no pending workflow
+    /// this is O(1) and allocates nothing; PTY/output work remains event driven.
+    pub(crate) fn tick_agent_workflows(&mut self, now: Instant) {
+        let starts: Vec<PaneId> = self.agent_starts.keys().copied().collect();
+        for pane in starts {
+            let outcome = self.agent_starts.get(&pane).and_then(|start| {
+                if start.cancelled.load(Ordering::Acquire) {
+                    return Some(None);
+                }
+                let status = self.status.get(&pane);
+                if status.is_some_and(|status| {
+                    status.agent.eq_ignore_ascii_case(&start.kind) && self.is_agent_pane(pane)
+                }) {
+                    return Some(Some((true, status.map(|status| status.state))));
+                }
+                if !self.panes.contains_key(&pane) || now >= start.deadline {
+                    return Some(Some((false, status.map(|status| status.state))));
+                }
+                None
+            });
+            if let Some(outcome) = outcome {
+                let start = self.agent_starts.remove(&pane).expect("start exists");
+                match outcome {
+                    None => {}
+                    Some((ready, status)) => {
+                        let _ = start.reply.send(
+                            json!({"id":start.request_id,"result":{
+                                "type":"agent_start","name":start.name,"kind":start.kind,
+                                "pane":pane.0.to_string(),"ready":ready,
+                                "status":status.map(state_str),
+                            }})
+                            .to_string(),
+                        );
+                    }
+                }
+            }
+        }
+
+        let panes: Vec<PaneId> = self.agent_prompts.keys().copied().collect();
+        for pane in panes {
+            let revision = self
+                .panes
+                .get(&pane)
+                .map(crate::terminal::pty::Pane::content_revision);
+            let state = self.status.get(&pane).map(|status| status.state);
+            let Some(waiters) = self.agent_prompts.get_mut(&pane) else {
+                continue;
+            };
+            waiters.retain_mut(|waiter| {
+                if waiter.cancelled.load(Ordering::Acquire) {
+                    return false;
+                }
+                let Some(revision) = revision else {
+                    let _ = waiter.reply.send(agent_prompt_response(
+                        &waiter.request_id,
+                        pane,
+                        true,
+                        false,
+                        None,
+                        waiter.baseline_revision,
+                        waiter.last_revision,
+                        "pane_closed",
+                    ));
+                    return false;
+                };
+                if revision != waiter.last_revision {
+                    waiter.last_revision = revision;
+                    waiter.last_output_at = now;
+                    waiter.saw_output = revision > waiter.baseline_revision;
+                }
+                if state == Some(State::Working) {
+                    waiter.saw_working = true;
+                }
+                let target = state.is_some_and(|state| waiter.until.contains(&state));
+                let quiet = waiter.saw_output
+                    && now.saturating_duration_since(waiter.last_output_at) >= AGENT_PROMPT_QUIET;
+                if target && (waiter.saw_working || quiet) {
+                    let evidence = if waiter.saw_working {
+                        "state_transition"
+                    } else {
+                        "output_settled"
+                    };
+                    let _ = waiter.reply.send(agent_prompt_response(
+                        &waiter.request_id,
+                        pane,
+                        true,
+                        true,
+                        state,
+                        waiter.baseline_revision,
+                        revision,
+                        evidence,
+                    ));
+                    return false;
+                }
+                if now >= waiter.deadline {
+                    let _ = waiter.reply.send(agent_prompt_response(
+                        &waiter.request_id,
+                        pane,
+                        true,
+                        false,
+                        state,
+                        waiter.baseline_revision,
+                        revision,
+                        "timeout",
+                    ));
+                    return false;
+                }
+                true
+            });
+            if waiters.is_empty() {
+                self.agent_prompts.remove(&pane);
+            }
+        }
+    }
+
+    pub(crate) fn register_agent_wait(
+        &mut self,
+        id: PaneId,
+        request_id: String,
+        state: State,
+        reply: Sender<String>,
+        timeout: Option<Duration>,
+        cancelled: Arc<AtomicBool>,
+    ) {
+        if cancelled.load(Ordering::Acquire) {
+            return;
+        }
+        let current = self.status.get(&id).map(|status| status.state);
+        if current == Some(state) {
+            let _ = reply.send(agent_wait_response(&request_id, true, Some(id), current));
+            return;
+        }
+        let total: usize = self.agent_waits.values().map(Vec::len).sum();
+        if total >= MAX_AGENT_WAITS_TOTAL
+            || self
+                .agent_waits
+                .get(&id)
+                .is_some_and(|waits| waits.len() >= MAX_AGENT_WAITS_PER_PANE)
+        {
+            let _ = reply.send(
+                json!({"id":request_id,"error":{"code":"unavailable","message":"agent wait capacity is full"}})
+                    .to_string(),
+            );
+            return;
+        }
+        self.agent_waits.entry(id).or_default().push(AgentWait {
+            request_id,
+            state,
+            reply,
+            deadline: Instant::now() + timeout.unwrap_or(MAX_AGENT_WAIT).min(MAX_AGENT_WAIT),
+            cancelled,
+        });
+    }
+
+    pub(crate) fn check_agent_waits(&mut self, id: PaneId) {
+        let Some(current) = self.status.get(&id).map(|status| status.state) else {
+            return;
+        };
+        let Some(waiters) = self.agent_waits.get_mut(&id) else {
+            return;
+        };
+        waiters.retain(|waiter| {
+            if waiter.cancelled.load(Ordering::Acquire) {
+                false
+            } else if waiter.state == current {
+                let _ = waiter.reply.send(agent_wait_response(
+                    &waiter.request_id,
+                    true,
+                    Some(id),
+                    Some(current),
+                ));
+                false
+            } else {
+                true
+            }
+        });
+        if waiters.is_empty() {
+            self.agent_waits.remove(&id);
+        }
+    }
+
+    pub(crate) fn tick_agent_waits(&mut self, now: Instant) {
+        for (id, waiters) in self.agent_waits.iter_mut() {
+            let current = self.status.get(id).map(|status| status.state);
+            waiters.retain(|waiter| {
+                if waiter.cancelled.load(Ordering::Acquire) {
+                    false
+                } else if now >= waiter.deadline {
+                    let _ = waiter.reply.send(agent_wait_response(
+                        &waiter.request_id,
+                        false,
+                        Some(*id),
+                        current,
+                    ));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.agent_waits.retain(|_, waits| !waits.is_empty());
+    }
+
+    pub(crate) fn cancel_agent_waits(&mut self, id: PaneId) {
+        if let Some(waiters) = self.agent_waits.remove(&id) {
+            for waiter in waiters {
+                let _ =
+                    waiter
+                        .reply
+                        .send(agent_wait_response(&waiter.request_id, false, None, None));
+            }
+        }
+        if let Some(start) = self.agent_starts.remove(&id) {
+            let _ = start.reply.send(
+                json!({"id":start.request_id,"error":{
+                    "code":"agent_not_running","message":"agent pane closed during startup"
+                }})
+                .to_string(),
+            );
+        }
+        if let Some(prompts) = self.agent_prompts.remove(&id) {
+            for prompt in prompts {
+                let _ = prompt.reply.send(agent_prompt_response(
+                    &prompt.request_id,
+                    id,
+                    true,
+                    false,
+                    None,
+                    prompt.baseline_revision,
+                    prompt.last_revision,
+                    "pane_closed",
+                ));
+            }
+        }
+    }
+
+    /// The display label for `pane`: a terminal-backend title when present,
+    /// otherwise the live alias set by `agent.name`.
     pub(crate) fn agent_name_for(&self, pane: PaneId) -> Option<&str> {
-        self.agent_names
-            .iter()
-            .find_map(|(name, p)| (*p == pane).then_some(name.as_str()))
+        self.backend_labels
+            .get(&pane)
+            .map(String::as_str)
+            .or_else(|| {
+                self.agent_names
+                    .iter()
+                    .find_map(|(name, p)| (*p == pane).then_some(name.as_str()))
+            })
     }
 
     /// The pane's live session title (the OSC title the agent set), trimmed, if
@@ -2684,9 +3811,11 @@ impl App {
     /// Whether `pane` currently hosts a recognised agent (detection) or a bound
     /// agent session — the same test `agent.list` uses to decide what is an agent.
     pub(crate) fn is_agent_pane(&self, pane: PaneId) -> bool {
-        self.status
-            .get(&pane)
-            .is_some_and(|s| self.manifests.is_agent(&s.agent) || s.agent_session.is_some())
+        self.status.get(&pane).is_some_and(|s| {
+            self.manifests.is_agent(&s.agent)
+                || s.agent_session.is_some()
+                || s.agent_report.is_some()
+        })
     }
 
     /// Resolve an `agent.*` `target` param (a live alias or a numeric pane id) to a
@@ -3147,6 +4276,199 @@ fn required_one_based_param(p: &Value, key: &str) -> Result<usize, (String, Stri
             format!("{key} must be a positive 1-based tab number"),
         )
     })
+}
+
+pub(crate) fn parse_agent_wait_state(value: &str) -> Option<State> {
+    match value {
+        "idle" => Some(State::Idle),
+        "working" => Some(State::Working),
+        "blocked" => Some(State::Blocked),
+        "done" => Some(State::Done),
+        _ => None,
+    }
+}
+
+fn agent_timeout(p: &Value, default_s: f64) -> Result<Duration, String> {
+    let seconds = p
+        .get("timeout_s")
+        .map(|value| {
+            value
+                .as_f64()
+                .filter(|seconds| seconds.is_finite())
+                .ok_or_else(|| "timeout_s must be a finite number".to_string())
+        })
+        .transpose()?
+        .unwrap_or(default_s);
+    if !(0.0..=MAX_AGENT_WAIT.as_secs_f64()).contains(&seconds) {
+        return Err(format!(
+            "timeout_s must be between 0 and {}",
+            MAX_AGENT_WAIT.as_secs()
+        ));
+    }
+    Duration::try_from_secs_f64(seconds)
+        .map_err(|_| "timeout_s is outside the supported range".to_string())
+}
+
+fn prompt_states(p: &Value) -> Result<Vec<State>, String> {
+    let Some(until) = p.get("until") else {
+        return Ok(vec![State::Idle, State::Done, State::Blocked]);
+    };
+    let values = until
+        .as_array()
+        .filter(|values| !values.is_empty() && values.len() <= 4)
+        .ok_or_else(|| "until must contain 1 to 4 agent states".to_string())?;
+    let mut states = Vec::with_capacity(values.len());
+    for value in values {
+        let state = value
+            .as_str()
+            .and_then(parse_agent_wait_state)
+            .ok_or_else(|| "until states must be idle, working, blocked, or done".to_string())?;
+        if !states.contains(&state) {
+            states.push(state);
+        }
+    }
+    Ok(states)
+}
+
+fn agent_start_args(p: &Value) -> Result<Vec<String>, String> {
+    let Some(args) = p.get("args") else {
+        return Ok(Vec::new());
+    };
+    let args = args
+        .as_array()
+        .filter(|args| args.len() <= MAX_AGENT_START_ARGS)
+        .ok_or_else(|| format!("args must contain at most {MAX_AGENT_START_ARGS} strings"))?;
+    args.iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|arg| arg.chars().count() <= 4096 && !arg.contains(['\n', '\r', '\0']))
+                .map(String::from)
+                .ok_or_else(|| {
+                    "each agent argument must be a string of at most 4096 characters without control lines"
+                        .to_string()
+                })
+        })
+        .collect()
+}
+
+#[cfg(not(windows))]
+fn shell_word(value: &str, _shell: &str) -> Result<String, String> {
+    Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
+}
+
+#[cfg(windows)]
+fn shell_word(value: &str, shell: &str) -> Result<String, String> {
+    let base = std::path::Path::new(shell)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(shell)
+        .trim_end_matches(".exe")
+        .to_ascii_lowercase();
+    match base.as_str() {
+        "sh" | "bash" | "zsh" | "dash" | "ksh" | "fish" => {
+            Ok(format!("'{}'", value.replace('\'', "'\"'\"'")))
+        }
+        "cmd" => {
+            // cmd.exe expands percent/bang variables and treats these glyphs as
+            // syntax even inside some quoting contexts. Refuse ambiguous input
+            // instead of turning an argument into an injected shell command.
+            if value.chars().any(|ch| {
+                ch.is_control()
+                    || matches!(
+                        ch,
+                        '"' | '%' | '!' | '^' | '&' | '|' | '<' | '>' | '(' | ')'
+                    )
+            }) {
+                Err("agent arguments for cmd.exe cannot contain shell metacharacters".to_string())
+            } else {
+                Ok(format!("\"{value}\""))
+            }
+        }
+        _ => Ok(format!("'{}'", value.replace('\'', "''"))),
+    }
+}
+
+fn required_report_source(p: &Value) -> Result<String, (String, String)> {
+    let source = p.get("source").and_then(Value::as_str).unwrap_or("");
+    let valid = !source.is_empty()
+        && source.len() <= 64
+        && source.as_bytes()[0].is_ascii_alphabetic()
+        && source.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':' | b'/')
+        });
+    if valid {
+        Ok(source.to_string())
+    } else {
+        Err((
+            "invalid_request".to_string(),
+            "source must be 1-64 safe ASCII characters and start with a letter".to_string(),
+        ))
+    }
+}
+
+fn reject_api_fields(p: &Value, allowed: &[&str]) -> Result<(), (String, String)> {
+    let object = p.as_object().ok_or_else(|| {
+        (
+            "invalid_request".to_string(),
+            "params must be an object".to_string(),
+        )
+    })?;
+    if let Some(field) = object
+        .keys()
+        .find(|field| !allowed.contains(&field.as_str()))
+    {
+        return Err((
+            "invalid_request".to_string(),
+            format!("unknown parameter: {field}"),
+        ));
+    }
+    Ok(())
+}
+
+fn optional_bounded_string(
+    p: &Value,
+    key: &str,
+    max_characters: usize,
+) -> Result<Option<String>, (String, String)> {
+    match p.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(value)) if value.chars().count() <= max_characters => {
+            Ok(Some(value.clone()))
+        }
+        Some(Value::String(_)) => Err((
+            "invalid_request".to_string(),
+            format!("{key} exceeds {max_characters} characters"),
+        )),
+        Some(_) => Err((
+            "invalid_request".to_string(),
+            format!("{key} must be a string"),
+        )),
+    }
+}
+
+/// Privacy-preserving executable inventory from cached process command lines.
+/// Keep only argv[0], plus an interpreter's first non-flag script name, and
+/// de-duplicate in scan order. Full argv commonly contains prompts or secrets.
+fn process_executables(commands: &[String]) -> Vec<String> {
+    let mut result = Vec::new();
+    for command in commands.iter().take(128) {
+        let mut words = command.split_whitespace();
+        let Some(first) = words.next() else { continue };
+        let first = crate::detect::binary_name(first);
+        if !first.is_empty() && !result.iter().any(|item| item == first) {
+            result.push(first.to_string());
+        }
+        if crate::detect::is_interpreter(first) {
+            if let Some(script) = words.find(|word| !word.starts_with('-')) {
+                let script = crate::detect::binary_name(script);
+                if !script.is_empty() && !result.iter().any(|item| item == script) {
+                    result.push(script.to_string());
+                }
+            }
+        }
+    }
+    result
 }
 
 fn state_str(s: State) -> &'static str {
@@ -3737,6 +5059,215 @@ command = ["true"]
     }
 
     #[test]
+    fn atomic_agent_prompt_uses_output_evidence_for_a_fast_settled_turn() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+        app.status.get_mut(&pane).unwrap().agent = "codex".into();
+        let (reply, response) = std::sync::mpsc::channel();
+        let started = Instant::now();
+        app.start_agent_prompt(
+            "prompt-1".into(),
+            json!({
+                "target":pane.0.to_string(), "text":"review this", "wait":true,
+                "until":["idle", "done", "blocked"], "timeout_s":10,
+            }),
+            reply,
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert!(
+            response.try_recv().is_err(),
+            "idle before evidence is not completion"
+        );
+
+        let revision = app.panes[&pane].content_revision_handle();
+        revision.fetch_add(1, Ordering::Release);
+        app.tick_agent_workflows(started + Duration::from_millis(10));
+        app.tick_agent_workflows(started + AGENT_PROMPT_QUIET + Duration::from_millis(20));
+        let value: Value = serde_json::from_str(&response.recv().unwrap()).unwrap();
+        assert_eq!(value["result"]["type"], "agent_prompt");
+        assert_eq!(value["result"]["submitted"], true);
+        assert_eq!(value["result"]["matched"], true);
+        assert_eq!(value["result"]["evidence"], "output_settled");
+        assert!(app.agent_prompts.is_empty());
+    }
+
+    #[test]
+    fn atomic_agent_prompt_reports_queued_timeout_without_resubmitting() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+        app.status.get_mut(&pane).unwrap().agent = "codex".into();
+        let (reply, response) = std::sync::mpsc::channel();
+        app.start_agent_prompt(
+            "prompt-timeout".into(),
+            json!({"target":pane.0.to_string(), "text":"review", "wait":true, "timeout_s":0}),
+            reply,
+            Arc::new(AtomicBool::new(false)),
+        );
+        app.tick_agent_workflows(Instant::now());
+        let value: Value = serde_json::from_str(&response.recv().unwrap()).unwrap();
+        assert_eq!(value["result"]["submitted"], true);
+        assert_eq!(value["result"]["matched"], false);
+        assert_eq!(value["result"]["evidence"], "timeout");
+    }
+
+    #[test]
+    fn atomic_agent_prompt_rejects_an_overlapping_wait_before_queueing() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+        app.status.get_mut(&pane).unwrap().agent = "codex".into();
+        let (first_reply, _first_response) = std::sync::mpsc::channel();
+        app.start_agent_prompt(
+            "prompt-first".into(),
+            json!({"target":pane.0.to_string(), "text":"first", "wait":true}),
+            first_reply,
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let (second_reply, second_response) = std::sync::mpsc::channel();
+        app.start_agent_prompt(
+            "prompt-second".into(),
+            json!({"target":pane.0.to_string(), "text":"second", "wait":true}),
+            second_reply,
+            Arc::new(AtomicBool::new(false)),
+        );
+        let value: Value = serde_json::from_str(&second_response.recv().unwrap()).unwrap();
+        assert_eq!(value["error"]["code"], "agent_prompt_busy");
+        assert_eq!(app.agent_prompts[&pane].len(), 1);
+    }
+
+    #[test]
+    fn server_owned_agent_start_reserves_name_and_waits_for_detection() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+        let (reply, response) = std::sync::mpsc::channel();
+        app.start_agent_launch(
+            "start-1".into(),
+            json!({
+                "name":"reviewer", "kind":"codex", "pane":pane.0.to_string(),
+                "args":[], "timeout_s":10,
+            }),
+            reply,
+            Arc::new(AtomicBool::new(false)),
+        );
+        assert_eq!(app.agent_names.get("reviewer"), Some(&pane));
+        assert!(response.try_recv().is_err());
+
+        let status = app.status.get_mut(&pane).unwrap();
+        status.agent = "codex".into();
+        status.state = State::Working;
+        app.tick_agent_workflows(Instant::now());
+        let value: Value = serde_json::from_str(&response.recv().unwrap()).unwrap();
+        assert_eq!(value["result"]["type"], "agent_start");
+        assert_eq!(value["result"]["ready"], true);
+        assert_eq!(value["result"]["name"], "reviewer");
+        assert_eq!(value["result"]["status"], "working");
+    }
+
+    #[test]
+    fn integration_report_is_explainable_exclusive_and_resolves_waits() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+        let (reply, response) = std::sync::mpsc::channel();
+        app.register_agent_wait(
+            pane,
+            "wait-1".into(),
+            State::Blocked,
+            reply,
+            Some(Duration::from_secs(1)),
+            Arc::new(AtomicBool::new(false)),
+        );
+
+        let reported = app
+            .dispatch(
+                "agent.report",
+                &json!({
+                    "pane":pane.0.to_string(), "source":"fx/plugin", "agent":"newagent",
+                    "status":"blocked", "message":"approval required", "sequence":7,
+                    "ttl_s":60,
+                }),
+            )
+            .unwrap();
+        assert_eq!(reported["status"], "blocked");
+        let waited: Value = serde_json::from_str(&response.recv().unwrap()).unwrap();
+        assert_eq!(waited["result"]["matched"], true);
+        assert_eq!(waited["result"]["status"], "blocked");
+
+        let explanation = app
+            .dispatch("agent.explain", &json!({"target":pane.0.to_string()}))
+            .unwrap();
+        assert_eq!(explanation["identity"]["source"], "integration_report");
+        assert_eq!(explanation["identity"]["confidence"], "authoritative");
+        assert_eq!(
+            explanation["state_evidence"]["blocked_hint"],
+            "approval required"
+        );
+        assert!(
+            app.is_agent_pane(pane),
+            "a reported new agent is immediately live"
+        );
+
+        assert_eq!(
+            app.dispatch(
+                "agent.report",
+                &json!({"pane":pane.0.to_string(), "source":"other", "agent":"newagent", "status":"idle"}),
+            )
+            .unwrap_err()
+            .0,
+            "authority_conflict"
+        );
+        assert_eq!(
+            app.dispatch(
+                "agent.report",
+                &json!({"pane":pane.0.to_string(), "source":"fx/plugin", "agent":"newagent", "status":"idle", "sequence":7}),
+            )
+            .unwrap_err()
+            .0,
+            "stale_report"
+        );
+        app.dispatch(
+            "agent.release",
+            &json!({"pane":pane.0.to_string(), "source":"fx/plugin"}),
+        )
+        .unwrap();
+        assert!(app.status[&pane].agent_report.is_none());
+        assert!(app.status[&pane].force_detect);
+    }
+
+    #[test]
+    fn runtime_snapshot_is_global_fenced_and_processes_hide_arguments() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+        app.proc_commands.insert(
+            pane,
+            vec![
+                "/bin/zsh -l".into(),
+                "/usr/bin/node /tools/codex.js --token secret-value".into(),
+            ],
+        );
+        let processes = app
+            .dispatch("pane.processes", &json!({"pane":pane.0}))
+            .unwrap();
+        assert_eq!(processes["executables"], json!(["zsh", "node", "codex.js"]));
+        assert_eq!(processes["arguments_exposed"], false);
+        assert!(!processes.to_string().contains("secret-value"));
+
+        let snapshot = app.dispatch("session.snapshot", &json!({})).unwrap();
+        assert_eq!(snapshot["type"], "session_snapshot");
+        assert_eq!(snapshot["protocol"]["name"], "luvus-runtime");
+        assert_eq!(
+            snapshot["workspaces"][0]["tabs"][0]["panes"][0]["pane_id"],
+            pane.0.to_string()
+        );
+        assert!(snapshot["event_sequence"].is_u64());
+    }
+
+    #[test]
     fn a_target_resolves_by_kind_when_unique_and_is_ambiguous_when_not() {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(80, 24, tx).unwrap();
@@ -3828,6 +5359,19 @@ command = ["true"]
         }
         app.handle_pane_rename_key(KeyEvent::from(KeyCode::Enter));
         assert_eq!(app.agent_name_for(pane), None);
+    }
+
+    #[test]
+    fn pane_rename_does_not_turn_backend_label_into_alias() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+        app.backend_labels.insert(pane, "harness-shell".into());
+
+        app.open_pane_rename(pane);
+        assert_eq!(app.pane_rename.as_ref().unwrap().buffer, "");
+        assert!(app.agent_names.values().all(|target| *target != pane));
+        assert_eq!(app.agent_name_for(pane), Some("harness-shell"));
     }
 
     #[test]
@@ -4368,6 +5912,21 @@ command = ["true"]
         assert!(!valid_agent_name(&"x".repeat(33))); // too long
     }
 
+    #[test]
+    fn runtime_string_limits_count_unicode_codepoints() {
+        let accepted = "é".repeat(MAX_AGENT_REPORT_MESSAGE_CHARS);
+        assert_eq!(
+            optional_bounded_string(&json!({"message":accepted}), "message", 4096)
+                .unwrap()
+                .unwrap()
+                .chars()
+                .count(),
+            4096
+        );
+        let rejected = "é".repeat(MAX_AGENT_REPORT_MESSAGE_CHARS + 1);
+        assert!(optional_bounded_string(&json!({"message":rejected}), "message", 4096).is_err());
+    }
+
     /// `wait.output` never polls: an already-visible marker resolves on
     /// registration, fresh output resolves on the next output event, and a
     /// deadline lapses on the loop tick (docs/81).
@@ -4388,7 +5947,14 @@ command = ["true"]
             .unwrap()
             .advance(b"ready NOW\r\n");
         let (reply, rx): (_, Receiver<String>) = std::sync::mpsc::channel();
-        app.register_output_wait(pane, "t1".into(), "NOW".into(), reply, None);
+        app.register_output_wait(
+            pane,
+            "t1".into(),
+            "NOW".into(),
+            reply,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
         assert!(rx
             .recv_timeout(Duration::from_secs(1))
             .unwrap()
@@ -4396,7 +5962,14 @@ command = ["true"]
 
         // Parked: resolves only when the pane produces matching output.
         let (reply, rx): (_, Receiver<String>) = std::sync::mpsc::channel();
-        app.register_output_wait(pane, "t2".into(), "LATER".into(), reply, None);
+        app.register_output_wait(
+            pane,
+            "t2".into(),
+            "LATER".into(),
+            reply,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
         assert_eq!(
             rx.recv_timeout(Duration::from_millis(50)),
             Err(RecvTimeoutError::Timeout)
@@ -4422,6 +5995,7 @@ command = ["true"]
             "NEVER".into(),
             reply,
             Some(Duration::from_millis(10)),
+            Arc::new(AtomicBool::new(false)),
         );
         app.tick_output_waits(Instant::now() + Duration::from_secs(1));
         assert!(rx
@@ -4431,7 +6005,14 @@ command = ["true"]
 
         // A closed pane fails its parked waiters.
         let (reply, rx): (_, Receiver<String>) = std::sync::mpsc::channel();
-        app.register_output_wait(pane, "t4".into(), "NEVER".into(), reply, None);
+        app.register_output_wait(
+            pane,
+            "t4".into(),
+            "NEVER".into(),
+            reply,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
         app.cancel_output_waits(pane);
         assert!(rx
             .recv_timeout(Duration::from_secs(1))
@@ -4449,9 +6030,59 @@ command = ["true"]
         let mut app = App::new(80, 24, tx).unwrap();
         let pane = app.layout().focus;
         let (reply, _rx): (_, std::sync::mpsc::Receiver<String>) = std::sync::mpsc::channel();
-        app.register_output_wait(pane, "t".into(), "NEVER".into(), reply, None);
+        app.register_output_wait(
+            pane,
+            "t".into(),
+            "NEVER".into(),
+            reply,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
         let waiter = &app.output_waits[&pane][0];
         assert!(waiter.deadline.is_some(), "an abandoned waiter must expire");
+    }
+
+    #[test]
+    fn disconnected_clients_reclaim_parked_waiters_without_replies() {
+        use std::sync::mpsc::TryRecvError;
+
+        let _env = crate::persist::test_env("wait-disconnect");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let pane = app.layout().focus;
+
+        let output_cancelled = Arc::new(AtomicBool::new(false));
+        let (output_reply, output_rx) = std::sync::mpsc::channel();
+        app.register_output_wait(
+            pane,
+            "output-disconnect".into(),
+            "NEVER".into(),
+            output_reply,
+            None,
+            output_cancelled.clone(),
+        );
+
+        let agent_cancelled = Arc::new(AtomicBool::new(false));
+        let (agent_reply, agent_rx) = std::sync::mpsc::channel();
+        app.register_agent_wait(
+            pane,
+            "agent-disconnect".into(),
+            State::Blocked,
+            agent_reply,
+            None,
+            agent_cancelled.clone(),
+        );
+
+        output_cancelled.store(true, Ordering::Release);
+        agent_cancelled.store(true, Ordering::Release);
+        let now = Instant::now();
+        app.tick_output_waits(now);
+        app.tick_agent_waits(now);
+
+        assert!(app.output_waits.is_empty());
+        assert!(app.agent_waits.is_empty());
+        assert_eq!(output_rx.try_recv(), Err(TryRecvError::Disconnected));
+        assert_eq!(agent_rx.try_recv(), Err(TryRecvError::Disconnected));
     }
 
     /// Every pane-close path funnels through `drop_leaf_runtime`, so closing a
@@ -4463,7 +6094,14 @@ command = ["true"]
         let mut app = App::new(80, 24, tx).unwrap();
         let pane = app.layout().focus;
         let (reply, rx): (_, std::sync::mpsc::Receiver<String>) = std::sync::mpsc::channel();
-        app.register_output_wait(pane, "t".into(), "NEVER".into(), reply, None);
+        app.register_output_wait(
+            pane,
+            "t".into(),
+            "NEVER".into(),
+            reply,
+            None,
+            Arc::new(AtomicBool::new(false)),
+        );
         app.close_workspace(0);
         assert!(
             rx.recv_timeout(Duration::from_secs(1))
