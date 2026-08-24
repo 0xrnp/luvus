@@ -23,6 +23,8 @@ METHOD_FIELDS = {
     "terminal.backend.validate": {"server_generation", "terminal_id", "pane_id", "expected_root"},
     "terminal.backend.processes": {"server_generation", "terminal_id", "pane_id", "expected_root"},
     "terminal.backend.capture": {"server_generation", "terminal_id", "pane_id", "expected_root", "mode", "lines", "ansi"},
+    "terminal.backend.observe": {"server_generation", "terminal_id", "pane_id", "expected_root", "mode", "lines", "ansi"},
+    "terminal.backend.control": {"server_generation", "terminal_id", "pane_id", "expected_root", "mode", "lines", "ansi"},
     "terminal.backend.type_literal": {"server_generation", "terminal_id", "pane_id", "expected_root", "text"},
     "terminal.backend.submit_text": {"server_generation", "terminal_id", "pane_id", "expected_root", "text"},
     "terminal.backend.send_key": {"server_generation", "terminal_id", "pane_id", "expected_root", "key"},
@@ -93,6 +95,11 @@ def valid_request(value):
         return method == "terminal.backend.wait_change" or isinstance(params.get("match"), str) and 1 <= len(params["match"]) <= 4096
     if method == "terminal.backend.capture":
         return params.get("mode") in {"visible", "recent_unwrapped", "detection"} and isinstance(params.get("lines"), int) and 1 <= params["lines"] <= 300 and isinstance(params.get("ansi"), bool) and not (params["mode"] == "detection" and params["ansi"])
+    if method in {"terminal.backend.observe", "terminal.backend.control"}:
+        mode = params.get("mode", "visible")
+        lines = params.get("lines", 80)
+        ansi = params.get("ansi", True)
+        return mode in {"visible", "recent_unwrapped"} and isinstance(lines, int) and not isinstance(lines, bool) and 1 <= lines <= 200 and isinstance(ansi, bool)
     if method == "terminal.backend.send_key":
         return params.get("key") in KEYS
     if method in {"terminal.backend.type_literal", "terminal.backend.submit_text"}:
@@ -105,13 +112,35 @@ def valid_response(value):
     return isinstance(value, dict) and isinstance(value.get("id"), str) and ((isinstance(value.get("result"), dict) and "error" not in value) or (isinstance(value.get("error"), dict) and "result" not in value))
 
 
+def valid_control_frame(value):
+    if not isinstance(value, dict) or set(value) != {"id", "action", "params"}:
+        return False
+    if not isinstance(value["id"], str) or not 1 <= len(value["id"].encode()) <= 128:
+        return False
+    action, params = value["action"], value["params"]
+    if not isinstance(params, dict):
+        return False
+    if action in {"type_literal", "submit_text"}:
+        text = params.get("text")
+        return set(params) == {"text"} and isinstance(text, str) and 1 <= len(text.encode()) <= 262144
+    return action == "send_key" and set(params) == {"key"} and params.get("key") in KEYS
+
+
 def valid_event(value):
     if not isinstance(value, dict) or set(value) != {"event", "sequence", "data"}:
         return False
-    if not isinstance(value["sequence"], int) or value["sequence"] < 1 or not isinstance(value["data"], dict):
+    if not isinstance(value["sequence"], int) or value["sequence"] < 0 or not isinstance(value["data"], dict):
         return False
     if value["event"] == "terminal.resync_required":
         return value["data"] == {"reason": "subscriber_overflow"}
+    if value["event"] == "terminal.frame":
+        data = value["data"]
+        if not (value["sequence"] >= 0 and set(data) == {"server_generation", "terminal_id", "pane_id", "content_revision", "mode", "ansi", "text", "lines", "bytes", "truncated"} and locator_ok(data) and isinstance(data["content_revision"], int) and data["content_revision"] >= 0 and data["mode"] in {"visible", "recent_unwrapped"} and isinstance(data["ansi"], bool) and isinstance(data["text"], str) and isinstance(data["lines"], int) and not isinstance(data["lines"], bool) and 1 <= data["lines"] <= 200 and isinstance(data["bytes"], int) and not isinstance(data["bytes"], bool) and 0 <= data["bytes"] <= 65536 and isinstance(data["truncated"], bool)):
+            return False
+        encoded = data["text"].encode()
+        return data["bytes"] == len(encoded) and len(encoded) <= 65536 and data["lines"] == data["text"].count("\n") + 1
+    if value["sequence"] < 1:
+        return False
     if value["event"] not in {"terminal.created", "terminal.moved", "terminal.metadata_changed", "terminal.output_ready", "terminal.exited", "terminal.closed"}:
         return False
     data = value["data"]
@@ -233,6 +262,28 @@ def check_reconciliation():
     assert created["resnapshot_required"]
 
 
+def check_generated_event_limits():
+    frame = {
+        "event": "terminal.frame",
+        "sequence": 1,
+        "data": {
+            "server_generation": "1" * 32,
+            "terminal_id": "2" * 32,
+            "pane_id": "7",
+            "content_revision": 1,
+            "mode": "visible",
+            "ansi": False,
+            "text": "x" * 65537,
+            "lines": 1,
+            "bytes": 65537,
+            "truncated": False,
+        },
+    }
+    assert not valid_event(frame), "terminal frames must stay within 64 KiB"
+    frame["data"].update(text="\n".join("x" for _ in range(201)), lines=201, bytes=401)
+    assert not valid_event(frame), "terminal frames must stay within 200 lines"
+
+
 def check_fixtures():
     manifest = json.loads((PACKAGE / "fixtures" / "manifest.json").read_text())
     checked = 0
@@ -246,6 +297,8 @@ def check_fixtures():
                     valid = valid_request(value)
                 elif entry["kind"] == "response":
                     valid = valid_response(value)
+                elif entry["kind"] == "control":
+                    valid = valid_control_frame(value)
                 else:
                     valid = valid_event(value)
             except (json.JSONDecodeError, ValueError):
@@ -257,6 +310,7 @@ def check_fixtures():
     endpoints = json.loads((PACKAGE / "fixtures" / "endpoint-validation.json").read_text())
     assert {item["expect"] for item in endpoints} == {"accept", "reject"}
     check_reconciliation()
+    check_generated_event_limits()
     print(f"validated {checked} fixtures, all JSON schema documents, and snapshot replay")
 
 
