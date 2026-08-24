@@ -70,19 +70,20 @@ function Close-PipeConnection {
 function Read-BoundedLine {
     param(
         [Parameter(Mandatory)]$Reader,
-        [int]$TimeoutMs = 5000
+        [int]$TimeoutMs = 5000,
+        [string]$Context = "named-pipe response"
     )
 
     $Task = $Reader.ReadLineAsync()
     if (-not $Task.Wait($TimeoutMs)) {
-        throw "named-pipe response timed out"
+        throw "$Context timed out"
     }
     $Line = $Task.Result
     if ($null -eq $Line) {
-        throw "named-pipe response ended before LF"
+        throw "$Context ended before LF"
     }
     if ([System.Text.Encoding]::UTF8.GetByteCount($Line) + 1 -gt 1MB) {
-        throw "named-pipe response exceeded the protocol frame limit"
+        throw "$Context exceeded the protocol frame limit"
     }
     $Line
 }
@@ -101,9 +102,14 @@ function Send-Request {
         }
         $Connection.Writer.Write($Json + "`n")
         $Connection.Writer.Flush()
-        $Response = (Read-BoundedLine $Connection.Reader) | ConvertFrom-Json
+        try {
+            $Response = (Read-BoundedLine -Reader $Connection.Reader `
+                -Context "request '$($Request.id)' response") | ConvertFrom-Json
+        } catch {
+            throw "named-pipe request '$($Request.id)' failed: $($_.Exception.Message)"
+        }
         if ($Response.id -ne $Request.id) {
-            throw "named-pipe response id mismatch"
+            throw "named-pipe request '$($Request.id)' received response id '$($Response.id)'"
         }
         $Response
     } finally {
@@ -122,7 +128,8 @@ function Wait-TerminalEvent {
     $Deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMs)
     while ([DateTime]::UtcNow -lt $Deadline) {
         $RemainingMs = [Math]::Max(1, [int]($Deadline - [DateTime]::UtcNow).TotalMilliseconds)
-        $Received = (Read-BoundedLine -Reader $Connection.Reader -TimeoutMs $RemainingMs) | ConvertFrom-Json
+        $Received = (Read-BoundedLine -Reader $Connection.Reader -TimeoutMs $RemainingMs `
+            -Context "event '$Name'") | ConvertFrom-Json
         if ($Received.event -eq "terminal.resync_required") {
             throw "terminal event stream overflowed during conformance"
         }
@@ -179,6 +186,21 @@ try {
         Close-PipeConnection $IdentityProbe
     }
 
+    # Exercise the one-request-per-connection path immediately after a client
+    # disconnects without sending a frame. This catches response bytes being
+    # lost when Windows named-pipe handlers close rapidly.
+    for ($Attempt = 0; $Attempt -lt 32; $Attempt++) {
+        $RequestId = "rapid-$Attempt"
+        $Rapid = Send-Request $Address @{
+            id = $RequestId
+            method = "terminal.backend.capabilities"
+            params = @{ protocol = @{ name = "luvus-terminal-backend"; major = 1; minor = 0 } }
+        }
+        if ($Rapid.result.protocol.major -ne 1 -or $Rapid.result.protocol.minor -ne 0) {
+            throw "rapid named-pipe request '$RequestId' returned an invalid protocol"
+        }
+    }
+
     $Capability = Send-Request $Address @{
         id = "cap"
         method = "terminal.backend.capabilities"
@@ -203,7 +225,8 @@ try {
         params = @{}
     } | ConvertTo-Json -Compress) + "`n")
     $EventConnection.Writer.Flush()
-    $Subscribed = (Read-BoundedLine $EventConnection.Reader) | ConvertFrom-Json
+    $Subscribed = (Read-BoundedLine -Reader $EventConnection.Reader `
+        -Context "event subscription response") | ConvertFrom-Json
     if ($Subscribed.result.type -ne "subscription_started") {
         throw "terminal event subscription did not start"
     }

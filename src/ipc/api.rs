@@ -166,14 +166,20 @@ pub(crate) fn read_response_frame(reader: &mut impl BufRead) -> io::Result<Strin
 
 fn write_response(writer: &mut impl Write, id: &str, response: &str) -> io::Result<()> {
     if response.len().saturating_add(1) <= crate::terminal::backend::MAX_FRAME_BYTES {
-        writeln!(writer, "{response}")
+        writeln!(writer, "{response}")?;
     } else {
         writeln!(
             writer,
             "{}",
             json!({"id":id,"error":{"code":"internal","message":"response exceeded protocol frame limit"}})
-        )
+        )?;
     }
+    writer.flush()
+}
+
+fn write_event_frame(writer: &mut impl Write, event: &str) -> io::Result<()> {
+    writeln!(writer, "{event}")?;
+    writer.flush()
 }
 
 /// Reject duplicate JSON object keys before deserializing into `Value`, which
@@ -524,12 +530,13 @@ fn handle_conn(stream: Conn, event_tx: Sender<AppEvent>, bus: EventBus) {
                 if !fwd_active.load(Ordering::Acquire) {
                     let dropped_at = overflow_sequence.load(Ordering::Acquire);
                     if dropped_at > 0 {
-                        let _ = writeln!(fwd_writer, "{}", resync_event(filter, dropped_at));
+                        let _ =
+                            write_event_frame(&mut fwd_writer, &resync_event(filter, dropped_at));
                     }
                     break;
                 }
                 if evt.len().saturating_add(1) > crate::terminal::backend::MAX_FRAME_BYTES
-                    || writeln!(fwd_writer, "{evt}").is_err()
+                    || write_event_frame(&mut fwd_writer, &evt).is_err()
                 {
                     fwd_active.store(false, Ordering::Release);
                     break;
@@ -539,16 +546,35 @@ fn handle_conn(stream: Conn, event_tx: Sender<AppEvent>, bus: EventBus) {
         // …while this thread watches the read side: EOF/error = the client is
         // gone, so unsubscribe NOW instead of lingering in the bus until the
         // next publish happens to notice the dead channel.
-        let _ = reader
+        let timeout_mode = reader
             .get_ref()
-            .set_timeouts(std::time::Duration::from_millis(250));
+            .set_timeouts(std::time::Duration::from_millis(250))
+            .ok();
         let mut probe = [0_u8; 1024];
         while active.load(Ordering::Acquire) {
             match reader.read(&mut probe) {
+                Ok(0) if timeout_mode == Some(transport::TimeoutMode::Nonblocking) => {
+                    // Windows byte-mode named pipes can report a zero-byte
+                    // successful read for PIPE_NOWAIT when no data is ready.
+                    // A later write still detects a disconnected subscriber.
+                    thread::sleep(std::time::Duration::from_millis(25));
+                }
                 Ok(0) => break,
                 Ok(_) => {}
-                Err(error) if error.kind() == io::ErrorKind::TimedOut => {}
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    ) =>
+                {
+                    if timeout_mode == Some(transport::TimeoutMode::Nonblocking) {
+                        thread::sleep(std::time::Duration::from_millis(25));
+                    }
+                }
+                Err(error)
+                    if timeout_mode == Some(transport::TimeoutMode::Nonblocking)
+                        && transport::nonblocking_read_pending(&error) =>
+                {
                     thread::sleep(std::time::Duration::from_millis(25));
                 }
                 Err(_) => break,
@@ -745,6 +771,12 @@ fn wait_for_parked_reply(
             Err(TryRecvError::Empty) => {}
         }
         match reader.read(&mut probe) {
+            Ok(0) if timeout_mode == Some(transport::TimeoutMode::Nonblocking) => {
+                // On Windows PIPE_NOWAIT, zero bytes can mean that no input is
+                // ready rather than EOF. The app-owned timeout still bounds
+                // this wait and the response write detects a disconnected peer.
+                thread::sleep(std::time::Duration::from_millis(25));
+            }
             Ok(0) => break,
             Ok(_) => {}
             Err(error)
@@ -756,6 +788,12 @@ fn wait_for_parked_reply(
                 if timeout_mode == Some(transport::TimeoutMode::Nonblocking) {
                     thread::sleep(std::time::Duration::from_millis(25));
                 }
+            }
+            Err(error)
+                if timeout_mode == Some(transport::TimeoutMode::Nonblocking)
+                    && transport::nonblocking_read_pending(&error) =>
+            {
+                thread::sleep(std::time::Duration::from_millis(25));
             }
             Err(_) => break,
         }
@@ -784,6 +822,42 @@ fn parse_timeout_s(params: &Value) -> Result<Option<std::time::Duration>, &'stat
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Default)]
+    struct FlushProbe {
+        bytes: Vec<u8>,
+        flushes: usize,
+    }
+
+    impl Write for FlushProbe {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.bytes.extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn responses_are_lf_framed_and_flushed_before_disconnect() {
+        let mut writer = FlushProbe::default();
+        write_response(&mut writer, "test", r#"{"id":"test","result":{}}"#).unwrap();
+
+        assert_eq!(writer.bytes, b"{\"id\":\"test\",\"result\":{}}\n");
+        assert_eq!(writer.flushes, 1);
+    }
+
+    #[test]
+    fn subscription_events_are_lf_framed_and_flushed_immediately() {
+        let mut writer = FlushProbe::default();
+        write_event_frame(&mut writer, r#"{"event":"terminal.closed"}"#).unwrap();
+
+        assert_eq!(writer.bytes, b"{\"event\":\"terminal.closed\"}\n");
+        assert_eq!(writer.flushes, 1);
+    }
 
     #[test]
     fn bounded_frame_requires_lf_and_stops_after_one_request() {
