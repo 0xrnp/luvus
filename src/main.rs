@@ -266,16 +266,21 @@ fn wav_bytes(samples: &[i16], sr: u32) -> Vec<u8> {
 
 /// Play a WAV with the platform's audio tool (blocking — called in a thread).
 fn play_sound_file(path: &Path) {
+    #[cfg(not(target_os = "windows"))]
     let run = |cmd: &str, args: &[&str]| -> bool {
-        Command::new(cmd)
-            .args(args)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok()
+        platform::no_window(
+            Command::new(cmd)
+                .args(args)
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .status()
+        .is_ok()
     };
+    #[cfg(not(target_os = "windows"))]
     let owned = path.to_string_lossy().into_owned();
+    #[cfg(not(target_os = "windows"))]
     let p = owned.as_str();
     #[cfg(target_os = "macos")]
     {
@@ -283,8 +288,20 @@ fn play_sound_file(path: &Path) {
     }
     #[cfg(target_os = "windows")]
     {
-        let script = format!("(New-Object Media.SoundPlayer '{p}').PlaySync()");
-        let _ = run("powershell", &["-NoProfile", "-Command", &script]);
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_FILENAME, SND_NODEFAULT};
+
+        let path: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        // `PlaySoundW` is synchronous, but this function already runs on the
+        // notification thread. Native playback avoids launching a PowerShell
+        // process and therefore cannot flash a console window per sound.
+        unsafe {
+            let _ = PlaySoundW(
+                path.as_ptr(),
+                std::ptr::null_mut(),
+                SND_FILENAME | SND_NODEFAULT,
+            );
+        }
     }
     #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
     {
@@ -310,13 +327,14 @@ fn system_clipboard_copy(text: &str) -> std::io::Result<()> {
         ]
     };
     for (cmd, args) in tools {
-        let Ok(mut child) = Command::new(cmd)
-            .args(*args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-        else {
+        let Ok(mut child) = platform::no_window(
+            Command::new(cmd)
+                .args(*args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null()),
+        )
+        .spawn() else {
             continue; // tool not installed — try the next
         };
         if let Some(mut stdin) = child.stdin.take() {

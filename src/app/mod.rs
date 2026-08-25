@@ -421,8 +421,13 @@ pub(crate) const TAB_NAME_MAX: usize = 40;
 /// A right-click context menu on a WORKSPACES row: rename / worktree / close the
 /// node. Opened by right-clicking a workspace in the sidebar.
 pub struct WsMenu {
-    /// Target workspace index.
-    pub index: usize,
+    /// Stable target identity. Workspace indices shift when another workspace
+    /// is closed through the API while this menu is open.
+    pub workspace_id: String,
+    /// Whether the target was a Git repository when the menu opened. Repository
+    /// detection launches `git`, so snapshot it once instead of doing process
+    /// I/O on every frame while the popup is visible.
+    pub is_repo: bool,
     /// Top-left corner of the popup (the click point, clamped to fit on screen).
     pub anchor: (u16, u16),
     /// Each visible item + its clickable rect, filled in by the renderer.
@@ -829,7 +834,9 @@ impl AgentMenu {
 /// The workspace-rename modal: like [`TabRename`] but for a node's **label** (the
 /// folder on disk is never touched). Pre-filled with the current name.
 pub struct WsRename {
-    pub index: usize,
+    /// Stable target identity. Workspace indices can shift while the modal is
+    /// open if another workspace closes through the API.
+    pub workspace_id: String,
     pub buffer: String,
 }
 
@@ -1251,10 +1258,11 @@ pub struct App {
     pub tab_menu: Option<TabMenu>,
     /// The workspace right-click context menu, and the workspace-rename modal.
     pub ws_menu: Option<WsMenu>,
-    /// Armed worktree-delete confirmation: the workspace index of the worktree to
-    /// delete once confirmed (`y`/⏎). Destructive — removes the folder + git
-    /// worktree — so it goes through the confirm modal like the file delete.
-    pub worktree_delete: Option<usize>,
+    /// Armed worktree-delete confirmation: the stable workspace identity of the
+    /// worktree to delete once confirmed (`y`/⏎). Destructive — removes the
+    /// folder + git worktree — so it goes through the confirm modal like the file
+    /// delete. Resolve the current index only when confirmation is committed.
+    pub worktree_delete: Option<String>,
     /// Active pane context menu (right-click inside a pane); `None` when closed.
     pub pane_menu: Option<PaneMenu>,
     /// Active AGENTS-list context menu (right-click a row); `None` when closed.
@@ -3493,8 +3501,10 @@ impl App {
     /// Open the workspace context menu for row `index`, anchored at the cursor.
     pub fn open_ws_menu(&mut self, index: usize, col: u16, row: u16) {
         if index < self.workspaces.len() {
+            let is_repo = crate::git::local::is_repo(&self.workspaces[index].cwd);
             self.ws_menu = Some(WsMenu {
-                index,
+                workspace_id: self.workspaces[index].id.clone(),
+                is_repo,
                 anchor: (col, row),
                 items: Vec::new(),
                 module_actions: self.module_menu_actions("workspace"),
@@ -3507,7 +3517,16 @@ impl App {
     /// (git / orch). Worktree + git actions only appear for nodes in a git repo.
     pub fn ws_menu_items(&self, index: usize) -> Vec<WsMenuItem> {
         let ws = self.workspaces.get(index);
-        let is_repo = ws.is_some_and(|w| crate::git::local::is_repo(&w.cwd));
+        let is_repo = self
+            .ws_menu
+            .as_ref()
+            .filter(|menu| {
+                ws.is_some_and(|workspace| workspace.id.as_str() == menu.workspace_id.as_str())
+            })
+            .map(|menu| menu.is_repo)
+            // Keep this helper useful to callers that inspect rows before
+            // opening a menu. The renderer always takes the cached branch.
+            .unwrap_or_else(|| ws.is_some_and(|w| crate::git::local::is_repo(&w.cwd)));
         // A linked worktree (a `git worktree add` checkout) can be deleted; a main
         // checkout or plain workspace cannot — only closed.
         let is_worktree = ws
@@ -3539,6 +3558,15 @@ impl App {
             items.extend((0..extras).map(WsMenuItem::Module));
         }
         items
+    }
+
+    /// Resolve the open menu's stable target after any API-driven workspace
+    /// mutation. A missing target means the menu is stale and must be dismissed.
+    pub fn ws_menu_target_index(&self) -> Option<usize> {
+        let target = &self.ws_menu.as_ref()?.workspace_id;
+        self.workspaces
+            .iter()
+            .position(|workspace| workspace.id == *target)
     }
 
     /// The pane context-menu items: the built-ins, then any module actions
@@ -3615,14 +3643,21 @@ impl App {
 
     /// Run a context-menu action for the menu's target, then close the menu.
     pub fn ws_menu_action(&mut self, item: WsMenuItem) {
-        let Some((index, actions)) = self
+        let Some((workspace_id, actions)) = self
             .ws_menu
             .as_ref()
-            .map(|m| (m.index, m.module_actions.clone()))
+            .map(|m| (m.workspace_id.clone(), m.module_actions.clone()))
         else {
             return;
         };
         self.ws_menu = None;
+        let Some(index) = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == workspace_id)
+        else {
+            return;
+        };
         let cwd = self.workspaces.get(index).map(|w| w.cwd.clone());
         match item {
             WsMenuItem::Divider => {}
@@ -3640,7 +3675,7 @@ impl App {
             WsMenuItem::Rename => self.open_ws_rename(index),
             WsMenuItem::Close => self.close_workspace(index),
             // Destructive: arm the confirm modal rather than delete immediately.
-            WsMenuItem::DeleteWorktree => self.worktree_delete = Some(index),
+            WsMenuItem::DeleteWorktree => self.worktree_delete = Some(workspace_id),
             WsMenuItem::NewWorktree => {
                 if let Some(cwd) = cwd.filter(|p| crate::git::local::is_repo(p)) {
                     self.worktree_repo = Some(cwd);
@@ -3684,7 +3719,14 @@ impl App {
     /// Guarded so it only ever acts on a **linked worktree**, never a main
     /// checkout.
     fn confirm_worktree_delete(&mut self) {
-        let Some(index) = self.worktree_delete.take() else {
+        let Some(workspace_id) = self.worktree_delete.take() else {
+            return;
+        };
+        let Some(index) = self
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.id == workspace_id)
+        else {
             return;
         };
         // Extract owned paths under an immutable borrow, then act (mutable).
@@ -3720,7 +3762,7 @@ impl App {
     pub fn open_ws_rename(&mut self, index: usize) {
         if let Some(w) = self.workspaces.get(index) {
             self.ws_rename = Some(WsRename {
-                index,
+                workspace_id: w.id.clone(),
                 buffer: w.name.clone(),
             });
         }
@@ -3794,7 +3836,13 @@ impl App {
             KeyCode::Esc => self.ws_rename = None,
             KeyCode::Enter => {
                 if let Some(r) = self.ws_rename.take() {
-                    let _ = self.rename_workspace(r.index, &r.buffer);
+                    if let Some(index) = self
+                        .workspaces
+                        .iter()
+                        .position(|workspace| workspace.id == r.workspace_id)
+                    {
+                        let _ = self.rename_workspace(index, &r.buffer);
+                    }
                 }
             }
             KeyCode::Backspace => {
@@ -4985,6 +5033,7 @@ impl App {
 
     fn close_active_ws(&mut self) {
         if self.active_ws < self.workspaces.len() {
+            let closed_workspace_id = self.workspaces[self.active_ws].id.clone();
             if self.workspaces.len() > 1 {
                 let closed_root = self.workspaces[self.active_ws].cwd.clone();
                 self.fail_pending_files_api_for_root(
@@ -4996,6 +5045,7 @@ impl App {
                     "workspace closed while DIFF was refreshing",
                 );
             }
+            self.clear_workspace_transients(&closed_workspace_id);
             self.workspaces.remove(self.active_ws);
         }
         if self.workspaces.is_empty() {
@@ -5036,6 +5086,7 @@ impl App {
         if index >= self.workspaces.len() {
             return;
         }
+        let closed_workspace_id = self.workspaces[index].id.clone();
         if self.workspaces.len() > 1 {
             let closed_root = self.workspaces[index].cwd.clone();
             self.fail_pending_files_api_for_root(
@@ -5055,6 +5106,7 @@ impl App {
         for id in ids {
             self.drop_leaf_runtime(id);
         }
+        self.clear_workspace_transients(&closed_workspace_id);
         self.workspaces.remove(index);
         if self.workspaces.is_empty() {
             self.all_workspaces_closed();
@@ -5066,6 +5118,20 @@ impl App {
             "workspace.closed",
             serde_json::json!({"workspace": index.to_string()}),
         );
+    }
+
+    /// Dismiss deferred UI actions whose stable target is being removed.
+    fn clear_workspace_transients(&mut self, workspace_id: &str) {
+        if self
+            .ws_rename
+            .as_ref()
+            .is_some_and(|rename| rename.workspace_id == workspace_id)
+        {
+            self.ws_rename = None;
+        }
+        if self.worktree_delete.as_deref() == Some(workspace_id) {
+            self.worktree_delete = None;
+        }
     }
 
     /// Close a tab and all its panes (the "X" button / prefix+X).
@@ -5315,14 +5381,14 @@ mod tests {
         app.workspaces[0].worktree = None;
 
         // A non-confirm key dismisses the modal.
-        app.worktree_delete = Some(0);
+        app.worktree_delete = Some(app.workspaces[0].id.clone());
         app.worktree_delete_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE));
         assert!(app.worktree_delete.is_none(), "n cancels");
 
         // Confirming on the default node (a main checkout, not a linked worktree)
         // removes nothing — the guard refuses to delete a plain workspace.
         let before = app.workspaces.len();
-        app.worktree_delete = Some(0);
+        app.worktree_delete = Some(app.workspaces[0].id.clone());
         app.worktree_delete_key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
         assert!(app.worktree_delete.is_none());
         assert_eq!(
@@ -6127,6 +6193,125 @@ mod tests {
             app.workspace_display_order(),
             vec![(1, false), (2, true), (0, false)]
         );
+    }
+
+    #[test]
+    fn open_workspace_menu_reuses_snapshotted_repo_capability() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        // A deliberately missing path would fail a fresh `git rev-parse`. The
+        // open menu must still use its captured result instead of launching Git
+        // again during rendering.
+        app.workspaces[0].cwd = std::path::PathBuf::from("luvus-missing-menu-repo");
+        app.ws_menu = Some(WsMenu {
+            workspace_id: app.workspaces[0].id.clone(),
+            is_repo: true,
+            anchor: (0, 0),
+            items: Vec::new(),
+            module_actions: Vec::new(),
+        });
+
+        assert!(app.ws_menu_items(0).contains(&WsMenuItem::OpenGit));
+        assert!(app.ws_menu_items(0).contains(&WsMenuItem::NewWorktree));
+    }
+
+    #[test]
+    fn workspace_menu_follows_target_identity_after_an_index_shift() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let target_id = crate::ids::public_id("workspace");
+        app.workspaces.push(Workspace {
+            id: target_id.clone(),
+            name: "target".into(),
+            cwd: app.workspaces[0].cwd.clone(),
+            branch: None,
+            git_ahead_behind: None,
+            worktree: None,
+            tabs: vec![Tab::panes(TileLayout::new(PaneId::alloc()))],
+            active_tab: 0,
+            pinned: false,
+        });
+
+        app.open_ws_menu(1, 0, 0);
+        app.close_workspace(0);
+        assert_eq!(app.ws_menu_target_index(), Some(0));
+
+        app.ws_menu_action(WsMenuItem::Rename);
+        let rename = app
+            .ws_rename
+            .as_ref()
+            .expect("rename targets surviving node");
+        assert_eq!(rename.workspace_id, target_id);
+    }
+
+    #[test]
+    fn workspace_rename_keeps_target_identity_while_modal_is_open() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let target_id = crate::ids::public_id("workspace");
+        app.workspaces.push(Workspace {
+            id: target_id.clone(),
+            name: "target".into(),
+            cwd: app.workspaces[0].cwd.clone(),
+            branch: None,
+            git_ahead_behind: None,
+            worktree: None,
+            tabs: vec![Tab::panes(TileLayout::new(PaneId::alloc()))],
+            active_tab: 0,
+            pinned: false,
+        });
+
+        app.open_ws_rename(1);
+        app.close_workspace(0);
+        app.ws_rename.as_mut().unwrap().buffer = "renamed".into();
+        app.handle_ws_rename_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        assert_eq!(app.workspaces[0].id, target_id);
+        assert_eq!(app.workspaces[0].name, "renamed");
+    }
+
+    #[test]
+    fn deferred_workspace_actions_abort_after_target_closes() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        let survivor_id = crate::ids::public_id("workspace");
+        app.workspaces.push(Workspace {
+            id: survivor_id.clone(),
+            name: "survivor".into(),
+            cwd: app.workspaces[0].cwd.clone(),
+            branch: None,
+            git_ahead_behind: None,
+            worktree: None,
+            tabs: vec![Tab::panes(TileLayout::new(PaneId::alloc()))],
+            active_tab: 0,
+            pinned: false,
+        });
+
+        let removed_id = app.workspaces[0].id.clone();
+        app.open_ws_rename(0);
+        app.worktree_delete = Some(removed_id);
+        app.close_workspace(0);
+
+        assert_eq!(app.workspaces.len(), 1);
+        assert_eq!(app.workspaces[0].id, survivor_id);
+        assert_eq!(app.workspaces[0].name, "survivor");
+        assert!(app.ws_rename.is_none());
+        assert!(app.worktree_delete.is_none());
+    }
+
+    #[test]
+    fn workspace_menu_dismisses_when_its_target_was_closed() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        app.open_ws_menu(0, 0, 0);
+        app.close_workspace(0);
+
+        assert_eq!(app.ws_menu_target_index(), None);
+        app.ws_menu_action(WsMenuItem::Rename);
+        assert!(app.ws_menu.is_none());
+        assert!(app.ws_rename.is_none());
     }
 
     #[test]
