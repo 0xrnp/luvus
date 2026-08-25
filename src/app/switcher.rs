@@ -4,7 +4,7 @@
 //! `Tab`) to narrow to one category. Big tap targets on a narrow phone where the
 //! sidebar and tiled panes don't fit, and a fast quick-jump palette on desktop.
 
-use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::{App, SwitcherRow, SwitcherScope, SwitcherTarget};
 
@@ -289,7 +289,7 @@ impl App {
                 self.switcher_cursor = 0;
                 self.switcher_scroll = 0;
             }
-            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(c) if !super::keys::is_ctrl_chord(key.modifiers) => {
                 self.switcher_query.push(c);
                 self.switcher_cursor = 0;
                 self.switcher_scroll = 0;
@@ -317,6 +317,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use crate::app::{App, SwitcherRow, SwitcherScope, SwitcherTarget};
+    use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     fn tab_targets(app: &App) -> Vec<SwitcherTarget> {
         app.switcher_rows()
@@ -355,6 +356,27 @@ mod tests {
             "scope chips have rects"
         );
         assert!(text.contains('b'), "the query is visible");
+    }
+
+    #[test]
+    fn altgr_character_is_text_on_windows_and_a_ctrl_chord_elsewhere() {
+        let _env = crate::persist::test_env("switcher-altgr");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        app.open_switcher();
+        app.switcher_key(KeyEvent::new(
+            KeyCode::Char('€'),
+            KeyModifiers::CONTROL | KeyModifiers::ALT,
+        ));
+
+        if cfg!(windows) {
+            assert_eq!(app.switcher_query, "€");
+        } else {
+            assert!(
+                app.switcher_query.is_empty(),
+                "Ctrl+Alt remains a real chord"
+            );
+        }
     }
 
     #[test]

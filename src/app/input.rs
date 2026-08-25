@@ -2815,8 +2815,14 @@ fn mouse_wheel_seq(up: bool, col: u16, row: u16, sgr: bool) -> Vec<u8> {
 /// real terminal would send them — some apps (`less`) only recognize the SS3
 /// form once they've turned the mode on.
 fn encode_key(key: &KeyEvent, newline: &[u8], app_cursor: bool) -> Option<Vec<u8>> {
-    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    // AltGr arrives as Ctrl+Alt on Windows (`keys::is_ctrl_chord`) and types a
+    // character — it is neither a Ctrl chord nor an `ESC`-prefixed Alt key.
+    let ctrl = super::keys::is_ctrl_chord(key.modifiers);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    // True exactly when `is_ctrl_chord` refused a Ctrl+Alt press as AltGr. Only
+    // the `Char` arm may act on it: every other key keeps both modifiers, so
+    // `Ctrl+Alt+Enter` is still a modified Enter and sends the newline sequence.
+    let altgr = alt && !ctrl && key.modifiers.contains(KeyModifiers::CONTROL);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     let bytes: Vec<u8> = match key.code {
@@ -2839,7 +2845,7 @@ fn encode_key(key: &KeyEvent, newline: &[u8], app_cursor: bool) -> Option<Vec<u8
                 }
             } else {
                 let mut s = c.to_string().into_bytes();
-                if alt {
+                if alt && !altgr {
                     let mut v = vec![0x1b];
                     v.append(&mut s);
                     v
@@ -3169,6 +3175,48 @@ mod tests {
                 false
             ),
             Some(b"\r".to_vec())
+        );
+    }
+
+    /// AltGr must type its character, not a control byte. The Windows console
+    /// reports AltGr as `Ctrl+Alt`, so the plain `contains(CONTROL)` test used
+    /// to send `0x1c` for a backslash and a bare `ESC` for `[` — a Spanish or
+    /// German keyboard could not type a Windows path into a pane at all.
+    #[test]
+    fn altgr_types_its_character_instead_of_a_control_byte() {
+        let nl = b"\x1b\r";
+        let altgr = KeyModifiers::CONTROL | KeyModifiers::ALT;
+        let enc =
+            |c: char, m: KeyModifiers| encode_key(&KeyEvent::new(KeyCode::Char(c), m), nl, false);
+        if cfg!(windows) {
+            for c in ['\\', '@', '#', '[', ']', '{', '}', '|', '~', '€'] {
+                assert_eq!(
+                    enc(c, altgr),
+                    Some(c.to_string().into_bytes()),
+                    "AltGr+{c} must reach the pane as itself"
+                );
+            }
+        } else {
+            // Elsewhere AltGr arrives unmodified, so Ctrl+Alt stays the real
+            // chord it is on current main: an Alt-prefixed control byte.
+            assert_eq!(enc('\\', altgr), Some(vec![0x1b, 0x1c]));
+        }
+        // A real Ctrl chord is untouched on every platform.
+        assert_eq!(enc('\\', KeyModifiers::CONTROL), Some(vec![0x1c]));
+        assert_eq!(enc('c', KeyModifiers::CONTROL), Some(vec![0x03]));
+        for c in ['ñ', 'á'] {
+            assert_eq!(
+                enc(c, KeyModifiers::NONE),
+                Some(c.to_string().into_bytes()),
+                "unmodified Unicode input must remain valid UTF-8"
+            );
+        }
+        // The exception is for characters only: every other key keeps both
+        // modifiers, so Ctrl+Alt+Enter is still a modified Enter.
+        assert_eq!(
+            encode_key(&KeyEvent::new(KeyCode::Enter, altgr), nl, false),
+            Some(nl.to_vec()),
+            "Ctrl+Alt+Enter still sends the configured newline"
         );
     }
 
