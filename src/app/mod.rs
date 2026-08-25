@@ -1426,10 +1426,20 @@ pub struct App {
     /// Throttle for per-pane agent classification — it locks each pane's VT engine
     /// and scans its grid, so it runs at ~100ms, not at the render frame rate.
     last_detect_at: Instant,
+    /// Panes whose PTY generation or identity inputs changed since their last
+    /// classification pass. The detector consumes this bounded set instead of
+    /// walking every quiet pane on each 100 ms cadence.
+    detection_dirty: HashSet<PaneId>,
+    /// A bounded fleet audit repairs any missed invalidation without making the
+    /// audit the normal scheduling path.
+    last_detection_audit_at: Instant,
     /// Runtime evidence for the generation gate, exposed additively by
     /// `pane.list` for diagnostics and performance comparisons.
     detection_extractions: u64,
     detection_skips: u64,
+    detection_panes_considered: u64,
+    detection_full_fleet_audits: u64,
+    detection_audit_recoveries: u64,
     /// Pending server-side `wait.output` requests keyed by pane (docs/81).
     /// Satisfied by the pane's next output event, expired by the loop tick.
     output_waits: HashMap<PaneId, Vec<crate::app::dispatch::OutputWait>>,
@@ -1818,8 +1828,15 @@ impl App {
             last_detect_at: Instant::now()
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or_else(Instant::now),
+            detection_dirty: HashSet::new(),
+            last_detection_audit_at: Instant::now()
+                .checked_sub(Duration::from_secs(2))
+                .unwrap_or_else(Instant::now),
             detection_extractions: 0,
             detection_skips: 0,
+            detection_panes_considered: 0,
+            detection_full_fleet_audits: 0,
+            detection_audit_recoveries: 0,
             output_waits: HashMap::new(),
             agent_waits: HashMap::new(),
             agent_starts: HashMap::new(),
@@ -2345,8 +2362,15 @@ impl App {
             last_detect_at: Instant::now()
                 .checked_sub(Duration::from_secs(1))
                 .unwrap_or_else(Instant::now),
+            detection_dirty: HashSet::new(),
+            last_detection_audit_at: Instant::now()
+                .checked_sub(Duration::from_secs(2))
+                .unwrap_or_else(Instant::now),
             detection_extractions: 0,
             detection_skips: 0,
+            detection_panes_considered: 0,
+            detection_full_fleet_audits: 0,
+            detection_audit_recoveries: 0,
             output_waits: HashMap::new(),
             agent_waits: HashMap::new(),
             agent_starts: HashMap::new(),
@@ -2728,6 +2752,11 @@ impl App {
             }
         }
         (visible, background)
+    }
+
+    /// Whether any PTY reader is currently coalescing an output notification.
+    pub fn has_pending_pty_output(&self) -> bool {
+        self.panes.values().any(|pane| pane.has_data_pending())
     }
 
     /// Whether a pane is rendered in the active tab.
@@ -9250,6 +9279,7 @@ mod tests {
         if let Some(p) = app.panes.get(&id) {
             p.scroll(60);
         }
+        app.detection_dirty.insert(id);
         let visible = app
             .panes
             .get(&id)
@@ -9329,6 +9359,7 @@ mod tests {
 
         // The user just typed: the recent output is keystroke echo → stays Idle.
         app.status.get_mut(&id).unwrap().last_input = now;
+        app.detection_dirty.insert(id);
         app.detect_tick(now);
         assert_eq!(
             app.status.get(&id).unwrap().state,
@@ -9340,6 +9371,7 @@ mod tests {
         let later = now + std::time::Duration::from_millis(150);
         app.status.get_mut(&id).unwrap().last_activity = later;
         app.status.get_mut(&id).unwrap().last_input = now - std::time::Duration::from_secs(5);
+        app.detection_dirty.insert(id);
         app.detect_tick(later);
         assert_eq!(
             app.status.get(&id).unwrap().state,
@@ -9369,6 +9401,7 @@ mod tests {
             s.last_input = t0 - std::time::Duration::from_secs(5);
             s.last_resize = Some(t0);
         }
+        app.detection_dirty.insert(id);
         app.detect_tick(t0);
         assert_eq!(
             app.status.get(&id).unwrap().state,
@@ -9383,6 +9416,7 @@ mod tests {
             s.last_activity = t1;
             s.last_input = t1 - std::time::Duration::from_secs(5);
         }
+        app.detection_dirty.insert(id);
         app.detect_tick(t1);
         assert_eq!(
             app.status.get(&id).unwrap().state,
@@ -9953,14 +9987,19 @@ mod tests {
         // spinner rather than just poking `last_activity`.
         // Newlines scroll the previous marker away and land the new text in the
         // bottom rows, which is the region detection actually scans.
-        let paint = |app: &App, text: &str| {
-            if let Some(p) = app.panes.get(&id) {
-                if let Ok(mut e) = p.engine.lock() {
-                    let mut buf = vec![b'\n'; 30];
-                    buf.extend_from_slice(text.as_bytes());
-                    e.advance(&buf);
+        let paint = |app: &mut App, text: &str| {
+            {
+                if let Some(p) = app.panes.get(&id) {
+                    if let Ok(mut e) = p.engine.lock() {
+                        let mut buf = vec![b'\n'; 30];
+                        buf.extend_from_slice(text.as_bytes());
+                        e.advance(&buf);
+                    }
                 }
             }
+            // Production output reaches detection through `PtyData`, which marks
+            // the pane dirty. This direct VT mutation must model the same event.
+            app.detection_dirty.insert(id);
         };
         let go_working = |app: &mut App, base: std::time::Instant| {
             paint(app, "⠋ Thinking… (esc to interrupt)\r\n");
