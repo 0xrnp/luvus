@@ -19,7 +19,8 @@ pub struct Entry {
 pub struct FolderPicker {
     /// The directory currently being browsed.
     pub path: PathBuf,
-    /// Folders + files in `path`, dirs first then files (dotfiles excluded).
+    /// Folders + files in `path`, dirs first then files (dotfiles unless
+    /// [`FolderPicker::show_hidden`]).
     pub entries: Vec<Entry>,
     /// Cursor into the row list (see [`Row`] / [`FolderPicker::row`]).
     pub cursor: usize,
@@ -33,10 +34,13 @@ pub struct FolderPicker {
     /// Whether the browsed folder is a git repo — adds the "Open with new
     /// worktree" row (and the `w` accelerator). Recomputed when the path changes.
     pub is_repo: bool,
+    /// Whether dotfile entries are listed (`.` toggles).
+    pub show_hidden: bool,
 }
 
 /// A selectable row in the picker. The action rows lead; the directory entries
 /// follow. The "open with worktree" row only exists when the folder is a repo.
+#[derive(Debug)]
 pub enum Row {
     /// Open the browsed folder as a workspace.
     OpenFolder,
@@ -51,12 +55,13 @@ pub enum Row {
 }
 
 /// Mouse targets rendered by the picker. Modal is last in hit-test order so
-/// rows and the Go-to footer remain interactive while inert modal space simply
+/// rows and the footer hints remain interactive while inert modal space simply
 /// keeps the picker open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PickerHit {
     Row(usize),
-    GoTo,
+    /// A footer key hint; a click behaves exactly like pressing that key.
+    Hint(KeyCode),
     Modal,
 }
 
@@ -117,6 +122,7 @@ impl App {
             going_to: None,
             error: None,
             is_repo: false,
+            show_hidden: false,
         });
         self.picker_refresh();
     }
@@ -127,13 +133,20 @@ impl App {
 
     /// Re-read the browsed path's entries (folders + files), dirs first.
     fn picker_refresh(&mut self) {
+        // Remember which entry the cursor highlights so filter changes (e.g.
+        // `.` hiding dotfiles) re-anchor the selection by identity instead of
+        // leaving it at a numeric index that may now point elsewhere.
+        let selected = self.picker.as_ref().and_then(|p| match p.row(p.cursor) {
+            Row::Entry(idx) => p.entries.get(idx).map(|e| e.name.clone()),
+            _ => None,
+        });
         if let Some(p) = self.picker.as_mut() {
             let mut entries: Vec<Entry> = std::fs::read_dir(&p.path)
                 .map(|rd| {
                     rd.filter_map(Result::ok)
                         .filter_map(|e| {
                             let name = e.file_name().into_string().ok()?;
-                            if name.starts_with('.') {
+                            if !p.show_hidden && name.starts_with('.') {
                                 return None;
                             }
                             let is_dir = e.file_type().map(|ty| ty.is_dir()).unwrap_or(false);
@@ -149,9 +162,26 @@ impl App {
                     .then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase()))
             });
             p.entries = entries;
+            if let Some(name) = selected {
+                match p.entries.iter().position(|e| e.name == name) {
+                    Some(pos) => p.cursor = p.leading() + pos,
+                    // Highlighted entry was filtered out: fall back to the
+                    // last fixed action row instead of letting the stale
+                    // index land on some other directory.
+                    None => p.cursor = p.leading() - 1,
+                }
+            }
             p.is_repo = crate::git::local::is_repo(&p.path);
             p.cursor = p.cursor.min(p.row_count().saturating_sub(1));
         }
+    }
+
+    /// Show/hide dotfile entries (`.` or the footer hint).
+    pub fn picker_toggle_hidden(&mut self) {
+        if let Some(p) = self.picker.as_mut() {
+            p.show_hidden = !p.show_hidden;
+        }
+        self.picker_refresh();
     }
 
     /// The "Open with new worktree" row (or `w`): create a git worktree of the
@@ -229,6 +259,7 @@ impl App {
                 }
             }
             KeyCode::Char('g') => self.picker_start_go_to(),
+            KeyCode::Char('.') => self.picker_toggle_hidden(),
             KeyCode::Home | KeyCode::Char('~') => self.picker_home(),
             KeyCode::Char('w') => self.picker_make_worktree(),
             KeyCode::Esc | KeyCode::Char('q') => self.close_folder_picker(),
@@ -418,6 +449,7 @@ mod tests {
             going_to: None,
             error: None,
             is_repo: false,
+            show_hidden: false,
         };
         // Plain folder: [Open] [Home] [..] [a]
         assert_eq!(p.row_count(), 4);
@@ -448,6 +480,7 @@ mod tests {
             going_to: None,
             error: None,
             is_repo: true,
+            show_hidden: false,
         });
         app.picker_activate(); // ⏎ / click on that row
         assert!(app.picker.is_none(), "picker closes");
@@ -475,6 +508,48 @@ mod tests {
         assert!(entries.iter().any(|e| e.name == "sub" && e.is_dir));
         assert!(entries.iter().any(|e| e.name == "readme.txt" && !e.is_dir));
         assert!(entries[0].is_dir, "directories are listed before files");
+
+        // Dotfiles are hidden by default; `.` toggles them on and back off.
+        std::fs::write(tmp.join(".secret"), "x").unwrap();
+        app.picker_refresh();
+        assert!(!app.picker.as_ref().unwrap().show_hidden);
+        app.handle_picker_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        let entries = &app.picker.as_ref().unwrap().entries;
+        assert!(app.picker.as_ref().unwrap().show_hidden);
+        assert!(entries.iter().any(|e| e.name == ".secret"));
+        app.handle_picker_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        let entries = &app.picker.as_ref().unwrap().entries;
+        assert!(!app.picker.as_ref().unwrap().show_hidden);
+        assert!(!entries.iter().any(|e| e.name == ".secret"));
+
+        // Selection survives `.` filter changes by identity, not index:
+        // dotfiles sort before "readme.txt", so toggling shifts indices — the
+        // highlight must stay on the same entry.
+        let leading = app.picker.as_ref().unwrap().leading();
+        let readme_idx = entries.iter().position(|e| e.name == "readme.txt").unwrap();
+        app.picker.as_mut().unwrap().cursor = leading + readme_idx;
+        app.handle_picker_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        {
+            let p = app.picker.as_ref().unwrap();
+            match p.row(p.cursor) {
+                Row::Entry(i) => assert_eq!(p.entries[i].name, "readme.txt"),
+                other => panic!("expected readme.txt selected, got {:?}", other),
+            }
+        }
+        // Cursor on a dotfile that gets filtered out → falls back to an
+        // action row instead of silently landing on an unrelated directory.
+        let secret_idx = app
+            .picker
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .position(|e| e.name == ".secret")
+            .unwrap();
+        app.picker.as_mut().unwrap().cursor = leading + secret_idx;
+        app.handle_picker_key(KeyEvent::new(KeyCode::Char('.'), KeyModifiers::NONE));
+        let p = app.picker.as_ref().unwrap();
+        assert!(!matches!(p.row(p.cursor), Row::Entry(_)));
 
         // Cursor 0 = "use this folder" → opens the browsed folder as a workspace.
         app.picker.as_mut().unwrap().cursor = 0;
@@ -634,7 +709,7 @@ mod tests {
         let go_to = app
             .picker_rects
             .iter()
-            .find_map(|(hit, rect)| (*hit == PickerHit::GoTo).then_some(*rect))
+            .find_map(|(hit, rect)| (*hit == PickerHit::Hint(KeyCode::Char('g'))).then_some(*rect))
             .expect("Go to footer hit target");
         app.handle_event(AppEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
