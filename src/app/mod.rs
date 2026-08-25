@@ -2821,6 +2821,37 @@ impl App {
             .unwrap_or_else(|| self.ws().cwd.clone())
     }
 
+    /// The ordered chain of directories a newly opened tab or split may start
+    /// in: the first that still exists is where it lands, and the rest are
+    /// fallbacks the deferred worker retries if that directory vanishes before
+    /// it forks. By default the chain is the focused pane's live cwd, then the
+    /// workspace root, then `$HOME`, so a new pane starts where the user is
+    /// working; with `layout.new_pane_to_workspace_root` set it starts at the
+    /// workspace root instead. Only existing directories are kept (de-duplicated,
+    /// order preserved), so a deleted workspace root is never handed back as a
+    /// dead cwd; `$HOME` anchors the chain when nothing nearer survives, matching
+    /// the synchronous spawn path's own fallback. Shared by `new_tab` and `split`
+    /// so the two stay aligned.
+    fn spawn_cwds(&self) -> Vec<PathBuf> {
+        let home = crate::platform::home_dir().unwrap_or_default();
+        let root = self.ws().cwd.clone();
+        let ordered = if self.config.layout.new_pane_to_workspace_root {
+            vec![root, home.clone()]
+        } else {
+            vec![self.focused_cwd(), root, home.clone()]
+        };
+        let mut chain: Vec<PathBuf> = Vec::new();
+        for candidate in ordered {
+            if candidate.is_dir() && !chain.contains(&candidate) {
+                chain.push(candidate);
+            }
+        }
+        if chain.is_empty() {
+            chain.push(home);
+        }
+        chain
+    }
+
     // ── mutations ─────────────────────────────────────────────────────────────
 
     fn spawn_into(&mut self, cwd: PathBuf) -> Option<PaneId> {
@@ -2858,7 +2889,7 @@ impl App {
     /// Used only where synchronous failure reporting is not required — the
     /// sync `spawn_into` keeps `workspace.open`'s "shell failed to start"
     /// contract.
-    fn spawn_into_deferred(&mut self, cwd: PathBuf) -> Option<PaneId> {
+    fn spawn_into_deferred(&mut self, cwd: PathBuf, fallback_cwds: &[PathBuf]) -> Option<PaneId> {
         let id = PaneId::alloc();
         let shell = crate::platform::resolve_shell(&self.config.shell);
         let history_budget_bytes = self.config.scrollback_bytes();
@@ -2867,6 +2898,7 @@ impl App {
             80,
             24,
             cwd,
+            fallback_cwds,
             self.app_tx.clone(),
             &shell,
             history_budget_bytes,
@@ -2935,8 +2967,16 @@ impl App {
     }
 
     fn split(&mut self, axis: Axis) {
-        let cwd = self.focused_cwd();
-        if let Some(id) = self.spawn_into_deferred(cwd) {
+        // Resolve the candidate chain up front (focused pane → workspace root →
+        // $HOME, existing only) and hand the primary plus its fallbacks to the
+        // deferred worker. If the primary is deleted in the race window before
+        // the fork, the worker retries the fallbacks instead of spawning a dead
+        // pane; the chain is never empty, so the `else` here is unreachable.
+        let cwds = self.spawn_cwds();
+        let Some((cwd, fallback_cwds)) = cwds.split_first() else {
+            return;
+        };
+        if let Some(id) = self.spawn_into_deferred(cwd.clone(), fallback_cwds) {
             self.layout_mut().split_focused(axis, id);
         }
     }
@@ -3060,9 +3100,15 @@ impl App {
     }
 
     fn new_tab(&mut self) {
-        // A new tab opens at the workspace's **static** folder (not wherever the
-        // current pane has `cd`'d), matching the static-workspace model.
-        let cwd = self.ws().cwd.clone();
+        // A new tab starts where the user is: the first existing directory in the
+        // candidate chain (focused pane's cwd → workspace root → $HOME), the same
+        // way `split` and `new_workspace` do, or the workspace root when
+        // `layout.new_pane_to_workspace_root` is set. The synchronous spawn path
+        // falls back to $HOME internally, so the chain's head is enough here. The
+        // workspace root itself stays fixed, so the static-workspace model holds.
+        let Some(cwd) = self.spawn_cwds().into_iter().next() else {
+            return;
+        };
         if let Some(id) = self.spawn_into(cwd) {
             let ws = &mut self.workspaces[self.active_ws];
             ws.tabs.push(Tab::panes(TileLayout::new(id)));
@@ -5307,6 +5353,56 @@ mod tests {
     use std::sync::mpsc;
 
     use crate::persist::TEST_ENV_LOCK as ENV_GUARD;
+
+    /// The new-pane cwd resolver hands back the chain of directories that still
+    /// exist, in preference order, and never a directory it has already found
+    /// missing. Regression for `spawn_cwd`'s old `unwrap_or(root)`, which
+    /// returned the workspace root even after it failed the existence check.
+    #[test]
+    fn spawn_cwds_skips_missing_dirs_and_anchors_on_home() {
+        let _env = crate::persist::test_env("spawn-cwds");
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+
+        let home = crate::platform::home_dir().expect("the test host has a home directory");
+        let missing = std::env::temp_dir().join(format!("luvus-missing-{}", std::process::id()));
+
+        // Both the workspace root and the focused pane's live cwd point at a
+        // directory that no longer exists.
+        app.workspaces[app.active_ws].cwd = missing.clone();
+        let focus = app.layout().focus;
+        app.panes
+            .get_mut(&focus)
+            .expect("the first pane exists")
+            .cwd = missing.clone();
+
+        let chain = app.spawn_cwds();
+        assert!(
+            !chain.contains(&missing),
+            "a deleted directory is never handed back: {chain:?}"
+        );
+        assert!(
+            chain.iter().all(|dir| dir.is_dir()),
+            "every candidate in the chain still exists: {chain:?}"
+        );
+        assert_eq!(
+            chain.last(),
+            Some(&home),
+            "the chain anchors on $HOME when nothing nearer survives: {chain:?}"
+        );
+
+        // With the opt-out set, an existing workspace root leads the chain and
+        // the focused pane's cwd is not consulted.
+        let root = std::env::temp_dir();
+        app.config.layout.new_pane_to_workspace_root = true;
+        app.workspaces[app.active_ws].cwd = root.clone();
+        let chain = app.spawn_cwds();
+        assert_eq!(
+            chain.first(),
+            Some(&root),
+            "root-first when the opt-out is on: {chain:?}"
+        );
+    }
 
     /// A worktree groups directly under the node it branched from, wherever that
     /// parent sits in the list — not at the worktree's raw creation position.
