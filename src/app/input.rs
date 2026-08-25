@@ -680,9 +680,27 @@ impl App {
     /// all single-line fields.
     fn paste_into_modal(&mut self, s: &str) -> bool {
         use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-        let handler: fn(&mut Self, KeyEvent) = if self.module_setting_edit.is_some() {
-            Self::handle_module_setting_key
-        } else if self.worktree_prompt.is_some() {
+        if self.module_setting_edit.is_some() {
+            for character in s.chars().filter(|character| !character.is_control()) {
+                self.handle_module_setting_key(KeyEvent::new(
+                    KeyCode::Char(character),
+                    KeyModifiers::NONE,
+                ));
+            }
+            return true;
+        }
+        // Search can rank a large catalog, so append the whole paste and launch
+        // one recomputation instead of replaying one query per character.
+        if self.search.is_some() {
+            self.search_paste(s);
+            return true;
+        }
+        // The picker owns both text sub-modes and direct path navigation.
+        if self.picker.is_some() {
+            self.picker_paste(s);
+            return true;
+        }
+        let handler: fn(&mut Self, KeyEvent) = if self.worktree_prompt.is_some() {
             Self::handle_worktree_prompt_key
         } else if self.tab_rename.is_some() {
             Self::handle_tab_rename_key
