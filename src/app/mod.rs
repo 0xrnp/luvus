@@ -2937,9 +2937,28 @@ impl App {
                     "pane.created",
                     serde_json::json!({"pane": id.0.to_string()}),
                 );
+                crate::logging::event(
+                    crate::logging::EventKind::PaneOpen,
+                    &[
+                        crate::logging::Field::PaneId(u64::from(id.0)),
+                        crate::logging::Field::SpawnKind(crate::logging::SpawnKind::Shell),
+                    ],
+                );
                 Some(id)
             }
-            Err(_) => None,
+            Err(_) => {
+                crate::logging::event(
+                    crate::logging::EventKind::PtySpawnFailed,
+                    &[
+                        crate::logging::Field::PaneId(u64::from(id.0)),
+                        crate::logging::Field::SpawnKind(crate::logging::SpawnKind::Shell),
+                        crate::logging::Field::ErrorCode(
+                            crate::logging::SafeId::new("pty").expect("static id is valid"),
+                        ),
+                    ],
+                );
+                None
+            }
         }
     }
 
@@ -3019,9 +3038,28 @@ impl App {
                     "pane.created",
                     serde_json::json!({"pane": id.0.to_string()}),
                 );
+                crate::logging::event(
+                    crate::logging::EventKind::PaneOpen,
+                    &[
+                        crate::logging::Field::PaneId(u64::from(id.0)),
+                        crate::logging::Field::SpawnKind(crate::logging::SpawnKind::Resume),
+                    ],
+                );
                 Some(id)
             }
-            Err(_) => None,
+            Err(_) => {
+                crate::logging::event(
+                    crate::logging::EventKind::PtySpawnFailed,
+                    &[
+                        crate::logging::Field::PaneId(u64::from(id.0)),
+                        crate::logging::Field::SpawnKind(crate::logging::SpawnKind::Resume),
+                        crate::logging::Field::ErrorCode(
+                            crate::logging::SafeId::new("pty").expect("static id is valid"),
+                        ),
+                    ],
+                );
+                None
+            }
         }
     }
 
@@ -3173,6 +3211,13 @@ impl App {
             ws.tabs.push(Tab::panes(TileLayout::new(id)));
             ws.active_tab = ws.tabs.len() - 1;
             let tab = self.ws().active_tab + 1;
+            crate::logging::event(
+                crate::logging::EventKind::TabOpen,
+                &[
+                    crate::logging::Field::WorkspaceIndex(self.active_ws as u64),
+                    crate::logging::Field::TabIndex((tab - 1) as u64),
+                ],
+            );
             self.emit_event("tab.created", serde_json::json!({"tab": tab.to_string()}));
         }
     }
@@ -3258,6 +3303,10 @@ impl App {
         self.emit_event(
             "workspace.created",
             serde_json::json!({"workspace": ws.to_string()}),
+        );
+        crate::logging::event(
+            crate::logging::EventKind::WorkspaceOpen,
+            &[crate::logging::Field::WorkspaceIndex(ws as u64)],
         );
         true
     }
@@ -5101,6 +5150,10 @@ impl App {
         if self.copy_mode.is_some_and(|copy| copy.pane == id) {
             self.copy_mode = None; // the pane is gone; there is no viewport to restore
         }
+        crate::logging::event(
+            crate::logging::EventKind::PaneClose,
+            &[crate::logging::Field::PaneId(u64::from(id.0))],
+        );
     }
 
     fn close_pane(&mut self, id: PaneId) {
@@ -5132,9 +5185,22 @@ impl App {
     }
 
     fn close_active_tab(&mut self) {
+        let workspace_index = self.active_ws;
         let ws = &mut self.workspaces[self.active_ws];
+        let tab_index = ws.active_tab;
+        let mut removed = false;
         if ws.active_tab < ws.tabs.len() {
             ws.tabs.remove(ws.active_tab);
+            removed = true;
+        }
+        if removed {
+            crate::logging::event(
+                crate::logging::EventKind::TabClose,
+                &[
+                    crate::logging::Field::WorkspaceIndex(workspace_index as u64),
+                    crate::logging::Field::TabIndex(tab_index as u64),
+                ],
+            );
         }
         if ws.tabs.is_empty() {
             self.close_active_ws();
@@ -5144,6 +5210,8 @@ impl App {
     }
 
     fn close_active_ws(&mut self) {
+        let workspace_index = self.active_ws;
+        let mut removed = false;
         if self.active_ws < self.workspaces.len() {
             let closed_workspace_id = self.workspaces[self.active_ws].id.clone();
             if self.workspaces.len() > 1 {
@@ -5159,6 +5227,15 @@ impl App {
             }
             self.clear_workspace_transients(&closed_workspace_id);
             self.workspaces.remove(self.active_ws);
+            removed = true;
+        }
+        if removed {
+            crate::logging::event(
+                crate::logging::EventKind::WorkspaceClose,
+                &[crate::logging::Field::WorkspaceIndex(
+                    workspace_index as u64,
+                )],
+            );
         }
         if self.workspaces.is_empty() {
             self.all_workspaces_closed();
@@ -5230,6 +5307,10 @@ impl App {
             "workspace.closed",
             serde_json::json!({"workspace": index.to_string()}),
         );
+        crate::logging::event(
+            crate::logging::EventKind::WorkspaceClose,
+            &[crate::logging::Field::WorkspaceIndex(index as u64)],
+        );
     }
 
     /// Dismiss deferred UI actions whose stable target is being removed.
@@ -5248,6 +5329,7 @@ impl App {
 
     /// Close a tab and all its panes (the "X" button / prefix+X).
     fn close_tab(&mut self, index: usize) {
+        let workspace_index = self.active_ws;
         let ids: Vec<PaneId> = {
             let ws = &self.workspaces[self.active_ws];
             if index >= ws.tabs.len() {
@@ -5271,6 +5353,13 @@ impl App {
         self.emit_event(
             "tab.closed",
             serde_json::json!({"tab": (index + 1).to_string()}),
+        );
+        crate::logging::event(
+            crate::logging::EventKind::TabClose,
+            &[
+                crate::logging::Field::WorkspaceIndex(workspace_index as u64),
+                crate::logging::Field::TabIndex(index as u64),
+            ],
         );
     }
 }
