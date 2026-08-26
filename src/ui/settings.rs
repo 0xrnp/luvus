@@ -46,7 +46,11 @@ pub(super) fn draw_settings(
         .sum();
     let w = (tabs_w + 12).max(54).min(area.width);
     let h = area.height.saturating_sub(2).clamp(16, 30).min(area.height);
-    let modal = centered_rect(area, w, h);
+    let modal = if app.compact {
+        super::mobile::sheets::full_screen(area)
+    } else {
+        centered_rect(area, w, h)
+    };
 
     f.render_widget(Clear, modal);
     let block = Block::new()
@@ -75,36 +79,104 @@ pub(super) fn draw_settings(
         Paragraph::new(Span::styled(" ✕ ", Style::new().fg(t.accent).bold())),
         close,
     );
-    hline(f, inner.x, inner.y + 1, inner.width, t);
+    if inner.height > 1 {
+        hline(f, inner.x, inner.y + 1, inner.width, t);
+    }
+
+    let mut tabs = Vec::new();
+    // A complete settings layout needs room for the title, tabs, separators,
+    // at least one content row, and the footer. Very short phone terminals do
+    // not have that space, so show only the active section instead of creating
+    // tab and rule rectangles beyond the buffer. Keyboard section switching
+    // remains available and a later resize restores the full layout.
+    if inner.height < 9 {
+        if inner.height > 2 && inner.width > 0 {
+            let rect = Rect::new(inner.x, inner.y + 2, inner.width, 1);
+            let label = format!("{} {}", tab.icon(), tab.label(app.catalog));
+            f.render_widget(
+                Paragraph::new(Span::styled(
+                    truncate(&label, rect.width as usize),
+                    Style::new().fg(t.crust).bg(t.accent).bold(),
+                ))
+                .alignment(Alignment::Center),
+                rect,
+            );
+            tabs.push((tab, rect));
+        }
+        return SettingsHits {
+            modal,
+            close,
+            tabs,
+            ctls: Vec::new(),
+            theme_remove: Vec::new(),
+            arrows: Vec::new(),
+            layout_scroll,
+        };
+    }
 
     // ── tab toolbar (Mac-style pills) ──
-    let mut tabs = Vec::new();
-    let mut x = inner.x + 1;
     let ty = inner.y + 2;
-    for st in SettingsTab::ALL {
-        let label = format!(" {} {} ", st.icon(), st.label(app.catalog));
-        let cw = display_width(&label) as u16;
-        if x + cw > inner.right() {
-            break;
+    let tab_rows = if app.compact {
+        SettingsTab::ALL.len().div_ceil(3) as u16
+    } else {
+        1
+    };
+    if app.compact {
+        let cell_width = (inner.width / 3).max(1);
+        let grid_width = cell_width.saturating_mul(3);
+        let grid_x = inner.x + inner.width.saturating_sub(grid_width) / 2;
+        for (index, st) in SettingsTab::ALL.into_iter().enumerate() {
+            let row = index / 3;
+            let column = index % 3;
+            let rect = Rect::new(
+                grid_x + column as u16 * cell_width,
+                ty + row as u16,
+                cell_width,
+                1,
+            );
+            let style = if st == tab {
+                Style::new().fg(t.crust).bg(t.accent).bold()
+            } else {
+                Style::new().fg(t.subtext0)
+            };
+            let label = format!("{} {}", st.icon(), st.label(app.catalog));
+            f.render_widget(
+                Paragraph::new(Span::styled(truncate(&label, cell_width as usize), style))
+                    .alignment(Alignment::Center),
+                rect,
+            );
+            tabs.push((st, rect));
         }
-        let style = if st == tab {
-            Style::new().fg(t.crust).bg(t.accent).bold()
-        } else {
-            Style::new().fg(t.subtext0)
-        };
-        let rect = Rect::new(x, ty, cw, 1);
-        f.render_widget(Paragraph::new(Span::styled(label, style)), rect);
-        tabs.push((st, rect));
-        x += cw;
+    } else {
+        let mut x = inner.x + 1;
+        for st in SettingsTab::ALL {
+            let label = format!(" {} {} ", st.icon(), st.label(app.catalog));
+            let cw = display_width(&label) as u16;
+            if x + cw > inner.right() {
+                break;
+            }
+            let style = if st == tab {
+                Style::new().fg(t.crust).bg(t.accent).bold()
+            } else {
+                Style::new().fg(t.subtext0)
+            };
+            let rect = Rect::new(x, ty, cw, 1);
+            f.render_widget(Paragraph::new(Span::styled(label, style)), rect);
+            tabs.push((st, rect));
+            x += cw;
+        }
     }
-    hline(f, inner.x, inner.y + 3, inner.width, t);
+    let tabs_bottom = inner.y + 2 + tab_rows;
+    hline(f, inner.x, tabs_bottom, inner.width, t);
 
     // ── content ──
+    let content_y = tabs_bottom + 1;
+    let content_bottom = inner.bottom().saturating_sub(2);
     let content = Rect::new(
         inner.x,
-        inner.y + 4,
+        content_y,
         inner.width,
-        inner.height.saturating_sub(6),
+        content_bottom.saturating_sub(content_y),
     );
     let (ctls, theme_remove, arrows, layout_scroll) =
         draw_content(f, content, tab, cursor, layout_scroll, app, t);
@@ -425,6 +497,24 @@ fn draw_content(
                             cursor == i,
                             cat.set_scrollback,
                             format_history_budget(app.config.scrollback_bytes()),
+                            t,
+                            &mut arrows,
+                        );
+                        ctls.push((i, r));
+                    }
+                    LayoutRow::MobileWidth => {
+                        let r = slider_row(
+                            f,
+                            area,
+                            y,
+                            i,
+                            cursor == i,
+                            cat.set_mobile_width,
+                            if l.mobile_width == 0 {
+                                cat.side_off.to_string()
+                            } else {
+                                l.mobile_width.to_string()
+                            },
                             t,
                             &mut arrows,
                         );

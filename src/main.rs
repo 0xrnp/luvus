@@ -409,7 +409,10 @@ fn run_local() -> Result<()> {
         DisableBracketedPaste
     );
     ratatui::restore();
-    result
+    if result? {
+        print_detached_status(i18n::cli::Context::configured());
+    }
+    Ok(())
 }
 
 fn autodetect_and_attach() -> Result<()> {
@@ -712,19 +715,16 @@ fn update_manifest(context: i18n::cli::Context) -> Result<()> {
 fn server_start(context: i18n::cli::Context) -> Result<()> {
     let sock = persist::client_socket_path();
     if server_running(&sock) {
-        println!(
-            "luvus {} (session {})",
-            context.text("server already running"),
-            session::display_name()
-        );
+        print_server_card(context, context.text("running"), None, &sock);
         return Ok(());
     }
     spawn_server()?;
     wait_for_socket(&sock)?;
-    println!(
-        "luvus {} (session {})",
-        context.text("server started"),
-        session::display_name()
+    print_server_card(
+        context,
+        context.text("started"),
+        Some(env!("CARGO_PKG_VERSION")),
+        &sock,
     );
     Ok(())
 }
@@ -736,13 +736,14 @@ fn server_stop(context: i18n::cli::Context) -> Result<()> {
         // socket — then `stop` returning means it's really down (and a following
         // `status` reports "not running", not a half-shutdown "running").
         wait_for_shutdown(&sock)?;
-        println!(
-            "luvus {} (session {})",
-            context.text("server stopped"),
-            session::display_name()
-        );
+        print_server_card(context, context.text("server stopped"), None, &sock);
     } else {
-        println!("{}", context.text("no luvus server running"));
+        print_server_card(
+            context,
+            context.text("no luvus server running"),
+            None,
+            &sock,
+        );
     }
     Ok(())
 }
@@ -756,10 +757,11 @@ fn server_restart(context: i18n::cli::Context) -> Result<()> {
     }
     spawn_server()?;
     wait_for_socket(&sock)?;
-    println!(
-        "luvus {} (session {})",
-        context.text("server restarted"),
-        session::display_name()
+    print_server_card(
+        context,
+        context.text("restarted"),
+        Some(env!("CARGO_PKG_VERSION")),
+        &sock,
     );
     Ok(())
 }
@@ -783,20 +785,12 @@ fn wait_for_shutdown(sock: &Path) -> Result<()> {
 fn server_status(context: i18n::cli::Context) -> Result<()> {
     let sock = persist::client_socket_path();
     if !server_running(&sock) {
-        println!(
-            "luvus server: {} (session {})",
-            context.text("not running"),
-            session::display_name()
-        );
+        print_server_card(context, context.text("not running"), None, &sock);
         return Ok(());
     }
     match server_version() {
         Ok(running) => {
-            println!(
-                "luvus server: {} (v{running}, session {})",
-                context.text("running"),
-                session::display_name()
-            );
+            print_server_card(context, context.text("running"), Some(&running), &sock);
             let binary = env!("CARGO_PKG_VERSION");
             if running != binary {
                 println!(
@@ -814,6 +808,37 @@ fn server_status(context: i18n::cli::Context) -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn print_server_card(
+    context: i18n::cli::Context,
+    state: &str,
+    version: Option<&str>,
+    socket: &Path,
+) {
+    let session = session::display_name();
+    let socket = socket.display().to_string();
+    let version = version.map(|value| format!("v{value}"));
+    let mut rows = vec![
+        (context.text("status"), state),
+        (context.text("session"), session.as_str()),
+    ];
+    if let Some(version) = version.as_deref() {
+        rows.push((context.text("version"), version));
+    }
+    rows.push((context.text("socket"), socket.as_str()));
+    cli::print_status_card("Luvus server", &rows);
+}
+
+fn print_detached_status(context: i18n::cli::Context) {
+    let session = session::display_name();
+    let runtime = format!("{} + {}", context.text("server"), context.text("panes"));
+    let rows = [
+        (context.text("status"), context.text("detached")),
+        (context.text("session"), session.as_str()),
+        (runtime.as_str(), context.text("running")),
+    ];
+    cli::print_status_card("Luvus session", &rows);
 }
 
 /// Send `server.stop` to a running server; returns whether one was present.
@@ -876,7 +901,7 @@ fn server_control_request(method: &str) -> Result<serde_json::Value> {
     Ok(response)
 }
 
-fn run(terminal: &mut DefaultTerminal) -> Result<()> {
+fn run(terminal: &mut DefaultTerminal) -> Result<bool> {
     let (tx, rx) = mpsc::channel::<AppEvent>();
 
     let size = terminal.size()?;
@@ -1020,8 +1045,9 @@ fn run(terminal: &mut DefaultTerminal) -> Result<()> {
         app.rearm_pty_notify();
     }
 
+    let detached = app.detach_requested;
     persist::save(&app);
-    Ok(())
+    Ok(detached)
 }
 
 /// Clean up a just-bound Unix socket before a local startup aborts. The caller
@@ -1353,6 +1379,44 @@ mod tests {
         let client_blit = t.elapsed() / n;
         println!("    CLIENT old re-blit:{client_blit:>10?}  (terminal.draw full frame — REMOVED; client now writes only changed cells)");
         println!();
+    }
+
+    /// Focused docs/100 check: compare forced desktop/mobile frames at the same
+    /// viewport and measure the full-screen navigator separately. It intentionally
+    /// performs no IO and creates no background task.
+    #[cfg(feature = "dev-tools")]
+    #[test]
+    fn bench_mobile_render_hotpath() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let render = |label: &str, app: &mut App| {
+            let mut terminal = Terminal::new(TestBackend::new(64, 35)).unwrap();
+            terminal.draw(|frame| ui::render(frame, app)).unwrap();
+            let frames = 5_000u32;
+            let started = Instant::now();
+            for _ in 0..frames {
+                terminal.draw(|frame| ui::render(frame, app)).unwrap();
+            }
+            let elapsed = started.elapsed();
+            println!("{label:>18}: {:>10?}/frame", elapsed / frames);
+            elapsed / frames
+        };
+
+        let (tx, _rx) = mpsc::channel::<AppEvent>();
+        let mut desktop = App::new(64, 35, tx.clone()).unwrap();
+        desktop.config.layout.mobile_width = 0;
+        let desktop_frame = render("desktop 64x35", &mut desktop);
+
+        let mut mobile = App::new(64, 35, tx).unwrap();
+        let mobile_frame = render("mobile closed", &mut mobile);
+        mobile.open_switcher();
+        let navigator_frame = render("mobile navigator", &mut mobile);
+
+        println!(
+            "mobile/desktop: {:.3}x, navigator/desktop: {:.3}x",
+            mobile_frame.as_secs_f64() / desktop_frame.as_secs_f64(),
+            navigator_frame.as_secs_f64() / desktop_frame.as_secs_f64(),
+        );
     }
 
     #[test]
