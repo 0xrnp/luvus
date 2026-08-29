@@ -389,6 +389,7 @@ pub fn run() -> Result<()> {
     let mut next_activity = 1u64;
     let mut last_render_attempt = Instant::now();
     let mut last_save = Instant::now();
+    let mut immediate_save_attempted = false;
     // Un-rendered activity waiting for the frame cap to expire — drives a trailing
     // render so a change that lands mid-interval isn't stuck until the next event.
     let mut render_request = RenderRequest::default();
@@ -482,25 +483,20 @@ pub fn run() -> Result<()> {
             );
             break;
         }
-        // The last node closed (docs/43 §3.3): the *session* is over, so every
-        // window goes away — not just the foreground one, which would leave other
-        // clients staring at a session with nothing in it. The server stays up
-        // with no nodes; `server stop` is still what ends it.
-        if app.end_session {
-            app.end_session = false;
-            // Detach is a reliable control message. It does not compete with the
-            // one-frame backpressure slot, so a busy or remote client cannot
-            // lose it and cannot block this loop.
-            for (_, client) in clients.drain() {
-                let _ = client.send_control(ServerMessage::Detach);
+        if !app.persist_session_now {
+            immediate_save_attempted = false;
+        }
+        // Closing the final project bypasses the debounce once. Failed writes
+        // retain both flags and retry at the normal cadence instead of hot-looping.
+        let immediate_save_due = app.persist_session_now && !immediate_save_attempted;
+        let debounced_save_due = app.session_dirty && last_save.elapsed() > Duration::from_secs(2);
+        if immediate_save_due || debounced_save_due {
+            immediate_save_attempted = app.persist_session_now;
+            if persist::save(&app) {
+                app.persist_session_now = false;
+                app.session_dirty = false;
+                immediate_save_attempted = false;
             }
-            foreground = None;
-            // Persist immediately rather than waiting out the 2s debounce: the
-            // snapshot is now empty, which *removes* `session.json`, and a kill
-            // inside that window would otherwise leave the closed nodes on disk
-            // to be restored on the next start.
-            persist::save(&app);
-            app.session_dirty = false;
             last_save = Instant::now();
         }
         if app.detach_requested {
@@ -525,12 +521,6 @@ pub fn run() -> Result<()> {
             } else {
                 app.show_toast("no attached client to switch".to_string());
             }
-        }
-
-        if app.session_dirty && last_save.elapsed() > Duration::from_secs(2) {
-            persist::save(&app);
-            app.session_dirty = false;
-            last_save = Instant::now();
         }
 
         // A state transition here (e.g. a silent agent reaching Done) has no PtyData
@@ -1359,11 +1349,10 @@ mod tests {
         );
     }
 
-    /// Session detach is carried by the same reliable control path. Preserve the
-    /// earlier guarantee that closing the last node cannot strand a client just
-    /// because its writer already has a frame waiting.
+    /// Explicit client detach is carried by the same reliable control path and
+    /// cannot be lost behind a queued frame.
     #[test]
-    fn ending_a_session_delivers_detach_behind_a_queued_frame() {
+    fn explicit_detach_is_delivered_behind_a_queued_frame() {
         let (messages, rx) = mpsc::channel();
         let client = ClientSender {
             messages,

@@ -960,50 +960,56 @@ pub fn snapshot(app: &App) -> SessionSnapshot {
     }
 }
 
-/// Save the app's session atomically. An *empty* session clears the snapshot:
-/// the user deliberately closed everything, and a leftover file would resurrect
-/// those panes (re-running agent resume commands) on the next start.
-pub fn save(app: &App) {
+/// Save the app's session atomically. A truly empty session can only remain after
+/// restore or shell startup failure; clear its stale snapshot so the next start
+/// cannot resurrect panes the user already closed.
+pub fn save(app: &App) -> bool {
     let snap = snapshot(app);
     if snap.workspaces.is_empty() {
-        let _ = fs::remove_file(session_path());
+        if let Err(error) = fs::remove_file(session_path()) {
+            if error.kind() != std::io::ErrorKind::NotFound {
+                log_persist_failure("persist_clear");
+                return false;
+            }
+        }
         crate::logging::event(
             crate::logging::EventKind::PersistCleared,
             &[crate::logging::Field::Reason(crate::logging::Reason::Empty)],
         );
-        return;
+        return true;
     }
     let dir = ensure_session_dir();
     if !dir.is_dir() {
         log_persist_failure("persist_dir");
-        return;
+        return false;
     }
     let Ok(json) = serde_json::to_string_pretty(&snap) else {
         log_persist_failure("persist_serialize");
-        return;
+        return false;
     };
     let path = session_path();
     let tmp = path.with_extension("json.tmp");
     let Ok(mut file) = fs::File::create(&tmp) else {
         log_persist_failure("persist_create");
-        return;
+        return false;
     };
     if file.write_all(json.as_bytes()).is_err() {
         log_persist_failure("persist_write");
-        return;
+        return false;
     }
     if file.flush().is_err() {
         log_persist_failure("persist_flush");
-        return;
+        return false;
     }
     if fs::rename(&tmp, &path).is_err() {
         log_persist_failure("persist_rename");
-        return;
+        return false;
     }
     crate::logging::event(
         crate::logging::EventKind::PersistSave,
         &[crate::logging::Field::Outcome(crate::logging::Outcome::Ok)],
     );
+    true
 }
 
 fn log_persist_failure(error_code: &'static str) {
@@ -1222,23 +1228,35 @@ mod tests {
     // dir must be owner-only (0700) and each bound socket 0600 — regardless of
     // the process umask (see `ensure_config_dir` / `transport::bind`).
     #[test]
-    fn empty_session_save_clears_the_snapshot() {
-        let _env = test_env("empty-save");
+    fn closing_the_final_project_saves_the_home_terminal_replacement() {
+        let _env = test_env("home-replacement-save");
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(80, 24, tx).unwrap();
-        save(&app);
+        assert!(save(&app));
         assert!(session_path().exists(), "a live session snapshots");
-        // Close the only pane — the session is now deliberately empty, and the
-        // snapshot must go with it, or the next start would resurrect panes the
-        // user closed (re-running agent resume commands).
+        // Close the only pane. The project must not come back, but Luvus remains
+        // usable through one neutral terminal rooted at home.
         let id = app.layout().focus;
         app.handle_event(crate::event::AppEvent::PtyExit(id));
-        assert!(app.workspaces.is_empty());
-        save(&app);
-        assert!(
-            !session_path().exists(),
-            "an empty session clears the snapshot"
-        );
+        let home = crate::platform::home_dir().expect("test host has a home directory");
+        assert_eq!(app.workspaces.len(), 1);
+        assert!(crate::platform::same_path(&app.workspaces[0].cwd, &home));
+        assert!(save(&app));
+        let saved = load().expect("the replacement terminal is persisted");
+        assert_eq!(saved.workspaces.len(), 1);
+        assert!(crate::platform::same_path(&saved.workspaces[0].cwd, &home));
+    }
+
+    #[test]
+    fn save_reports_failure_when_the_atomic_temp_file_cannot_be_created() {
+        let _env = test_env("save-failure");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let app = App::new(80, 24, tx).unwrap();
+        let tmp = session_path().with_extension("json.tmp");
+        fs::create_dir_all(&tmp).unwrap();
+
+        assert!(!save(&app), "the caller must retain its retry state");
+        assert!(tmp.is_dir(), "the failure fixture remains in place");
     }
 
     #[test]
