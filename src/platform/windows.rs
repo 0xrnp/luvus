@@ -305,6 +305,17 @@ impl ProcessSnapshot {
         self.command_lines.insert(pid, command.clone());
         command
     }
+
+    fn executable(&self, pid: u32) -> Option<String> {
+        self.names.get(&pid).cloned()
+    }
+}
+
+/// Executable image name reported by ToolHelp, without command-line arguments.
+/// Process identity checks must use this rather than `process_tree`: the latter
+/// deliberately returns the full argv for the command inspector.
+pub(super) fn process_executable(pid: u32) -> Option<String> {
+    ProcessSnapshot::capture()?.executable(pid)
 }
 
 pub(super) fn pane_process_snapshot(
@@ -455,12 +466,30 @@ mod tests {
     }
 
     #[test]
+    fn current_process_is_not_force_stopped_as_a_foreign_server() {
+        assert!(!super::super::is_stoppable_luvus_pid(0));
+        assert!(!super::super::is_stoppable_luvus_pid(std::process::id()));
+    }
+
+    #[test]
     fn current_process_has_a_stable_identity_and_owner() {
         let pid = std::process::id();
         assert!(process_belongs_to_current_user(pid));
         let first = process_start_marker(pid).expect("Windows process creation time");
         assert_eq!(process_start_marker(pid).as_deref(), Some(first.as_str()));
         assert!(first.starts_with("windows:"));
+    }
+
+    #[test]
+    fn process_executable_does_not_include_command_line_arguments() {
+        let executable = process_executable(std::process::id()).expect("ToolHelp executable");
+        let expected = std::env::current_exe()
+            .expect("current executable path")
+            .file_name()
+            .expect("current executable name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(executable.eq_ignore_ascii_case(&expected), "{executable:?}");
     }
 
     #[test]

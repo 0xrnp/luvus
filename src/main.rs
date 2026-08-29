@@ -36,7 +36,7 @@ mod theme;
 mod ui;
 mod update;
 
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, RecvTimeoutError, Sender};
@@ -56,6 +56,9 @@ use crate::app::App;
 use crate::event::AppEvent;
 
 const SERVER_CONTROL_TIMEOUT: Duration = Duration::from_secs(1);
+/// A second, longer control-plane probe prevents a transiently busy app loop
+/// from being classified as dead after one ordinary request deadline.
+const SERVER_RECOVERY_TIMEOUT: Duration = Duration::from_secs(4);
 
 fn main() -> Result<()> {
     // Run the whole process at 1ms timer resolution so the event loop's timed
@@ -493,26 +496,7 @@ fn run_local() -> Result<()> {
 
 fn autodetect_and_attach() -> Result<()> {
     let sock = persist::client_socket_path();
-    let fresh = !server_running(&sock);
-    if fresh {
-        spawn_server()?;
-        wait_for_socket(&sock)?;
-    }
-    if !fresh {
-        // An upgraded binary silently attaching to an older running server means
-        // none of the new version shows up — tell the user how to load it (the
-        // brief pause keeps the note readable before the UI takes the screen).
-        let binary = env!("CARGO_PKG_VERSION");
-        if let Ok(running) = server_version() {
-            if running != binary {
-                eprintln!(
-                    "luvus v{binary} installed, but the running server is v{running} — \
-                     run `luvus server restart` to load it (your session is saved and restored)."
-                );
-                thread::sleep(Duration::from_millis(2000));
-            }
-        }
-    }
+    ensure_server_ready(&sock)?;
     // Always ask the server to open the launch folder. A *fresh* server may have
     // restored a saved session (`restore_or_new`), in which case it never saw
     // this cwd — so this cannot be skipped on the fresh path. Idempotent: if the
@@ -521,13 +505,92 @@ fn autodetect_and_attach() -> Result<()> {
     ipc::client::run(&sock)
 }
 
+fn ensure_server_ready(sock: &Path) -> Result<()> {
+    ensure_server_ready_with_timeouts(sock, SERVER_CONTROL_TIMEOUT, SERVER_RECOVERY_TIMEOUT)
+}
+
+fn ensure_server_ready_with_timeouts(
+    sock: &Path,
+    control_timeout: Duration,
+    recovery_timeout: Duration,
+) -> Result<()> {
+    match ipc::transport::connect_timeout(sock, control_timeout) {
+        Ok(_) => match retry_control_probe(control_timeout, recovery_timeout, |timeout| {
+            server_version_with_timeout(timeout)
+        }) {
+            Ok(running) => report_server_version(running),
+            // Accept threads stay alive after the app loop dies. Connect is not
+            // liveness, but one ordinary timeout is not proof of death either.
+            // Recycle only after the longer confirmation probe also fails.
+            Err(_) => {
+                recycle_unresponsive_server_with_timeouts(sock, control_timeout, recovery_timeout)
+            }
+        },
+        Err(error) if error.kind() == io::ErrorKind::TimedOut => {
+            // A saturated client listener is not proof that the app loop died.
+            // The API ping distinguishes a responsive server that should be
+            // left alone from the mute-listener failure this recovery targets.
+            if server_version_with_timeout(recovery_timeout).is_ok() {
+                return Err(anyhow!(
+                    "luvus client endpoint is busy but the server remains responsive; retry attach"
+                ));
+            }
+            recycle_unresponsive_server_with_timeouts(sock, control_timeout, recovery_timeout)
+        }
+        Err(_) => {
+            spawn_server()?;
+            wait_for_socket(sock)
+        }
+    }
+}
+
+fn recycle_unresponsive_server_with_timeouts(
+    sock: &Path,
+    control_timeout: Duration,
+    recovery_timeout: Duration,
+) -> Result<()> {
+    send_server_stop_with_evidence(
+        control_timeout,
+        recovery_timeout,
+        RecoveryEvidence::ConfirmedUnresponsive,
+    )?;
+    // The old process may still own API or client pipes after stop
+    // returns. Spawning now makes the replacement see those endpoints and
+    // exit, then the old process dies — no server left.
+    wait_for_shutdown(sock)?;
+    spawn_server()?;
+    wait_for_socket(sock)
+}
+
+fn retry_control_probe<T>(
+    control_timeout: Duration,
+    recovery_timeout: Duration,
+    mut probe: impl FnMut(Duration) -> Result<T>,
+) -> Result<T> {
+    probe(control_timeout).or_else(|_| probe(recovery_timeout))
+}
+
+fn report_server_version(running: String) -> Result<()> {
+    let binary = env!("CARGO_PKG_VERSION");
+    if running != binary {
+        eprintln!(
+            "luvus v{binary} installed, but the running server is v{running} — \
+             run `luvus server restart` to load it (your session is saved and restored)."
+        );
+        thread::sleep(Duration::from_millis(2000));
+    }
+    Ok(())
+}
+
 /// Ask the running server to open the current directory as a workspace (add +
 /// focus if new). Best-effort — a failure just means no auto-open.
 fn open_cwd_workspace() {
     let Ok(cwd) = std::env::current_dir() else {
         return;
     };
-    let Ok(mut s) = ipc::transport::connect(&persist::socket_path()) else {
+    let Ok(mut s) =
+        ipc::transport::connect_timeout(&persist::socket_path(), SERVER_CONTROL_TIMEOUT)
+    else {
         return;
     };
     // `focus: false` — add the launch folder if it isn't already a workspace, but
@@ -539,8 +602,7 @@ fn open_cwd_workspace() {
         "params": { "path": cwd.display().to_string(), "focus": false },
     });
     let _ = writeln!(s, "{req}");
-    let mut line = String::new();
-    let _ = BufReader::new(s).read_line(&mut line); // wait for the ack before attaching
+    let _ = ipc::api::read_response_frame_with_deadline(&mut s, SERVER_CONTROL_TIMEOUT);
 }
 
 /// Remote bridge role (docs/18 RA-1), run *on the remote host* by ssh. Ensure a
@@ -548,10 +610,7 @@ fn open_cwd_workspace() {
 /// so the `luvus --remote` client on the other end of the ssh pipe drives it.
 fn remote_client_bridge() -> Result<()> {
     let sock = persist::client_socket_path();
-    if !server_running(&sock) {
-        spawn_server()?;
-        wait_for_socket(&sock)?;
-    }
+    ensure_server_ready(&sock)?;
     ipc::client::remote_bridge(&sock)
 }
 
@@ -560,10 +619,7 @@ fn remote_client_bridge() -> Result<()> {
 /// fullscreen terminal. Composes with `--remote` for a remote fullscreen attach.
 fn attach_cmd(args: &[String]) -> Result<()> {
     let sock = persist::client_socket_path();
-    if !server_running(&sock) {
-        spawn_server()?;
-        wait_for_socket(&sock)?;
-    }
+    ensure_server_ready(&sock)?;
     if let Some(id) = args.get(2).filter(|s| s.parse::<u32>().is_ok()) {
         let _ = cli::request_attach(id); // best-effort; still attaches if it fails
     }
@@ -617,7 +673,7 @@ fn remote_ssh_command(args: &[String]) -> Result<Command> {
 }
 
 fn server_running(sock: &Path) -> bool {
-    ipc::transport::connect(sock).is_ok()
+    ipc::transport::endpoint_exists(sock, Duration::from_millis(50))
 }
 
 fn spawn_server() -> Result<()> {
@@ -844,9 +900,13 @@ fn server_restart(context: i18n::cli::Context) -> Result<()> {
 
 /// Poll (bounded) until the server releases its socket, so `stop`/`restart`
 /// return only once the old server is truly gone.
-fn wait_for_shutdown(sock: &Path) -> Result<()> {
-    for _ in 0..100 {
-        if !server_running(sock) {
+fn wait_for_shutdown(_sock: &Path) -> Result<()> {
+    let api = persist::socket_path();
+    let client = persist::client_socket_path();
+    for _ in 0..50 {
+        if !ipc::transport::endpoint_exists(&api, Duration::from_millis(100))
+            && !ipc::transport::endpoint_exists(&client, Duration::from_millis(100))
+        {
             return Ok(());
         }
         thread::sleep(Duration::from_millis(50));
@@ -919,21 +979,93 @@ fn print_detached_status(context: i18n::cli::Context) {
 
 /// Send `server.stop` to a running server; returns whether one was present.
 fn send_server_stop() -> Result<bool> {
+    send_server_stop_with_timeouts(SERVER_CONTROL_TIMEOUT, SERVER_RECOVERY_TIMEOUT)
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RecoveryEvidence {
+    RequireConfirmation,
+    ConfirmedUnresponsive,
+}
+
+fn send_server_stop_with_timeouts(
+    control_timeout: Duration,
+    recovery_timeout: Duration,
+) -> Result<bool> {
+    send_server_stop_with_evidence(
+        control_timeout,
+        recovery_timeout,
+        RecoveryEvidence::RequireConfirmation,
+    )
+}
+
+fn send_server_stop_with_evidence(
+    control_timeout: Duration,
+    recovery_timeout: Duration,
+    evidence: RecoveryEvidence,
+) -> Result<bool> {
     let client_socket = persist::client_socket_path();
-    if !server_running(&client_socket) {
-        return Ok(false);
+    let api = persist::socket_path();
+    let (conn, timed_out) = match ipc::transport::connect_timeout(&api, control_timeout) {
+        Ok(conn) => (Some(conn), false),
+        Err(error) => match ipc::transport::connect_timeout(&client_socket, control_timeout) {
+            Ok(conn) => (Some(conn), error.kind() == io::ErrorKind::TimedOut),
+            Err(client_error) if client_error.kind() == io::ErrorKind::TimedOut => (None, true),
+            Err(_) if error.kind() == io::ErrorKind::TimedOut => (None, true),
+            Err(_) => return Ok(false),
+        },
+    };
+    let pid = conn
+        .as_ref()
+        .and_then(|conn| conn.server_pid().ok())
+        .or_else(persist::ServerPidFile::read);
+    drop(conn);
+
+    if timed_out {
+        if evidence == RecoveryEvidence::RequireConfirmation
+            && server_control_request_with_timeout("ping", recovery_timeout).is_ok()
+        {
+            return Err(anyhow!(
+                "luvus endpoint is busy but the server remains responsive; refusing to force-stop"
+            ));
+        }
+        return force_stop_unresponsive(pid, &client_socket);
     }
-    let response = match server_control_request("server.stop") {
+
+    let response = match server_control_request_with_timeout("server.stop", control_timeout) {
         Ok(response) => response,
         Err(error) => {
-            // The old server may exit between the liveness probe and connect,
-            // or Windows may observe the named pipe closing before the final
-            // stop acknowledgement is readable. A completed shutdown is still
-            // success; a live, unresponsive server keeps the original error.
-            if wait_for_shutdown(&client_socket).is_ok() {
+            // A mute app loop still accepts on dedicated listener threads.
+            // One short probe: if both endpoints are already gone, stop won.
+            // Otherwise reclaim the stoppable process instead of hanging attach.
+            if !ipc::transport::endpoint_exists(&api, Duration::from_millis(50))
+                && !ipc::transport::endpoint_exists(&client_socket, Duration::from_millis(50))
+            {
                 return Ok(true);
             }
-            return Err(error);
+            // A reachable server may simply have missed the ordinary one-second
+            // acknowledgement deadline under load. Confirm the control plane is
+            // still mute with a longer ping before taking the destructive path.
+            if evidence == RecoveryEvidence::RequireConfirmation
+                && server_control_request_with_timeout("ping", recovery_timeout).is_ok()
+            {
+                return Err(anyhow!(
+                    "luvus server did not acknowledge stop but remains responsive: {error}"
+                ));
+            }
+            if !ipc::transport::endpoint_exists(&api, Duration::from_millis(50))
+                && !ipc::transport::endpoint_exists(&client_socket, Duration::from_millis(50))
+            {
+                return Ok(true);
+            }
+            match force_stop_unresponsive(pid, &client_socket) {
+                Ok(_) => return Ok(true),
+                Err(recovery_error) => {
+                    return Err(anyhow!(
+                        "{error}; force-stop recovery failed: {recovery_error}"
+                    ));
+                }
+            }
         }
     };
     let acknowledged = response
@@ -947,9 +1079,33 @@ fn send_server_stop() -> Result<bool> {
     Ok(true)
 }
 
+fn force_stop_unresponsive(pid: Option<u32>, sock: &Path) -> Result<bool> {
+    let Some(pid) = pid else {
+        return Err(anyhow!(
+            "luvus server did not answer and no process id is available to force-stop"
+        ));
+    };
+    if !platform::is_stoppable_luvus_pid(pid) {
+        return Err(anyhow!(
+            "luvus server did not answer and pid {pid} is not a stoppable Luvus process"
+        ));
+    }
+    if let Err(error) = platform::force_terminate(pid) {
+        if platform::is_stoppable_luvus_pid(pid) {
+            return Err(anyhow!("failed to force-stop luvus pid {pid}: {error}"));
+        }
+    }
+    wait_for_shutdown(sock)?;
+    Ok(true)
+}
+
 /// Ask the running server its version via `ping`.
 fn server_version() -> Result<String> {
-    let response = server_control_request("ping")?;
+    server_version_with_timeout(SERVER_CONTROL_TIMEOUT)
+}
+
+fn server_version_with_timeout(timeout: Duration) -> Result<String> {
+    let response = server_control_request_with_timeout("ping", timeout)?;
     response
         .get("result")
         .and_then(|result| result.get("version"))
@@ -961,11 +1117,14 @@ fn server_version() -> Result<String> {
 /// Perform one lifecycle request with a bounded response wait. This keeps
 /// `status`, `stop`, and `restart` responsive when a socket exists but the app
 /// loop cannot answer, including through Windows named pipes.
-fn server_control_request(method: &str) -> Result<serde_json::Value> {
-    let mut stream = ipc::transport::connect(&persist::socket_path())
+fn server_control_request_with_timeout(
+    method: &str,
+    timeout: Duration,
+) -> Result<serde_json::Value> {
+    let mut stream = ipc::transport::connect_timeout(&persist::socket_path(), timeout)
         .map_err(|error| anyhow!("cannot connect to luvus server: {error}"))?;
     writeln!(stream, r#"{{"id":"1","method":"{method}","params":{{}}}}"#)?;
-    let frame = ipc::api::read_response_frame_with_deadline(&mut stream, SERVER_CONTROL_TIMEOUT)?;
+    let frame = ipc::api::read_response_frame_with_deadline(&mut stream, timeout)?;
     let response: serde_json::Value = serde_json::from_str(&frame)
         .map_err(|error| anyhow!("invalid server control response: {error}"))?;
     if response.get("id").and_then(serde_json::Value::as_str) != Some("1") {
@@ -991,7 +1150,9 @@ fn run(terminal: &mut DefaultTerminal) -> Result<bool> {
     let startup_lock = ipc::transport::acquire_server_startup_lock(&state_dir)?;
     let sock = persist::socket_path();
     let client_sock = persist::client_socket_path();
-    if ipc::transport::connect(&sock).is_ok() || ipc::transport::connect(&client_sock).is_ok() {
+    if ipc::transport::endpoint_exists(&sock, Duration::from_millis(50))
+        || ipc::transport::endpoint_exists(&client_sock, Duration::from_millis(50))
+    {
         return Err(anyhow!(
             "a Luvus server is already active for {}; use `luvus` to attach to it",
             state_dir.display()
@@ -1181,6 +1342,74 @@ mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn send_server_stop_reports_absent_when_no_sockets() {
+        let _env = crate::persist::test_env("stop-absent");
+        crate::persist::ensure_session_dir();
+        assert!(!send_server_stop().expect("absent server is not an error"));
+    }
+
+    #[test]
+    fn send_server_stop_fails_closed_when_a_listener_never_replies() {
+        let _env = crate::persist::test_env("stop-mute-accept");
+        crate::persist::ensure_session_dir();
+        let _listener =
+            crate::ipc::transport::bind(&crate::persist::socket_path()).expect("mute API listener");
+        let started = Instant::now();
+        let result =
+            send_server_stop_with_timeouts(Duration::from_millis(40), Duration::from_millis(120));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "mute accept must not hang server stop"
+        );
+        assert!(
+            result.is_err(),
+            "fail closed without a stoppable foreign pid: {result:?}"
+        );
+    }
+
+    #[test]
+    fn ensure_server_ready_fails_closed_when_control_ping_never_replies() {
+        let _env = crate::persist::test_env("ready-mute-accept");
+        crate::persist::ensure_session_dir();
+        let client = crate::persist::client_socket_path();
+        let api = crate::persist::socket_path();
+        let _client_listener = crate::ipc::transport::bind(&client).expect("mute client listener");
+        let _api_listener = crate::ipc::transport::bind(&api).expect("mute API listener");
+        let started = Instant::now();
+        let result = ensure_server_ready_with_timeouts(
+            &client,
+            Duration::from_millis(40),
+            Duration::from_millis(120),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "mute ping must not hang attach"
+        );
+        assert!(
+            result.is_err(),
+            "fail closed rather than attach to a mute loop: {result:?}"
+        );
+    }
+
+    #[test]
+    fn control_probe_retries_with_a_longer_deadline_before_recovery() {
+        let ordinary = Duration::from_millis(25);
+        let recovery = Duration::from_millis(150);
+        let mut attempts = Vec::new();
+        let result = retry_control_probe(ordinary, recovery, |timeout| {
+            attempts.push(timeout);
+            if attempts.len() == 1 {
+                Err(anyhow!("transient timeout"))
+            } else {
+                Ok("0.13.1".to_string())
+            }
+        });
+
+        assert_eq!(result.expect("recovery probe succeeds"), "0.13.1");
+        assert_eq!(attempts, vec![ordinary, recovery]);
+    }
 
     #[test]
     fn only_exact_json_session_list_uses_discovery_route() {

@@ -330,6 +330,129 @@ pub fn process_belongs_to_current_user(pid: u32) -> bool {
     windows::process_belongs_to_current_user(pid)
 }
 
+#[cfg(target_os = "macos")]
+fn process_executable(pid: u32) -> Option<PathBuf> {
+    let mut buffer = vec![0_u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    // SAFETY: `buffer` is writable for the size passed to `proc_pidpath`, and
+    // the returned byte count is checked before constructing the path.
+    let len = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            buffer.as_mut_ptr().cast(),
+            buffer.len() as u32,
+        )
+    };
+    if len <= 0 {
+        return None;
+    }
+    buffer.truncate(len as usize);
+    Some(PathBuf::from(String::from_utf8_lossy(&buffer).into_owned()))
+}
+
+/// True when `pid` is another Luvus process owned by this account.
+/// `server stop` uses this before force-killing an unresponsive server.
+pub fn is_stoppable_luvus_pid(pid: u32) -> bool {
+    if pid == 0 || pid == std::process::id() {
+        return false;
+    }
+    #[cfg(windows)]
+    {
+        if !process_belongs_to_current_user(pid) {
+            return false;
+        }
+        windows::process_executable(pid).is_some_and(|executable| {
+            let name = executable.rsplit(['\\', '/']).next().unwrap_or(&executable);
+            name.eq_ignore_ascii_case("luvus.exe")
+        })
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string(format!("/proc/{pid}/comm"))
+            .is_ok_and(|comm| comm.trim() == "luvus")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        process_executable(pid).is_some_and(|executable| {
+            executable
+                .file_name()
+                .is_some_and(|name| name == std::ffi::OsStr::new("luvus"))
+        })
+    }
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    {
+        let Some(info) = process_tree(pid).into_iter().next() else {
+            return false;
+        };
+        let name = info
+            .command
+            .split_whitespace()
+            .next()
+            .unwrap_or(&info.command);
+        let base = name.rsplit('/').next().unwrap_or(name);
+        base == "luvus"
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        false
+    }
+}
+
+/// End `pid` and its children. Used only after [`is_stoppable_luvus_pid`].
+pub fn force_terminate(pid: u32) -> std::io::Result<()> {
+    #[cfg(windows)]
+    {
+        let status = no_window(
+            std::process::Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null()),
+        )
+        .status()?;
+        if status.success() || !is_stoppable_luvus_pid(pid) {
+            Ok(())
+        } else {
+            Err(std::io::Error::other(format!(
+                "taskkill exited with {status}"
+            )))
+        }
+    }
+    #[cfg(unix)]
+    {
+        let pid_t = pid as libc::pid_t;
+        let mut tree = process_tree(pid);
+        if tree.is_empty() {
+            tree.push(ProcInfo {
+                pid,
+                depth: 0,
+                command: String::new(),
+            });
+        }
+        let pgid = unsafe { libc::getpgid(pid_t) };
+        if pgid == pid_t {
+            let _ = unsafe { libc::kill(-pid_t, libc::SIGKILL) };
+        }
+        let mut root_error = None;
+        for proc in tree.iter().rev() {
+            let result = unsafe { libc::kill(proc.pid as libc::pid_t, libc::SIGKILL) };
+            if result != 0 && proc.pid == pid {
+                let error = std::io::Error::last_os_error();
+                if error.raw_os_error() != Some(libc::ESRCH) {
+                    root_error = Some(error);
+                }
+            }
+        }
+        match root_error {
+            Some(error) if is_stoppable_luvus_pid(pid) => Err(error),
+            _ => Ok(()),
+        }
+    }
+    #[cfg(not(any(windows, unix)))]
+    {
+        let _ = pid;
+        Err(std::io::Error::from(std::io::ErrorKind::Unsupported))
+    }
+}
+
 /// One process running under a pane, for the "what is actually running?" overlay.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProcInfo {
@@ -902,6 +1025,69 @@ mod tests {
         let (cwd_only, commands) = super::scan_pane_runtime(&[pid], false);
         assert_eq!(cwd_only.len(), 1);
         assert!(commands.is_none(), "command projection is demand-driven");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_stoppable_pid_rejects_self_and_missing() {
+        assert!(!super::is_stoppable_luvus_pid(0));
+        assert!(!super::is_stoppable_luvus_pid(std::process::id()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_stoppable_pid_accepts_a_luvus_executable_with_arguments() {
+        let dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join(format!("stoppable-pid-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("test executable directory");
+        let executable = dir.join("luvus");
+        let _ = std::fs::remove_file(&executable);
+        std::fs::copy("/bin/sleep", &executable).expect("luvus-named executable");
+        let mut child = std::process::Command::new(&executable)
+            .arg("30")
+            .spawn()
+            .expect("spawn luvus-named process");
+
+        let mut stoppable = false;
+        for _ in 0..20 {
+            if super::is_stoppable_luvus_pid(child.id()) {
+                stoppable = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+        let _ = std::fs::remove_file(&executable);
+        let _ = std::fs::remove_dir(&dir);
+        assert!(
+            stoppable,
+            "a live luvus executable must pass the kill guard"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn force_terminate_kills_a_setsid_child() {
+        use std::os::unix::process::CommandExt;
+        let mut command = std::process::Command::new("sleep");
+        command
+            .arg("30")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        unsafe {
+            command.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+        let mut child = command.spawn().expect("spawn sleep");
+        super::force_terminate(child.id()).expect("kill setsid child");
+        let status = child.wait().expect("reap sleep");
+        assert!(!status.success());
     }
 
     #[test]
