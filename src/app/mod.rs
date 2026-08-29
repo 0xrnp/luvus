@@ -601,7 +601,7 @@ pub enum DiffMenuItem {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FileMenuItem {
-    /// Open in the native read-only viewer (files only).
+    /// Open in the native read-only viewer, in its own tab (files only).
     OpenReadonly,
     /// Open with editor `editors[i]` (files only).
     OpenWith(usize),
@@ -1089,8 +1089,9 @@ impl PaneStatus {
 pub enum LinkTarget {
     /// Hand to the client's browser.
     Url(String),
-    /// Open in luvus's own viewer or editor, exactly like a FILES click (docs/38),
-    /// jumping to `line` when the reference carried one.
+    /// Open in luvus's own viewer or editor in a tab (docs/38), jumping to
+    /// `line` when the reference carried one. Always a tab: `File click
+    /// behavior` governs the FILES tree, not path activation.
     File { path: PathBuf, line: Option<u32> },
 }
 
@@ -2292,15 +2293,22 @@ impl App {
                     // A file-view leaf (docs/38 FILE-3): rebuild the view and
                     // re-read the file off-loop; no PTY is spawned.
                     if let Some(path) = &ps.file {
-                        views.insert(
-                            id,
-                            ViewKind::File(crate::files::FileView::new(path.clone())),
-                        );
+                        let mut view = crate::files::FileView::new(path.clone());
+                        // The read spawned below is this view's first, so it
+                        // carries token 1 and the view waits for exactly that.
+                        // (0 stays "nothing scheduled", which matches nothing.)
+                        view.read_token = 1;
+                        views.insert(id, ViewKind::File(view));
                         let tx = app_tx.clone();
                         let p = path.clone();
                         std::thread::spawn(move || {
                             let load = crate::files::read_file(&p);
-                            let _ = tx.send(crate::event::AppEvent::FileRead { id, load });
+                            let _ = tx.send(crate::event::AppEvent::FileRead {
+                                id,
+                                path: p,
+                                token: 1,
+                                load,
+                            });
                         });
                         remap.insert(*raw, id);
                         continue;
