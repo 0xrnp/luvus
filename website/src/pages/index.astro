@@ -76,9 +76,11 @@ import droidMask from '../assets/icons/droid-mask.png';
 const GITHUB = 'https://github.com/RizRiyz/luvus';
 const X = 'https://x.com/luvusdev';
 
-// Every agent in `detect::KNOWN_AGENTS` (14), which CLAUDE.md requires this
-// grid to stay truthful to. `aider` and `droid` have no icon in assets/icons,
-// so they render a lettermark rather than being left out of the list.
+// Curated public "works with" grid. Built-in descriptors live in
+// `agent::registry`, while `src/detect.rs` owns runtime identity and state.
+// This presentation list remains independent of both.
+// `droid` ships only a raster logo, so it renders through the CSS mask branch.
+// The `letter` lettermark branch is the fallback for an agent with no asset.
 const AGENTS = [
   { name: 'Claude Code', Icon: IconClaudeCode, hook: true },
   { name: 'Codex', Icon: IconCodex, hook: true },
