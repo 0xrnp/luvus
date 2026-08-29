@@ -23,16 +23,20 @@ keep one archived file, which caps both streams at 12 MiB per session.
 
 ## Choose a level
 
-The default is `info`. Set `LUVUS_LOG` before starting the relevant process:
+Logging uses the `info` level by default. Set `LUVUS_LOG` before starting the
+relevant process to change or disable it:
 
 ```sh
+LUVUS_LOG=info luvus server restart
 LUVUS_LOG=debug luvus server restart
 LUVUS_LOG=off luvus server restart
 ```
 
-Supported values are `debug`, `info`, `warn`, `error`, and `off`. `off` starts
-no writer thread and creates no log directory. A running server keeps the level
-it had at startup, so restart it after changing the variable.
+Supported values are `debug`, `info`, `warn`, `error`, and `off`. Unset, empty,
+and unrecognized values use `info`. Logging writes directly through the bounded
+rotating file writer and starts no logging thread or record queue. `off` also
+avoids creating the log directory. A running server keeps the level it had at
+startup, so restart it after changing the variable.
 
 ## Privacy
 
