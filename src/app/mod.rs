@@ -977,6 +977,53 @@ pub struct OrchStart {
     pub cursor: usize,
 }
 
+/// A clickable control rendered by the orchestration board or one of its
+/// overlays. Geometry is attachment-local and rebuilt from visible rows each
+/// frame, so hit testing never derives a task index from stale screen math.
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub enum OrchHit {
+    Task(String),
+    Worker(String),
+    NewTask,
+    FormField(usize),
+    FormCreate,
+    FormCancel,
+    /// The new-task form surface. Kept behind the form's actionable hit
+    /// targets so clicks inside the modal are consumed without dismissing it.
+    FormModal,
+    StartChoice(usize),
+    StartCommit,
+    StartCancel,
+    DetailClose,
+}
+
+/// ORCH shows the selected task beside the fleet at this viewport size.
+pub(crate) const ORCH_INLINE_DETAIL_MIN_WIDTH: u16 = 104;
+pub(crate) const ORCH_INLINE_DETAIL_MIN_HEIGHT: u16 = 12;
+
+/// A right-click menu for one exact orchestration task. The stable task id is
+/// snapshotted when the menu opens, so list or cursor changes cannot retarget an
+/// action before the user clicks it.
+pub struct OrchMenu {
+    pub task: String,
+    pub anchor: (u16, u16),
+    pub items: Vec<(OrchMenuItem, Rect)>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OrchMenuItem {
+    Start,
+    Jump,
+    Details,
+    Done,
+    Merge,
+    Release,
+    CopyId,
+    CopyWorktree,
+    Divider,
+    Delete,
+}
+
 pub struct Workspace {
     /// Stable public identity across display reordering and restarts.
     pub id: String,
@@ -1332,6 +1379,7 @@ pub enum PopupId {
     Diff,
     File,
     Dock,
+    Orch,
 }
 
 /// Scroll state for context menus taller than the space they are drawn in.
@@ -1566,6 +1614,13 @@ pub struct App {
     pub orch_last_agent: usize,
     /// The board's content rect, for mouse-wheel hit-testing.
     pub orch_area: Rect,
+    /// Visible board and overlay controls, rebuilt by the active client's
+    /// renderer. The list is bounded by viewport height.
+    pub orch_hits: Vec<(OrchHit, Rect)>,
+    /// Task context menu opened from a visible board row.
+    pub orch_menu: Option<OrchMenu>,
+    /// The first task click in the board's double-click gesture.
+    pub orch_last_click: Option<(String, Instant)>,
     /// Mission Control (docs/54): scroll + selected row of the active mission tab,
     /// its content rect (mouse-wheel hit-testing), the rows currently displayed
     /// (so keyboard activation maps back to a pane or session), and the async
@@ -2091,6 +2146,9 @@ impl App {
             orch_detail_scroll: 0,
             orch_last_agent: 0,
             orch_area: Rect::ZERO,
+            orch_hits: Vec::new(),
+            orch_menu: None,
+            orch_last_click: None,
             mission_scroll: 0,
             mission_cursor: 0,
             mission_scope: crate::mission::MissionScope::Workspace,
@@ -2685,6 +2743,9 @@ impl App {
             orch_detail_scroll: 0,
             orch_last_agent: 0,
             orch_area: Rect::ZERO,
+            orch_hits: Vec::new(),
+            orch_menu: None,
+            orch_last_click: None,
             mission_scroll: 0,
             mission_cursor: 0,
             mission_scope: crate::mission::MissionScope::Workspace,
@@ -9227,6 +9288,13 @@ mod tests {
             serde_json::from_str(&resp).unwrap()
         }
 
+        let r = call(
+            &mut app,
+            "lease.acquire",
+            json!({"paths":["src/**"],"pane":a.0.to_string()}),
+        );
+        assert_eq!(r["error"]["code"], "invalid_request");
+
         // Two tasks; t2 depends on t1.
         let r = call(
             &mut app,
@@ -9285,6 +9353,44 @@ mod tests {
             r.get("result").is_some(),
             "lease should be granted after release: {r}"
         );
+    }
+
+    #[test]
+    fn task_update_rejects_all_fields_after_merge_starts() {
+        let _env = crate::persist::test_env("orch-update-complete");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+        app.orch
+            .add_task("work".into(), vec![], vec![], None)
+            .unwrap();
+
+        let call = |app: &mut App, params: Value| {
+            let (reply, _r) = mpsc::channel();
+            let resp = app.handle_api(&ApiRequest {
+                id: "1".into(),
+                method: "task.update".into(),
+                params,
+                reply,
+            });
+            serde_json::from_str::<Value>(&resp).unwrap()
+        };
+
+        app.orch
+            .set_status("t1", crate::orch::TaskStatus::Merging)
+            .unwrap();
+        let response = call(&mut app, json!({"id":"t1", "output":"late output"}));
+        assert_eq!(response["error"]["code"], "task_complete");
+
+        app.orch
+            .set_status("t1", crate::orch::TaskStatus::Merged)
+            .unwrap();
+        let response = call(&mut app, json!({"id":"t1", "note":"late note"}));
+        assert_eq!(response["error"]["code"], "task_complete");
+        assert!(app.orch.task("t1").unwrap().outputs.is_empty());
+        assert!(app.orch.task("t1").unwrap().notes.is_empty());
+
+        let response = call(&mut app, json!({"id":"t1", "status":"merged"}));
+        assert_eq!(response["error"]["code"], "protected_status");
     }
 
     #[test]

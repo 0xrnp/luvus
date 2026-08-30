@@ -357,7 +357,13 @@ surface:
   explicit authorization and an exact path.
 - Inspect task and lease ownership, dependencies, gates, assignees, and path
   leases before claiming, starting, updating, completing, releasing, deleting,
-  or merging.
+  or merging. `task merge` is serialized into
+  `luvus/integration`: wait for its response, treat `merged` as terminal, and
+  resolve a reported conflict before retrying. A branch-backed dependency does
+  not unblock its dependents until it is merged. `task start` checks leases
+  before creating a branch, worktree, or pane, so resolve a returned
+  `lease_conflict` before retrying. `task release` requeues an
+  active task and releases its path leases; it does not stop the worker pane.
 - Inspect module metadata, actions, settings, and logs before changing module
   state. Installation, uninstallation, and consequential setting changes need
   clear authorization.

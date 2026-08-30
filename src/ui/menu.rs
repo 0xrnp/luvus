@@ -3,8 +3,8 @@
 
 use super::*;
 use crate::app::{
-    AgentMenuItem, DiffMenuItem, FileMenuItem, MenuScroll, ModuleMenuAction, PaneMenuItem, PopupId,
-    TabMenuItem, WsMenuItem,
+    AgentMenuItem, DiffMenuItem, FileMenuItem, MenuScroll, ModuleMenuAction, OrchMenuItem,
+    PaneMenuItem, PopupId, TabMenuItem, WsMenuItem,
 };
 use crate::i18n::Catalog;
 use ratatui::widgets::{Borders, Clear};
@@ -628,6 +628,62 @@ pub(super) fn draw_diff_menu(f: &mut RenderTarget, area: Rect, app: &mut App, t:
     }
 }
 
+pub(super) fn draw_orch_menu(
+    f: &mut RenderTarget,
+    area: Rect,
+    app: &mut App,
+    cat: &Catalog,
+    t: &Theme,
+) {
+    let Some(menu) = app.orch_menu.as_ref() else {
+        return;
+    };
+    let anchor = menu.anchor;
+    let task = menu.task.clone();
+    let items = app.orch_menu_items(&task);
+    let rows: Vec<MenuRow> = items
+        .iter()
+        .map(|item| MenuRow {
+            text: orch_label(*item, cat),
+            divider: matches!(item, OrchMenuItem::Divider),
+            destructive: matches!(item, OrchMenuItem::Delete),
+        })
+        .collect();
+    let rects = render_popup(
+        f,
+        area,
+        anchor,
+        &rows,
+        t,
+        PopupCtx {
+            hover: app.hover,
+            mobile: app.compact,
+            id: PopupId::Orch,
+            scroll: &mut app.menu_scroll,
+        },
+    );
+    if let Some(menu) = app.orch_menu.as_mut() {
+        menu.items = items.into_iter().zip(rects).collect();
+    }
+}
+
+fn orch_label(item: OrchMenuItem, cat: &Catalog) -> String {
+    match item {
+        OrchMenuItem::Start => cap_first(cat.board_start),
+        OrchMenuItem::Jump => cap_first(cat.scroll_jump),
+        OrchMenuItem::Details => cap_first(cat.board_details),
+        OrchMenuItem::Done => cap_first(cat.task_done),
+        OrchMenuItem::Merge => cap_first(cat.act_merge),
+        OrchMenuItem::Release => cap_first(cat.board_release),
+        OrchMenuItem::CopyId => format!("{} ID", cap_first(cat.act_copy)),
+        OrchMenuItem::CopyWorktree => {
+            format!("{} {}", cap_first(cat.act_copy), cat.board_f_paths)
+        }
+        OrchMenuItem::Divider => String::new(),
+        OrchMenuItem::Delete => cap_first(cat.act_delete),
+    }
+}
+
 /// FILES-menu labels are plain English (this menu is not localized — unlike the
 /// workspace/pane menus — and editor names are proper nouns anyway).
 fn file_label(it: FileMenuItem, editors: &[(String, String)], cat: &Catalog) -> String {
@@ -781,6 +837,20 @@ mod label_case_tests {
         rows.push(cat.menu_new_tab.to_string());
         for it in [AgentMenuItem::Resume, AgentMenuItem::Close] {
             rows.push(agent_label(it, cat, none));
+        }
+        for it in [
+            OrchMenuItem::Start,
+            OrchMenuItem::Jump,
+            OrchMenuItem::Details,
+            OrchMenuItem::Done,
+            OrchMenuItem::Merge,
+            OrchMenuItem::Release,
+            OrchMenuItem::CopyId,
+            OrchMenuItem::CopyWorktree,
+            OrchMenuItem::Divider,
+            OrchMenuItem::Delete,
+        ] {
+            rows.push(orch_label(it, cat));
         }
         for it in [
             FileMenuItem::OpenReadonly,
