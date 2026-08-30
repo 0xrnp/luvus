@@ -62,10 +62,11 @@ pub enum SkillHost {
     Qwen,
     Kiro,
     Omp,
+    Hermes,
 }
 
 impl SkillHost {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Shared,
         Self::Claude,
         Self::Opencode,
@@ -74,6 +75,7 @@ impl SkillHost {
         Self::Qwen,
         Self::Kiro,
         Self::Omp,
+        Self::Hermes,
     ];
 
     pub fn as_str(self) -> &'static str {
@@ -86,6 +88,7 @@ impl SkillHost {
             Self::Qwen => "qwen",
             Self::Kiro => "kiro",
             Self::Omp => "omp",
+            Self::Hermes => "hermes",
         }
     }
 
@@ -384,6 +387,7 @@ fn target_dir_at(host: SkillHost, home: &Path, xdg_config: Option<&Path>) -> Pat
         SkillHost::Qwen => home.join(".qwen").join("skills").join("luvus"),
         SkillHost::Kiro => home.join(".kiro").join("skills").join("luvus"),
         SkillHost::Omp => crate::agent::omp::default_skill_dir_at(home),
+        SkillHost::Hermes => home.join(".hermes").join("skills").join("luvus"),
     }
 }
 
@@ -399,6 +403,11 @@ fn target_dir(host: SkillHost) -> Result<PathBuf> {
     }
     if host == SkillHost::Kimi {
         if let Some(config) = std::env::var_os("KIMI_CODE_HOME") {
+            return Ok(PathBuf::from(config).join("skills").join("luvus"));
+        }
+    }
+    if host == SkillHost::Hermes {
+        if let Some(config) = std::env::var_os("HERMES_HOME").filter(|value| !value.is_empty()) {
             return Ok(PathBuf::from(config).join("skills").join("luvus"));
         }
     }
@@ -539,6 +548,7 @@ fn host_commands(host: SkillHost) -> &'static [&'static str] {
         SkillHost::Qwen => &["qwen"],
         SkillHost::Kiro => &["kiro", "kiro-cli"],
         SkillHost::Omp => &["omp"],
+        SkillHost::Hermes => &["hermes"],
     }
 }
 
@@ -549,6 +559,7 @@ fn host_config_dirs(
     claude_config: Option<&Path>,
     codex_home: Option<&Path>,
     kimi_home: Option<&Path>,
+    hermes_home: Option<&Path>,
 ) -> Vec<PathBuf> {
     let xdg = xdg_config
         .map(Path::to_path_buf)
@@ -578,6 +589,9 @@ fn host_config_dirs(
         SkillHost::Qwen => vec![home.join(".qwen")],
         SkillHost::Kiro => vec![home.join(".kiro")],
         SkillHost::Omp => vec![crate::agent::omp::default_agent_dir_at(home)],
+        SkillHost::Hermes => vec![hermes_home
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| home.join(".hermes"))],
     }
 }
 
@@ -590,6 +604,9 @@ fn host_detected(host: SkillHost, state: &SkillState, target: &Path) -> Result<b
     let claude = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from);
     let codex = std::env::var_os("CODEX_HOME").map(PathBuf::from);
     let kimi = std::env::var_os("KIMI_CODE_HOME").map(PathBuf::from);
+    let hermes = std::env::var_os("HERMES_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
     if host == SkillHost::Omp && crate::agent::omp::agent_dir().is_ok_and(|path| path.is_dir()) {
         return Ok(true);
     }
@@ -600,6 +617,7 @@ fn host_detected(host: SkillHost, state: &SkillState, target: &Path) -> Result<b
         claude.as_deref(),
         codex.as_deref(),
         kimi.as_deref(),
+        hermes.as_deref(),
     )) || any_command_on_path(host_commands(host)))
 }
 
@@ -1121,6 +1139,10 @@ mod tests {
             target_dir_at(SkillHost::Kiro, home, None),
             PathBuf::from("/home/tester/.kiro/skills/luvus")
         );
+        assert_eq!(
+            target_dir_at(SkillHost::Hermes, home, None),
+            PathBuf::from("/home/tester/.hermes/skills/luvus")
+        );
         assert_eq!(SkillHost::Shared.state_key(), "codex");
     }
 
@@ -1128,10 +1150,16 @@ mod tests {
     fn every_native_skill_host_has_detection_markers() {
         for host in SkillHost::ALL {
             assert!(!host_commands(host).is_empty());
-            assert!(
-                !host_config_dirs(host, Path::new("/home/tester"), None, None, None, None)
-                    .is_empty()
-            );
+            assert!(!host_config_dirs(
+                host,
+                Path::new("/home/tester"),
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .is_empty());
         }
         let shared = host_commands(SkillHost::Shared);
         for agent in [
@@ -1364,12 +1392,33 @@ mod tests {
         let agent_dir = root.join(".omp").join("agent");
         fs::create_dir_all(&agent_dir).unwrap();
 
-        let dirs = host_config_dirs(SkillHost::Omp, &root, None, None, None, None);
+        let dirs = host_config_dirs(SkillHost::Omp, &root, None, None, None, None, None);
         assert_eq!(dirs, vec![agent_dir.clone()]);
         assert!(any_dir(&dirs), "config dir presence detects the omp host");
         assert_eq!(host_commands(SkillHost::Omp), &["omp"]);
         assert_eq!(SkillHost::Omp.as_str(), "omp");
         assert!(SkillHost::ALL.contains(&SkillHost::Omp));
+
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn hermes_detection_respects_a_custom_home_without_a_path_binary() {
+        let root = crate::persist::skills_dir().join("hermes-custom-home");
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+
+        let dirs = host_config_dirs(
+            SkillHost::Hermes,
+            Path::new("/home/tester"),
+            None,
+            None,
+            None,
+            None,
+            Some(&root),
+        );
+        assert_eq!(dirs, vec![root.clone()]);
+        assert!(any_dir(&dirs));
 
         let _ = fs::remove_dir_all(&root);
     }

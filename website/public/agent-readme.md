@@ -82,9 +82,9 @@ for an agent to receive it:
 skill into detected native skill locations without overwriting external or
 modified content. The shared `~/.agents/skills/luvus/` copy serves Codex,
 GitHub Copilot CLI, Gemini CLI, Pi, Cursor, Amp, Droid, and fx. Dedicated
-adapters serve Claude Code, OpenCode, Kimi Code CLI, Grok Build, Qwen Code,
-and Kiro. Aider has no native Agent Skills installation surface, so use
-`luvus skill show` when an Aider conversation needs the instructions.
+adapters serve Claude Code, OpenCode, Kimi Code CLI, Grok Build, Hermes CLI,
+Qwen Code, and Kiro. Aider has no native Agent Skills installation surface, so
+use `luvus skill show` when an Aider conversation needs the instructions.
 
 Start a new agent conversation after installation, or use that agent's skill
 reload command when it provides one. To remove unchanged Luvus-managed copies:
@@ -265,6 +265,9 @@ discovery rather than inferring support from an agent name.
   and terminal state.
 - Supported agents can reopen their own conversation through native session
   discovery and resume commands.
+- Hermes session discovery works without setup. When exact pane ownership is
+  required, `luvus integration install hermes` adds an opt-in Hermes plugin
+  that reports each session once while retaining the native database fallback.
 
 Do not claim every shell command resumes after restart. Do not guess native
 session IDs. List sessions and use the exact returned identifier.

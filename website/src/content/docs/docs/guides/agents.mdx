@@ -10,8 +10,8 @@ back after a restart, all without wrapping or modifying the agents themselves.
 ## The AGENTS sidebar
 
 Every pane running a recognized agent (Claude Code, Copilot, Codex, opencode,
-Kimi, Grok, Muse Code, Pi, Oh My Pi (OMP), Cursor, Gemini, Qwen, Kiro, Aider,
-Amp, Droid, or fx) appears in the sidebar with a live state:
+Kimi, Grok, Hermes CLI, Muse Code, Pi, Oh My Pi (OMP), Cursor, Gemini, Qwen,
+Kiro, Aider, Amp, Droid, or fx) appears in the sidebar with a live state:
 
 | State | Meaning | How it's detected |
 |---|---|---|
@@ -124,6 +124,7 @@ command for you:
 | opencode | its session storage |
 | Kimi | its session index (`~/.kimi-code/session_index.jsonl`) |
 | Grok | its session directory (`~/.grok/sessions`) |
+| Hermes CLI | its active SQLite session store (`$HERMES_HOME/state.db` or `~/.hermes/state.db`) |
 | Pi | its session store (`~/.pi/agent/sessions`) |
 | Oh My Pi (OMP) | its profile-, XDG-, and override-aware native session store |
 | Muse Code | its XDG data store (`$XDG_DATA_HOME/muse/sessions`) |
@@ -183,6 +184,10 @@ Muse Code supports native detection and resume, but not **Fork to New Pane**.
 Its `/fork` command exists only inside the active TUI, and its CLI refuses to
 resume the same live session in a sibling pane.
 
+Hermes CLI has the same external boundary. Luvus can resume its native
+sessions, but Hermes exposes `/branch` and `/fork` only inside the active TUI,
+so it is not listed as a native pane-fork target.
+
 ## Precise events: the integration hook
 
 Screen-based detection needs no setup and works for everything. The optional
@@ -190,7 +195,7 @@ Screen-based detection needs no setup and works for everything. The optional
 lifecycle events (permission prompt raised, turn ended) into luvus:
 
 ```sh
-luvus integration install claude    # or: copilot · codex · opencode · kimi · grok · omp
+luvus integration install claude    # or: copilot · codex · opencode · kimi · grok · hermes · omp
 ```
 
 or toggle it in **Settings → Integrations**. What it does per agent:
@@ -202,6 +207,10 @@ or toggle it in **Settings → Integrations**. What it does per agent:
   place so your API keys, comments, and own hooks are left untouched.
 - **grok**: installs its own hook file without editing Grok's authentication
   configuration.
+- **hermes**: installs an opt-in plugin under the active `HERMES_HOME`. It
+  reports an exact session id once per session while the read-only SQLite
+  adapter remains the zero-setup fallback. Luvus preserves unrelated YAML
+  settings and removes only its own plugin entry on uninstall.
 - **omp**: installs one managed TypeScript extension in OMP's active agent
   directory. It reports exact session identity and authoritative
   idle/working/blocked/done transitions while preserving Luvus's native
