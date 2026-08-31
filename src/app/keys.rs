@@ -9,6 +9,15 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
 
+/// Legacy terminals using the US number row report Shift+1 through Shift+9 as
+/// these symbols. Keep this transport representation separate from the label
+/// shown to users, which is `Shift+N` for the matching workspace default.
+const SHIFTED_DIGIT_KEYS: [&str; 9] = ["!", "@", "#", "$", "%", "^", "&", "*", "("];
+
+fn workspace_jump_index(position: u8) -> usize {
+    position.saturating_sub(1).min(8) as usize
+}
+
 /// Is this a real `Ctrl` chord, or is it AltGr typing a character?
 ///
 /// The Windows console reports AltGr as `CONTROL | ALT` — the layout driver
@@ -171,7 +180,7 @@ impl Cmd {
                 "jump_workspace_7",
                 "jump_workspace_8",
                 "jump_workspace_9",
-            ][position.saturating_sub(1).min(8) as usize],
+            ][workspace_jump_index(position)],
             Cmd::NewWorktree => "new_worktree",
             Cmd::OpenGit => "open_git",
             Cmd::OpenDiff => "open_diff",
@@ -215,9 +224,7 @@ impl Cmd {
             Cmd::CloseWorkspace => cat.cmd_close_workspace,
             Cmd::NextWorkspace => cat.cmd_next_workspace,
             Cmd::PrevWorkspace => cat.cmd_prev_workspace,
-            Cmd::JumpWorkspace(position) => {
-                cat.cmd_jump_workspace[position.saturating_sub(1).min(8) as usize]
-            }
+            Cmd::JumpWorkspace(position) => cat.cmd_jump_workspace[workspace_jump_index(position)],
             Cmd::NewWorktree => cat.cmd_new_worktree,
             Cmd::OpenGit => cat.cmd_open_git,
             Cmd::OpenDiff => cat.cmd_open_diff,
@@ -300,7 +307,7 @@ impl Cmd {
             Cmd::CloseWorkspace => "D",
             Cmd::NextWorkspace => "w",
             Cmd::PrevWorkspace => "W",
-            Cmd::JumpWorkspace(_) => "",
+            Cmd::JumpWorkspace(position) => SHIFTED_DIGIT_KEYS[workspace_jump_index(position)],
             Cmd::NewWorktree => "G",
             Cmd::OpenGit => "g",
             Cmd::OpenDiff => "i",
@@ -360,6 +367,9 @@ pub fn key_reference_rows() -> usize {
 /// Used both to match presses and to display/store bindings.
 pub fn key_string(key: &KeyEvent) -> Option<String> {
     Some(match key.code {
+        KeyCode::Char(c @ '1'..='9') if key.modifiers.contains(KeyModifiers::SHIFT) => {
+            SHIFTED_DIGIT_KEYS[c as usize - '1' as usize].into()
+        }
         KeyCode::Char(c) => c.to_string(),
         KeyCode::Left => "←".into(),
         KeyCode::Right => "→".into(),
@@ -732,6 +742,11 @@ pub fn presets() -> &'static [Preset] {
                 // `(` / `)` step to the previous / next session (luvus workspace).
                 ("prev_node", "("),
                 ("next_node", ")"),
+                // These workspace defaults use the same legacy terminal symbols
+                // as tmux's split and previous-session keys. Mark them honestly
+                // unbound instead of displaying shortcuts that cannot run.
+                ("jump_workspace_5", ""),
+                ("jump_workspace_9", ""),
                 // `w` opens the jump palette (tmux's choose-window / -tree); the
                 // scope chips inside narrow it to tabs, workspaces, or agents.
                 ("switcher", "w"),
@@ -743,11 +758,18 @@ pub fn presets() -> &'static [Preset] {
 impl App {
     /// The key currently bound to `cmd` (override or default), for display.
     pub fn key_for(&self, cmd: Cmd) -> String {
-        self.config
+        let key = self
+            .config
             .keybindings
             .get(cmd.id())
             .cloned()
-            .unwrap_or_else(|| cmd.default_key().to_string())
+            .unwrap_or_else(|| cmd.default_key().to_string());
+        if let Cmd::JumpWorkspace(position) = cmd {
+            if key == SHIFTED_DIGIT_KEYS[workspace_jump_index(position)] {
+                return format!("Shift+{}", workspace_jump_index(position) + 1);
+            }
+        }
+        key
     }
 
     /// Rebind `cmd` to `key`, persist, and rebuild the active keymap. If `key`
@@ -945,32 +967,56 @@ mod tests {
         assert_eq!(m.get("i"), Some(&Cmd::OpenDiff));
         assert_eq!(m.get("m"), Some(&Cmd::OpenMission));
         assert_eq!(m.get("M"), Some(&Cmd::Switcher));
-        // Every command with a default is reachable. Direct workspace jumps are
-        // intentionally unbound because shifted digits vary by terminal/layout.
+        // Every command is reachable by at least one default binding.
         for &c in Cmd::ALL {
-            assert_eq!(
-                m.values().any(|v| *v == c),
-                !c.default_keys().is_empty(),
-                "{c:?} default binding"
-            );
+            assert!(m.values().any(|v| *v == c), "{c:?} default binding");
         }
-        assert!(!m.contains_key(""), "unbound commands do not claim a key");
     }
 
     #[test]
     fn workspace_jump_ids_are_stable_and_rebindable() {
         let mut overrides = HashMap::new();
-        for position in 1..=9 {
+        let defaults = ["!", "@", "#", "$", "%", "^", "&", "*", "("];
+        for (position, default) in (1..=9).zip(defaults) {
             let command = Cmd::JumpWorkspace(position);
             assert_eq!(command.id(), format!("jump_workspace_{position}"));
-            assert!(command.default_keys().is_empty());
+            assert_eq!(command.default_keys(), vec![default]);
         }
 
-        overrides.insert("jump_workspace_4".into(), "!".into());
+        overrides.insert("jump_workspace_4".into(), "u".into());
         assert_eq!(
-            build_keymap(&overrides).get("!"),
+            build_keymap(&overrides).get("u"),
             Some(&Cmd::JumpWorkspace(4))
         );
+        assert!(!build_keymap(&overrides).contains_key("$"));
+
+        overrides.insert("jump_workspace_4".into(), String::new());
+        assert!(!build_keymap(&overrides)
+            .values()
+            .any(|command| *command == Cmd::JumpWorkspace(4)));
+    }
+
+    #[test]
+    fn workspace_jump_defaults_use_chord_labels_only_for_display() {
+        let _env = crate::persist::test_env("workspace-jump-display-labels");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(80, 24, tx).unwrap();
+
+        for position in 1..=9 {
+            assert_eq!(
+                app.key_for(Cmd::JumpWorkspace(position)),
+                format!("Shift+{position}")
+            );
+        }
+
+        app.config
+            .keybindings
+            .insert("jump_workspace_1".into(), "u".into());
+        app.config
+            .keybindings
+            .insert("jump_workspace_2".into(), String::new());
+        assert_eq!(app.key_for(Cmd::JumpWorkspace(1)), "u");
+        assert_eq!(app.key_for(Cmd::JumpWorkspace(2)), "");
     }
 
     #[test]
@@ -1319,6 +1365,12 @@ mod tests {
         assert_eq!(app.keymap.get(","), Some(&Cmd::RenameTab));
         assert_eq!(app.keymap.get(")"), Some(&Cmd::NextWorkspace));
         assert_eq!(app.keymap.get("("), Some(&Cmd::PrevWorkspace));
+        assert!(app.key_for(Cmd::JumpWorkspace(5)).is_empty());
+        assert!(app.key_for(Cmd::JumpWorkspace(9)).is_empty());
+        assert!(!app
+            .keymap
+            .values()
+            .any(|command| matches!(command, Cmd::JumpWorkspace(5 | 9))));
         // The default split keys are gone under the preset.
         assert_ne!(app.keymap.get("v"), Some(&Cmd::SplitRight));
         // `default` restores luvus's own prefix and keys.
