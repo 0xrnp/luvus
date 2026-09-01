@@ -3395,12 +3395,24 @@ impl App {
     /// the synchronous spawn path's own fallback. Shared by `new_tab` and `split`
     /// so the two stay aligned.
     fn spawn_cwds(&self) -> Vec<PathBuf> {
+        self.spawn_cwds_for(self.active_ws, self.layout().focus)
+    }
+
+    /// Resolve the spawn directory chain for a specific pane and its workspace.
+    /// Socket callers may target an inactive pane, so this cannot rely on the
+    /// active workspace or tab.
+    fn spawn_cwds_for(&self, workspace: usize, pane: PaneId) -> Vec<PathBuf> {
         let home = crate::platform::home_dir().unwrap_or_default();
-        let root = self.ws().cwd.clone();
+        let root = self.workspaces[workspace].cwd.clone();
         let ordered = if self.config.layout.new_pane_to_workspace_root {
             vec![root, home.clone()]
         } else {
-            vec![self.focused_cwd(), root, home.clone()]
+            let pane_cwd = self
+                .panes
+                .get(&pane)
+                .map(|pane| pane.cwd.clone())
+                .unwrap_or_else(|| root.clone());
+            vec![pane_cwd, root, home.clone()]
         };
         let mut chain: Vec<PathBuf> = Vec::new();
         for candidate in ordered {
@@ -3570,19 +3582,59 @@ impl App {
         }
     }
 
+    /// Split the focused pane and follow the newly attached sibling.
     fn split(&mut self, axis: Axis) {
-        // Resolve the candidate chain up front (focused pane → workspace root →
-        // $HOME, existing only) and hand the primary plus its fallbacks to the
-        // deferred worker. If the primary is deleted in the race window before
-        // the fork, the worker retries the fallbacks instead of spawning a dead
-        // pane; the chain is never empty, so the `else` here is unreachable.
-        let cwds = self.spawn_cwds();
-        let Some((cwd, fallback_cwds)) = cwds.split_first() else {
-            return;
-        };
-        if let Some(id) = self.spawn_into_deferred(cwd.clone(), fallback_cwds) {
-            self.layout_mut().split_focused(axis, id);
+        let pane = self.layout().focus;
+        let _ = self.split_pane(pane, axis, true);
+    }
+
+    /// Spawn and attach a sibling beside `target`, preserving inactive view state
+    /// when the caller requests a background operation.
+    fn spawn_and_attach_new_pane(
+        &mut self,
+        workspace: usize,
+        tab: usize,
+        target: PaneId,
+        axis: Axis,
+        focus: bool,
+        spawn: impl FnOnce(&mut Self) -> Option<PaneId>,
+    ) -> Option<PaneId> {
+        let previous_zoom = self.zoomed;
+        let previous_target_focus = self.workspaces[workspace].tabs[tab].layout.focus;
+        let new_id = spawn(self)?;
+        {
+            let layout = &mut self.workspaces[workspace].tabs[tab].layout;
+            layout.focus = target;
+            layout.split_focused(axis, new_id);
+            if !focus {
+                layout.focus = previous_target_focus;
+            }
         }
+        if focus {
+            self.active_ws = workspace;
+            self.workspaces[workspace].active_tab = tab;
+            self.scroll_pane = None;
+            self.zoomed = false;
+        } else {
+            self.zoomed = previous_zoom;
+        }
+        Some(new_id)
+    }
+
+    /// Split beside a pane in the workspace and tab that actually own it.
+    /// With focus disabled, the current view and the target tab's prior focus are
+    /// preserved even when the target belongs to another workspace.
+    fn split_pane(&mut self, pane: PaneId, axis: Axis, focus: bool) -> Option<PaneId> {
+        let (wsi, ti) = self.pane_location(pane)?;
+        // Resolve the candidate chain up front (target pane → target workspace
+        // root → $HOME, existing only) and hand the primary plus its fallbacks to
+        // the deferred worker. If the primary vanishes before the fork, the
+        // worker retries the fallbacks instead of spawning in a dead directory.
+        let cwds = self.spawn_cwds_for(wsi, pane);
+        let (cwd, fallback_cwds) = cwds.split_first()?;
+        self.spawn_and_attach_new_pane(wsi, ti, pane, axis, focus, |app| {
+            app.spawn_into_deferred(cwd.clone(), fallback_cwds)
+        })
     }
 
     /// Fork `pane`'s agent session into a new sibling on its right, preserving
@@ -3634,30 +3686,11 @@ impl App {
         let fork =
             crate::agent::fork_command(&agent, &sid).ok_or(AgentForkError::UnsupportedAgent)?;
 
-        // `spawn_resume_pane` changes the global zoom flag. Capture the complete
-        // view state needed by --no-focus before spawning, then restore it after
-        // inserting the new leaf into the source tab.
-        let previous_zoom = self.zoomed;
-        let previous_source_focus = self.workspaces[wsi].tabs[ti].layout.focus;
         let new_id = self
-            .spawn_resume_pane(cwd, &fork)
+            .spawn_and_attach_new_pane(wsi, ti, pane, Axis::Col, focus, |app| {
+                app.spawn_resume_pane(cwd, &fork)
+            })
             .ok_or(AgentForkError::SpawnFailed)?;
-        {
-            let layout = &mut self.workspaces[wsi].tabs[ti].layout;
-            layout.focus = pane;
-            layout.split_focused(Axis::Col, new_id);
-            if !focus {
-                layout.focus = previous_source_focus;
-            }
-        }
-        if focus {
-            self.active_ws = wsi;
-            self.workspaces[wsi].active_tab = ti;
-            self.scroll_pane = None;
-            self.zoomed = false;
-        } else {
-            self.zoomed = previous_zoom;
-        }
         // Label the new pane as the same agent right away (detection will confirm
         // it, and pick up the fork's fresh session id, on the next tick).
         if let Some(nst) = self.status.get_mut(&new_id) {
@@ -5726,13 +5759,38 @@ impl App {
     }
 
     fn close_pane(&mut self, id: PaneId) {
+        let owner = self.pane_location(id);
         self.drop_leaf_runtime(id);
         self.release_leaf_ownership(id);
         self.session_dirty = true;
-        if self.layout_mut().remove(id) {
-            self.close_active_tab();
+        if let Some((workspace, tab)) = owner {
+            let tab_is_empty = self.workspaces[workspace].tabs[tab].layout.remove(id);
+            if tab_is_empty {
+                self.close_empty_tab(workspace, tab);
+            }
         }
         self.emit_event("pane.closed", serde_json::json!({"pane": id.0.to_string()}));
+    }
+
+    /// Remove an empty tab by location without changing a surviving caller's view.
+    fn close_empty_tab(&mut self, workspace_index: usize, tab_index: usize) {
+        let caller_focus = self.layout().focus;
+        let owner_focus = self.workspaces[workspace_index].tabs
+            [self.workspaces[workspace_index].active_tab]
+            .layout
+            .focus;
+
+        self.active_ws = workspace_index;
+        self.workspaces[workspace_index].active_tab = tab_index;
+        self.close_active_tab();
+
+        if let Some((workspace, tab)) = self.pane_location(owner_focus) {
+            self.workspaces[workspace].active_tab = tab;
+        }
+        if let Some((workspace, tab)) = self.pane_location(caller_focus) {
+            self.active_ws = workspace;
+            self.workspaces[workspace].active_tab = tab;
+        }
     }
 
     fn close_active_tab(&mut self) {
@@ -5782,6 +5840,10 @@ impl App {
             removed = true;
         }
         if removed {
+            self.emit_event(
+                "workspace.closed",
+                serde_json::json!({"workspace": workspace_index.to_string()}),
+            );
             crate::logging::event(
                 crate::logging::EventKind::WorkspaceClose,
                 &[crate::logging::Field::WorkspaceIndex(
