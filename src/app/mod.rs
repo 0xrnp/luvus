@@ -1799,7 +1799,7 @@ pub struct App {
     /// Mission Control usage is demand-driven: opening/focusing the dashboard,
     /// changing its scope, or choosing refresh queues one off-loop scan. No
     /// usage reader runs merely because a hidden Mission Control tab exists.
-    mission_usage_requested: bool,
+    mission_usage_requested: Option<crate::mission::MissionUsageRequest>,
     /// Workspace whose Mission Control tab was visible on the previous sync.
     /// `None` also records transitions away from Mission Control.
     mission_active_workspace: Option<usize>,
@@ -2249,7 +2249,7 @@ impl App {
             proc_scan_inflight: false,
             dismissed_sessions: HashSet::new(),
             last_sessions_at: Instant::now(),
-            mission_usage_requested: false,
+            mission_usage_requested: None,
             mission_active_workspace: None,
             usage_scan_inflight: false,
             last_proc_at: Instant::now(),
@@ -2856,7 +2856,7 @@ impl App {
             proc_scan_inflight: false,
             dismissed_sessions: HashSet::new(),
             last_sessions_at: Instant::now(),
-            mission_usage_requested: false,
+            mission_usage_requested: None,
             mission_active_workspace: None,
             usage_scan_inflight: false,
             last_proc_at: Instant::now(),
@@ -10950,41 +10950,159 @@ mod tests {
         let normal_tab = app.ws().active_tab;
         app.open_mission_control(0);
         let mission_tab = app.ws().active_tab;
-        assert!(app.mission_usage_requested, "opening requests one refresh");
+        assert!(
+            app.mission_usage_requested.is_some(),
+            "opening requests one refresh"
+        );
 
         app.sync_mission_usage_visibility();
-        app.mission_usage_requested = false; // simulate the worker consuming it
+        app.mission_usage_requested = None; // simulate the worker consuming it
         app.sync_mission_usage_visibility();
         assert!(
-            !app.mission_usage_requested,
+            app.mission_usage_requested.is_none(),
             "remaining on Mission Control does not poll"
         );
 
         app.handle_mission_key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-        assert!(app.mission_usage_requested, "r requests a refresh");
+        assert!(
+            app.mission_usage_requested.is_some(),
+            "r requests a refresh"
+        );
 
         let mut term = Terminal::new(TestBackend::new(120, 40)).unwrap();
         term.draw(|f| crate::ui::render(f, &mut app)).unwrap();
         let refresh = app
             .mission_refresh_rect
             .expect("wide dashboard exposes refresh button");
-        app.mission_usage_requested = false;
+        app.mission_usage_requested = None;
         app.handle_event(crate::event::AppEvent::Mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             column: refresh.x,
             row: refresh.y,
             modifiers: KeyModifiers::NONE,
         }));
-        assert!(app.mission_usage_requested, "click requests a refresh");
+        assert!(
+            app.mission_usage_requested.is_some(),
+            "click requests a refresh"
+        );
 
-        app.mission_usage_requested = false;
+        app.mission_usage_requested = None;
         app.focus_tab(normal_tab).unwrap();
         app.sync_mission_usage_visibility();
         app.focus_tab(mission_tab).unwrap();
         app.sync_mission_usage_visibility();
         assert!(
-            app.mission_usage_requested,
+            app.mission_usage_requested.is_some(),
             "returning to Mission Control requests one fresh snapshot"
+        );
+    }
+
+    #[test]
+    fn scoped_mission_usage_refresh_preserves_other_workspace_cache_entries() {
+        let _env = crate::persist::test_env("mission-scoped-cache");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        let first = crate::mission::UsageKey::new("codex", "first");
+        let second = crate::mission::UsageKey::new("claude", "second");
+        let first_cwd = app.workspaces[0].cwd.clone();
+        let second_cwd = crate::persist::config_dir().join("second-workspace");
+        app.workspaces.push(Workspace {
+            id: crate::ids::public_id("workspace"),
+            name: "second".into(),
+            cwd: second_cwd.clone(),
+            branch: None,
+            git_ahead_behind: None,
+            worktree: None,
+            tabs: vec![Tab::panes(TileLayout::new(PaneId::alloc()))],
+            active_tab: 0,
+            pinned: false,
+        });
+        app.resumable.extend([
+            crate::agent::SessionInfo {
+                agent: first.agent.clone(),
+                session_id: first.session_id.clone(),
+                cwd: first_cwd,
+                updated: std::time::SystemTime::now(),
+            },
+            crate::agent::SessionInfo {
+                agent: second.agent.clone(),
+                session_id: second.session_id.clone(),
+                cwd: second_cwd,
+                updated: std::time::SystemTime::now(),
+            },
+        ]);
+        let original = std::time::SystemTime::UNIX_EPOCH;
+        let refreshed = original + std::time::Duration::from_secs(1);
+        app.agent_usage.insert(
+            first.clone(),
+            crate::mission::AgentUsage {
+                tokens_in: 1,
+                ..Default::default()
+            },
+        );
+        app.agent_usage.insert(
+            second.clone(),
+            crate::mission::AgentUsage {
+                tokens_in: 2,
+                ..Default::default()
+            },
+        );
+        app.usage_mtimes.insert(first.clone(), original);
+        app.usage_mtimes.insert(second.clone(), original);
+
+        app.handle_event(crate::event::AppEvent::UsageScanned {
+            scope: crate::mission::MissionScope::Workspace,
+            scanned: vec![first.clone()],
+            usage: [(
+                first.clone(),
+                crate::mission::AgentUsage {
+                    tokens_in: 3,
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            mtimes: [(first.clone(), refreshed)].into(),
+        });
+        assert_eq!(app.agent_usage[&first].tokens_in, 3);
+        assert_eq!(app.agent_usage[&second].tokens_in, 2);
+        assert_eq!(app.usage_mtimes[&second], original);
+        let rows = app.build_mission_rows_for(crate::mission::MissionScope::All, 0);
+        assert_eq!(rows.len(), 2);
+        assert!(rows
+            .iter()
+            .any(|row| row.usage.as_ref().is_some_and(|usage| usage.tokens_in == 2)));
+
+        app.handle_event(crate::event::AppEvent::UsageScanned {
+            scope: crate::mission::MissionScope::All,
+            scanned: vec![first.clone()],
+            usage: [(first.clone(), app.agent_usage[&first].clone())].into(),
+            mtimes: [(first.clone(), refreshed)].into(),
+        });
+        assert!(app.agent_usage.contains_key(&first));
+        assert!(!app.agent_usage.contains_key(&second));
+        assert!(!app.usage_mtimes.contains_key(&second));
+    }
+
+    #[test]
+    fn all_workspace_mission_scope_ignores_a_stale_anchor() {
+        let _env = crate::persist::test_env("mission-all-stale-anchor");
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(120, 40, tx).unwrap();
+        let pane = app.layout().focus;
+        app.status.get_mut(&pane).unwrap().agent = "codex".into();
+
+        assert_eq!(
+            app.build_mission_rows_for(crate::mission::MissionScope::All, usize::MAX)
+                .len(),
+            1
+        );
+        app.request_mission_usage_refresh_for(crate::mission::MissionScope::All, usize::MAX);
+        assert_eq!(
+            app.mission_usage_requested,
+            Some(crate::mission::MissionUsageRequest {
+                scope: crate::mission::MissionScope::All,
+                workspace: usize::MAX,
+            })
         );
     }
 
@@ -11009,13 +11127,13 @@ mod tests {
         app.open_mission_control(0);
         app.open_mission_control(1);
         app.sync_mission_usage_visibility();
-        app.mission_usage_requested = false;
+        app.mission_usage_requested = None;
 
         app.active_ws = 0;
         app.sync_mission_usage_visibility();
 
         assert!(
-            app.mission_usage_requested,
+            app.mission_usage_requested.is_some(),
             "switching directly to another workspace dashboard requests fresh usage"
         );
     }
