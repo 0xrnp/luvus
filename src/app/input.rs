@@ -3812,7 +3812,13 @@ fn encode_key(
         KeyCode::Enter => vec![b'\r'],
         KeyCode::Tab => vec![b'\t'],
         KeyCode::BackTab => vec![0x1b, b'[', b'Z'],
-        KeyCode::Backspace => vec![0x7f],
+        KeyCode::Backspace => {
+            if alt {
+                vec![0x1b, 0x7f]
+            } else {
+                vec![0x7f]
+            }
+        }
         KeyCode::Esc => vec![0x1b],
         // Keep navigation modifiers intact. Crossterm reports these directly
         // from Windows console records, while terminals on Unix report them via
@@ -4357,6 +4363,23 @@ mod tests {
             key(KeyModifiers::CONTROL | KeyModifiers::ALT),
             Some(vec![0x1b, 0x01])
         );
+    }
+
+    #[test]
+    fn alt_backspace_sends_meta_delete_for_word_deletion() {
+        let key = |modifiers, disambiguate| {
+            encode_key(
+                &KeyEvent::new(KeyCode::Backspace, modifiers),
+                b"\x1b\r",
+                false,
+                disambiguate,
+            )
+        };
+
+        for disambiguate in [false, true] {
+            assert_eq!(key(KeyModifiers::NONE, disambiguate), Some(vec![0x7f]));
+            assert_eq!(key(KeyModifiers::ALT, disambiguate), Some(vec![0x1b, 0x7f]));
+        }
     }
 
     #[test]
